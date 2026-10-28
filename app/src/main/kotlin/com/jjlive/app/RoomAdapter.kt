@@ -14,6 +14,7 @@ class RoomAdapter(
 
     class VH(v: View) : RecyclerView.ViewHolder(v) {
         val cover: ImageView = v.findViewById(R.id.cover)
+        val badge: TextView = v.findViewById(R.id.badge)
         val name: TextView = v.findViewById(R.id.name)
         val title: TextView = v.findViewById(R.id.title)
         val meta: TextView = v.findViewById(R.id.meta)
@@ -28,12 +29,21 @@ class RoomAdapter(
         val r = items[pos]
         h.name.text = r.userName
         h.title.text = r.roomName.ifEmpty { "（无标题）" }
-        val flags = buildList {
-            if (r.performing) add("1V1表演中")
-            else if (r.cats.contains("1V1表演")) add("1V1")
-            if (r.isPay) add("门票¥${r.moneyFen / 100}")
+
+        val label = when {
+            r.performing -> "1V1 表演中"
+            r.isPay -> "门票 ¥${r.moneyFen / 100}"
+            else -> null
         }
-        h.meta.text = (listOf("🔥 ${r.hot}") + flags).joinToString(" · ")
+        if (label == null) {
+            h.badge.visibility = View.GONE
+        } else {
+            h.badge.visibility = View.VISIBLE
+            h.badge.text = label
+        }
+
+        val extra = if (r.cats.isEmpty()) "" else " · " + r.cats.take(2).joinToString("/")
+        h.meta.text = "🔥 ${r.hot}$extra"
 
         h.cover.setImageDrawable(null)
         val url = r.coverUrl()

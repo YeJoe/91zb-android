@@ -3,10 +3,12 @@ package com.jjlive.app
 import android.content.Context
 import android.content.Intent
 import android.os.Bundle
+import android.view.Gravity
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.view.View
 import android.widget.Button
+import android.widget.FrameLayout
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
@@ -158,7 +160,26 @@ class PlayerActivity : AppCompatActivity(), SurfaceHolder.Callback, FlvLivePlaye
     }
 
     override fun onVideoSize(w: Int, h: Int) {
-        runOnUiThread { findViewById<TextView>(R.id.resolution).text = "${w}x${h} · HEVC 硬解" }
+        runOnUiThread {
+            findViewById<TextView>(R.id.resolution).text = "${w}x${h} · HEVC 硬解"
+            fitVideo(w, h)
+        }
+    }
+
+    /** 按视频宽高比缩放 SurfaceView，居中留黑边，避免被拉伸变形。 */
+    private fun fitVideo(vw: Int, vh: Int) {
+        if (vw <= 0 || vh <= 0) return
+        val parent = surface.parent as? View ?: return
+        val cw = parent.width
+        val chh = parent.height
+        if (cw <= 0 || chh <= 0) return
+        val scale = minOf(cw.toFloat() / vw, chh.toFloat() / vh)
+        val lp = (surface.layoutParams as? FrameLayout.LayoutParams)
+            ?: FrameLayout.LayoutParams(surface.width, surface.height)
+        lp.width = (vw * scale).toInt()
+        lp.height = (vh * scale).toInt()
+        lp.gravity = Gravity.CENTER
+        surface.layoutParams = lp
     }
 
     override fun onStats(bytes: Long, seconds: Int, kbps: Int) {

@@ -5,6 +5,7 @@ import android.media.AudioFormat
 import android.media.AudioTrack
 import android.media.MediaCodec
 import android.media.MediaFormat
+import android.util.Log
 import android.view.Surface
 import java.io.BufferedInputStream
 import java.io.InputStream
@@ -48,6 +49,8 @@ class FlvLivePlayer(private val surface: Surface) {
     private var nalLenSize = 4
     private var audioConfigured = false
     private var videoConfigured = false
+    private var audioWarned = false
+    private var audioFrames = 0
 
     // 简单 A/V 同步：以音频时钟为主
     @Volatile private var audioClockUs = 0L
@@ -251,7 +254,14 @@ class FlvLivePlayer(private val surface: Surface) {
     private fun handleAudio(data: ByteArray, tsMs: Long) {
         if (data.size < 2) return
         val soundFormat = (data[0].toInt() shr 4) and 0x0F
-        if (soundFormat != 10) return      // 仅 AAC
+        if (soundFormat != 10) {          // 仅 AAC
+            if (!audioWarned) {
+                audioWarned = true
+                Log.w(TAG, "unsupported audio format=$soundFormat")
+                post("音频编码不支持（soundFormat=$soundFormat）")
+            }
+            return
+        }
         val packetType = data[1].toInt() and 0xFF
         val payload = data.copyOfRange(2, data.size)
         when (packetType) {
@@ -263,7 +273,18 @@ class FlvLivePlayer(private val surface: Surface) {
     private fun configureAudio(asc: ByteArray) {
         if (audioConfigured || asc.size < 2) return
         try {
-            val format = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, 0, 0)
+            // 先从 ASC 解出采样率与声道数，再建 MediaFormat。
+            // 用 0/0 建 format 会让硬解器报 "incorrect numChannels: 0" 后 configure 失败（表现为有画面没声音）。
+            val freqIdx = ((asc[0].toInt() and 0x07) shl 1) or ((asc[1].toInt() shr 7) and 0x01)
+            val chanCfg = (asc[1].toInt() shr 3) and 0x0F
+            val rate = SAMPLE_RATES.getOrElse(freqIdx) { 44100 }
+            val channels = when (chanCfg) {
+                7 -> 8
+                in 1..6 -> chanCfg
+                else -> 2
+            }
+
+            val format = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, rate, channels)
             format.setByteBuffer("csd-0", java.nio.ByteBuffer.wrap(asc))
             format.setInteger(MediaFormat.KEY_IS_ADTS, 0)
             audioCodec = MediaCodec.createDecoderByType(MediaFormat.MIMETYPE_AUDIO_AAC).apply {
@@ -272,14 +293,10 @@ class FlvLivePlayer(private val surface: Surface) {
                 start()
             }
 
-            // 从 ASC 解出采样率与声道数
-            val freqIdx = ((asc[0].toInt() and 0x07) shl 1) or ((asc[1].toInt() shr 7) and 0x01)
-            val chanCfg = (asc[1].toInt() shr 3) and 0x0F
-            val rate = SAMPLE_RATES.getOrElse(freqIdx) { 44100 }
-            val ch = if (chanCfg >= 2) 2 else 1
+            val outCh = if (channels == 1) 1 else 2
             val minBuf = AudioTrack.getMinBufferSize(
                 rate,
-                if (ch == 1) AudioFormat.CHANNEL_OUT_MONO else AudioFormat.CHANNEL_OUT_STEREO,
+                if (outCh == 1) AudioFormat.CHANNEL_OUT_MONO else AudioFormat.CHANNEL_OUT_STEREO,
                 AudioFormat.ENCODING_PCM_16BIT
             ).coerceAtLeast(8192)
 
@@ -295,7 +312,7 @@ class FlvLivePlayer(private val surface: Surface) {
                         .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
                         .setSampleRate(rate)
                         .setChannelMask(
-                            if (ch == 1) AudioFormat.CHANNEL_OUT_MONO
+                            if (outCh == 1) AudioFormat.CHANNEL_OUT_MONO
                             else AudioFormat.CHANNEL_OUT_STEREO
                         )
                         .build()
@@ -306,7 +323,9 @@ class FlvLivePlayer(private val surface: Surface) {
                 .also { it.play() }
 
             audioConfigured = true
+            Log.i(TAG, "audio ready: ${rate}Hz ${channels}ch")
         } catch (e: Exception) {
+            Log.w(TAG, "audio init failed", e)
             post("音频初始化失败：${e.message}（不影响画面）")
         }
     }
@@ -326,12 +345,20 @@ class FlvLivePlayer(private val surface: Surface) {
                 when {
                     out >= 0 -> {
                         val ob = codec.getOutputBuffer(out) ?: continue
-                        val chunk = ByteArray(bufInfo.size)
-                        ob.get(chunk)
-                        ob.clear()
-                        try {
-                            audioTrack?.write(chunk, 0, chunk.size)
-                        } catch (_: Exception) {}
+                        val size = bufInfo.size
+                        if (size > 0) {
+                            val chunk = ByteArray(size)
+                            ob.get(chunk)
+                            ob.clear()
+                            try {
+                                audioTrack?.write(chunk, 0, chunk.size)
+                                audioFrames++
+                                if (audioFrames == 1) Log.i(TAG, "first audio pcm: ${size}B")
+                                else if (audioFrames % 100 == 0) Log.i(TAG, "audio pcm frames=$audioFrames")
+                            } catch (e: Exception) {
+                                if (!audioWarned) { audioWarned = true; Log.w(TAG, "audio write failed", e) }
+                            }
+                        } else ob.clear()
                         if (audioStartUs < 0) audioStartUs = bufInfo.presentationTimeUs
                         audioClockUs = bufInfo.presentationTimeUs
                         codec.releaseOutputBuffer(out, false)
@@ -383,6 +410,8 @@ class FlvLivePlayer(private val surface: Surface) {
     private fun postFinished() { listener?.onFinished() }
 
     companion object {
+        private const val TAG = "FlvLivePlayer"
+
         /** AAC 采样频率索引表 */
         val SAMPLE_RATES = intArrayOf(
             96000, 88200, 64000, 48000, 44100, 32000, 24000,
