@@ -44,8 +44,9 @@
 
 ```
 .
-├── app/        Android 原生客户端（Kotlin，自研 FLV 解封装 + MediaCodec）
-├── web/        网页版客户端（Python 服务 + 前端页面）
-├── docs/       本文档目录
-└── tools/      辅助脚本
+├── android-app/                 Android 原生客户端（Kotlin，自研 FLV 解封装 + MediaCodec）
+├── web/                         网页版客户端（Python 服务 + 前端页面）
+├── docs/                        本文档目录
+├── tools/                       辅助脚本
+└── out_dir/                     原版逆向产物（blutter 反汇编，仅本地）
 ```
