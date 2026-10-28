@@ -34,6 +34,9 @@ class FlvLivePlayer(private val surface: Surface) {
         fun onStats(bytes: Long, seconds: Int, kbps: Int)
         fun onError(msg: String)
         fun onFinished()
+
+        /** 第一帧真正渲染上屏。用于判断"到底出没出画"。 */
+        fun onFirstFrame() {}
     }
 
     @Volatile
@@ -59,6 +62,7 @@ class FlvLivePlayer(private val surface: Surface) {
     private var codecFailed = false
     private var audioWarned = false
     private var audioFrames = 0
+    private var obfuscatedTags = 0
 
     // 简单 A/V 同步：以音频时钟为主
     @Volatile private var audioClockUs = 0L
@@ -155,10 +159,41 @@ class FlvLivePlayer(private val surface: Surface) {
         }
     }
 
+    // ─────────── CDN 载荷混淆还原 ───────────
+
+    /**
+     * 源站对**视频 NALU tag** 做了差分 XOR 混淆（音频 tag 和序列头不动）：
+     *
+     *  - 混淆后 tag 首字节 = 真实 codecId + 1，所以 H.264 的 0x17/0x27 变成 0x18/0x28，
+     *    H.265 的 0x1c/0x2c 变成 0x1d/0x2d。这四个值就是"本条需要解密"的标记。
+     *  - 载荷从第 3 个字节（下标 2）起是差分异或：密文[i] = 明文[i] ^ 明文[i-1]，
+     *    且固定有 明文[1] = 1（AVCPacketType = NALU），所以能从头顺推还原。
+     *  - 还原后首字节减 1 得到真实 codecId。
+     *
+     * 之前一直黑屏就是因为没还原：0x1d 被当成未知 codecId 跳过，
+     * 而 I 帧载荷本身是一堆 XOR 后的乱码，任何 NAL 解析都失败。
+     * 网页端 jessibuca 里对应的就是 `24/40/29/45` 那四个判断。
+     */
+    private fun deobfuscate(data: ByteArray) {
+        val b0 = data[0].toInt() and 0xFF
+        if (b0 != 0x18 && b0 != 0x28 && b0 != 0x1d && b0 != 0x2d) return
+        var prev = 1                      // 明文[1] 恒为 1
+        for (i in 2 until data.size) {
+            val plain = (data[i].toInt() and 0xFF) xor prev
+            data[i] = plain.toByte()
+            prev = plain
+        }
+        data[1] = 1
+        data[0] = (b0 - 1).toByte()
+        obfuscatedTags++
+    }
+
     // ─────────────────────── 视频：AVC / HEVC ───────────────────────
 
     private fun handleVideo(data: ByteArray, tsMs: Long) {
         if (data.size < 5) return
+        // 先还原 CDN 的载荷混淆，再按标准 FLV 解析。顺序不能反。
+        deobfuscate(data)
         val b0 = data[0].toInt() and 0xFF
         val frameType = (b0 shr 4) and 0x0F
         val codecId = b0 and 0x0F
@@ -537,7 +572,10 @@ class FlvLivePlayer(private val surface: Surface) {
                     if (!late) {
                         codec.releaseOutputBuffer(out, true)
                         renderedFrames++
-                        if (renderedFrames == 1 || renderedFrames % 120 == 0)
+                        if (renderedFrames == 1) {
+                            Log.i(TAG, "first frame rendered (obf tags=$obfuscatedTags)")
+                            postFirstFrame()
+                        } else if (renderedFrames % 120 == 0)
                             Log.i(TAG, "rendered frames=$renderedFrames")
                     } else {
                         codec.releaseOutputBuffer(out, false)
@@ -714,6 +752,7 @@ class FlvLivePlayer(private val surface: Surface) {
     }
 
     private fun post(m: String) { listener?.onStatus(m) }
+    private fun postFirstFrame() { listener?.onFirstFrame() }
     private fun postVideoSize(w: Int, h: Int) { listener?.onVideoSize(w, h) }
     private fun postStats(b: Long, s: Int, k: Int) { listener?.onStats(b, s, k) }
     private fun postFinished() { listener?.onFinished() }
