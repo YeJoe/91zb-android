@@ -492,12 +492,13 @@ class PlayerActivity : AppCompatActivity() {
         Log.i(TAG, "im << " + raw.replace("\n", " ").take(240))
         val msg = parseChat(raw) ?: return
         ui.post {
-            if (isFinishing) return@ui
-            chatItems.add(msg)
-            while (chatItems.size > 60) chatItems.removeAt(0)
-            chatAdapter.notifyDataSetChanged()
-            chat.scrollToPosition(chatItems.size - 1)
-            danmaku.submit(if (msg.system || msg.nick.isEmpty()) msg.body else "${msg.nick}: ${msg.body}")
+            if (!isFinishing) {
+                chatItems.add(msg)
+                while (chatItems.size > 60) chatItems.removeAt(0)
+                chatAdapter.notifyDataSetChanged()
+                chat.scrollToPosition(chatItems.size - 1)
+                danmaku.submit(if (msg.system || msg.nick.isEmpty()) msg.body else "${msg.nick}: ${msg.body}")
+            }
         }
     }
 
