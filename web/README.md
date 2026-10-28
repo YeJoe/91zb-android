@@ -1,11 +1,14 @@
-# 91zb-web — 91直播 房间列表网页版
+# 网页版客户端
 
-本地运行的直播间列表 + 播放器。目录已按用途分类，双击 `start.bat` 即可。
+本地运行的直播间列表 + 播放器，用于与 Android 版对照验证同一套接口与流处理逻辑。双击 `start.bat` 即可。
+
+> 仓库内**不包含** `data/token.txt`（接口令牌）与 `data/rooms_all.json`（房间缓存），
+> 首次运行会提示粘贴令牌并自动抓取数据。
 
 ## 目录结构
 
 ```
-91zb-web/
+web/
 ├─ web/                前端静态资源（由服务器直接托管）
 │  ├─ index.html       页面（内嵌房间数据与播放器逻辑）
 │  ├─ jessibuca.js     WASM 播放器内核
@@ -21,8 +24,8 @@
 │  ├─ jj_client.py     接口加密/签名客户端（jj_rooms 依赖）
 │  └─ setup_autostart.py  设置/取消开机自启
 ├─ data/
-│  ├─ rooms_all.json   房间数据（最新抓取结果）
-│  └─ token.txt        接口令牌（authorization）
+│  ├─ rooms_all.json   房间数据（自动生成，可安全删除）
+│  └─ token.txt        接口令牌（本地凭据，不入库）
 ├─ _imgcache/          封面图缓存（自动生成，可安全删除）
 ├─ _logs/              运行日志（自动生成，可安全删除）
 ├─ start.bat           双击启动
