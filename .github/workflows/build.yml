@@ -17,14 +17,18 @@ jobs:
           distribution: temurin
           java-version: '17'
 
+      # 只用来提供 cmdline-tools 并接受 licenses。
+      # 不要用它的 packages 输入：多行值会被当成单个包名传给 sdkmanager。
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
-        with:
-          packages: |
-            platforms;android-34
-            build-tools;34.0.0
 
-      # 仓库不提交二进制 gradle-wrapper.jar，这里装一个确定版本的 Gradle 再生成 wrapper
+      # 包名必须加引号（; 是 shell 命令分隔符），且每个包是独立参数
+      - name: Install SDK 34 packages
+        run: |
+          yes | sdkmanager --licenses > /dev/null 2>&1 || true
+          sdkmanager "platforms;android-34" "build-tools;34.0.0"
+
+      # 仓库不提交二进制 gradle-wrapper.jar，这里装确定版本的 Gradle 再生成 wrapper
       - name: Set up Gradle 8.7
         uses: gradle/actions/setup-gradle@v3
         with:
