@@ -49,6 +49,9 @@ class FlvLivePlayer(private val surface: Surface) {
     private var nalLenSize = 4
     private var audioConfigured = false
     private var videoConfigured = false
+    private var vidCodecId = 12
+    private var videoWarned = false
+    private var codecFailed = false
     private var audioWarned = false
     private var audioFrames = 0
 
@@ -83,6 +86,7 @@ class FlvLivePlayer(private val surface: Surface) {
         var lastBytes = 0L
 
         try {
+            Log.i(TAG, "open: $url")
             conn = (URL(url).openConnection() as HttpURLConnection).apply {
                 requestMethod = "GET"
                 connectTimeout = 15000
@@ -144,7 +148,7 @@ class FlvLivePlayer(private val surface: Surface) {
         }
     }
 
-    // ─────────────────────── 视频：HEVC ───────────────────────
+    // ─────────────────────── 视频：AVC / HEVC ───────────────────────
 
     private fun handleVideo(data: ByteArray, tsMs: Long) {
         if (data.size < 5) return
@@ -152,11 +156,18 @@ class FlvLivePlayer(private val surface: Surface) {
         val frameType = (b0 shr 4) and 0x0F
         val codecId = b0 and 0x0F
 
-        // FLV codecId: 7=AVC, 12=HEVC
-        if (codecId != 12) {
+        // FLV codecId: 7=AVC(H.264), 12=HEVC(H.265)
+        if (codecId != 7 && codecId != 12) {
             if (videoConfigured) return
-            post("不支持的视频编码 codecId=$codecId（本播放器仅支持 HEVC/H.265）")
+            post("不支持的视频编码 codecId=$codecId（仅支持 H.264 / H.265）")
             return
+        }
+        if (codecId != vidCodecId) {
+            vidCodecId = codecId
+            if (!videoWarned) {
+                videoWarned = true
+                Log.i(TAG, "video codecId=$codecId (${if (codecId == 7) "H.264" else "H.265"})")
+            }
         }
 
         val packetType = data[1].toInt() and 0xFF
@@ -171,21 +182,31 @@ class FlvLivePlayer(private val surface: Surface) {
         }
     }
 
-    private fun configureVideo(hvcC: ByteArray) {
-        if (videoConfigured || hvcC.size < 23) return
+    private fun configureVideo(cfg: ByteArray) {
+        if (videoConfigured || codecFailed || cfg.size < 7) return
+        val isAvc = vidCodecId == 7
         try {
-            // hvcC 第 21 字节：低 2 位是 lengthSizeMinusOne
-            nalLenSize = (hvcC[21].toInt() and 0x03) + 1
-            val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_HEVC, 0, 0)
-            format.setByteBuffer("csd-0", java.nio.ByteBuffer.wrap(hvcC))
-            videoCodec = MediaCodec.createDecoderByType(MediaFormat.MIMETYPE_VIDEO_HEVC).apply {
+            // avcC 第 4 字节 / hvcC 第 21 字节：低 2 位 = lengthSizeMinusOne
+            nalLenSize = if (isAvc) (cfg[4].toInt() and 0x03) + 1
+            else (if (cfg.size > 21) cfg[21].toInt() and 0x03 else 3) + 1
+
+            val mime = if (isAvc) MediaFormat.MIMETYPE_VIDEO_AVC else MediaFormat.MIMETYPE_VIDEO_HEVC
+            val format = MediaFormat.createVideoFormat(mime, 0, 0)
+            format.setByteBuffer("csd-0", java.nio.ByteBuffer.wrap(cfg))
+            videoCodec = MediaCodec.createDecoderByType(mime).apply {
                 configure(format, surface, null, 0)
                 start()
             }
             videoConfigured = true
-            post("HEVC 硬件解码已启动")
+            post(if (isAvc) "H.264 解码已启动" else "HEVC 硬件解码已启动")
         } catch (e: Exception) {
-            post("无法启动 HEVC 解码器：${e.javaClass.simpleName}（设备可能不支持 H.265 硬解）")
+            Log.w(TAG, "video configure failed (codecId=$vidCodecId)", e)
+            post("无法启动解码器：${e.javaClass.simpleName}（本机可能不支持该编码）")
+            // 让页面换下一个清晰度地址再试（只通知一次，避免反复重试）
+            if (!codecFailed) {
+                codecFailed = true
+                listener?.onError("CODEC_FAIL")
+            }
         }
     }
 

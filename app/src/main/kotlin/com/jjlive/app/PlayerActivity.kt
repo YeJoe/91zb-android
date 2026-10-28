@@ -52,6 +52,8 @@ class PlayerActivity : AppCompatActivity(), SurfaceHolder.Callback, FlvLivePlaye
     private var im: ImSocket? = null
     private var roomId = ""
     private var roomName = ""
+    private var urls: List<String> = emptyList()
+    private var urlIndex = 0
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -89,6 +91,8 @@ class PlayerActivity : AppCompatActivity(), SurfaceHolder.Callback, FlvLivePlaye
         if (store.token == null) { onStatus("未设置令牌"); return }
         overlay.visibility = View.VISIBLE
         onStatus("正在获取播放地址…")
+        urls = emptyList()
+        urlIndex = 0
 
         scope.launch {
             // 进房接口拿最新地址；失败则退回列表里带来的（此处重新请求列表）
@@ -96,9 +100,13 @@ class PlayerActivity : AppCompatActivity(), SurfaceHolder.Callback, FlvLivePlaye
                 runCatching { api.call("/app/live/joinRoom", mapOf("liveId" to roomId)) }.getOrNull()
             }
             val data = detail?.optJSONObject("data")
-            val url = data?.let { Parser.room(it).bestUrl() } ?: ""
+            val room = data?.let { Parser.room(it) }
 
-            if (url.isEmpty()) {
+            // 依次尝试：原画 → 720P → 360P，换个地址可能换一种编码（H.265/H.264）
+            urls = listOf(room?.url0, room?.url720, room?.url360)
+                .filterNotNull().filter { it.isNotBlank() }.distinct()
+
+            if (urls.isEmpty()) {
                 onStatus("该房间暂无可用播放地址（可能未开播）")
                 btnRetry.visibility = View.VISIBLE
                 return@launch
@@ -113,18 +121,25 @@ class PlayerActivity : AppCompatActivity(), SurfaceHolder.Callback, FlvLivePlaye
             }
 
             onStatus("连接中…")
-            startPlayer(url)
+            playNext()
         }
     }
 
-    private fun startPlayer(url: String) {
+    /** 播放候选地址里的下一个；解码器启动失败时会被调用。 */
+    private fun playNext() {
+        if (urlIndex >= urls.size) {
+            onStatus("所有清晰度都无法解码（设备不支持该视频编码）")
+            btnRetry.visibility = View.VISIBLE
+            return
+        }
+        val url = urls[urlIndex++]
         player?.stop()
         player = FlvLivePlayer(surface.holder.surface).also {
             it.listener = this
             it.start(url)
         }
         btnRetry.visibility = View.GONE
-        startDanmaku()
+        if (im == null) startDanmaku()
     }
 
     private fun startDanmaku() {
@@ -189,7 +204,14 @@ class PlayerActivity : AppCompatActivity(), SurfaceHolder.Callback, FlvLivePlaye
         }
     }
 
-    override fun onError(msg: String) { onStatus(msg) }
+    override fun onError(msg: String) {
+        if (msg == "CODEC_FAIL") {
+            // 解码器起不来，换下一个清晰度地址再试
+            runOnUiThread { playNext() }
+            return
+        }
+        onStatus(msg)
+    }
 
     override fun onFinished() {
         runOnUiThread {
