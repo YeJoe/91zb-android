@@ -43,7 +43,19 @@ jobs:
         run: gradle wrapper --gradle-version 8.7 --no-daemon
 
       - name: Build Debug APK
-        run: ./gradlew assembleDebug --no-daemon --stacktrace
+        run: |
+          set -o pipefail
+          ./gradlew assembleDebug --no-daemon --stacktrace 2>&1 | tee build.log
+
+      # 失败时把真正的 Gradle 报错写成注解，便于命令行 / API 读取
+      - name: Report Gradle errors
+        if: failure()
+        run: |
+          [ -f build.log ] || { echo "::error title=Gradle::build.log missing"; exit 0; }
+          grep -aE "^e: |^w: .*(error|warning)|What went wrong|^> Task .* FAILED|error:|Caused by:|A problem occurred|Execution failed" build.log | head -15 | while IFS= read -r line; do
+            echo "::error title=Gradle::${line//$'\r'/}"
+          done
+          exit 0
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
