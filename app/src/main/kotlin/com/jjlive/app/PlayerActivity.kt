@@ -1,44 +1,51 @@
 package com.jjlive.app
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.content.Intent
+import android.graphics.Color
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import android.view.View
+import android.webkit.JavascriptInterface
+import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
+import android.webkit.WebView
+import android.webkit.WebViewClient
 import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
-import com.tencent.rtmp.ITXLivePlayListener
-import com.tencent.rtmp.TXLiveBase
-import com.tencent.rtmp.TXLiveConstants
-import com.tencent.rtmp.TXLivePlayConfig
-import com.tencent.rtmp.TXLivePlayer
-import com.tencent.rtmp.ui.TXCloudVideoView
+import androidx.webkit.WebViewAssetLoader
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.json.JSONObject
 
 /**
  * 播放页。
  *
- * 解码链路与原版 App 一致：腾讯云 LiteAV / TXLivePlayer。
+ * 解码链路与原版网页端一致：jessibuca(WebAssembly) 软解 + canvas 渲染，跑在 WebView 里。
  *
- * 为什么不能自己解封装：这个 CDN 下发的是腾讯云私有扩展 FLV —— 序列头是
- * codecId=12(HEVC)，但关键帧 tag 统一标成 0x1d(codecId=13)，载荷不是标准
- * Annex-B NAL，ffmpeg / ExoPlayer 都直接报 "Video codec (d) is not implemented"。
- * 只有 LiteAV 内置的 txffmpeg 认这个封装，所以这里直接复用它的播放器。
+ * 为什么不用原生解码：这个 CDN 下发的是腾讯云私有扩展 FLV —— 序列头标 codecId=12(HEVC)，
+ * 但 I 帧 tag 标成 0x1d(frametype=1, codecId=13)，载荷既不是 4 字节长度前缀的 NAL 链，
+ * 也不是 Annex-B（整段找不到 00 00 01 起始码）。ffmpeg/ExoPlayer/手写解封装全都解不出来，
+ * 只有 jessibuca/txffmpeg 这类认私有封装的解封装器能吃。网页版已经用 jessibuca 验证过
+ * 能正常出画面，所以这里直接把同一套 wasm 播放器嵌进 WebView，链路完全一致。
  *
  * 流程：/app/live/joinRoom 拿最新地址（pullAddress*，兼容 pullStreamAddr*）
- * → TXLivePlayer.startPlay(url, PLAY_TYPE_LIVE_FLV)。
+ * → WebView 里 startStream(url) → 失败自动切下一档清晰度。
  */
-class PlayerActivity : AppCompatActivity(), ITXLivePlayListener {
+class PlayerActivity : AppCompatActivity() {
 
     companion object {
         private const val TAG = "PlayerActivity"
+        private const val PAGE_URL = "https://appassets.androidplatform.net/assets/web/player.html"
 
         fun start(ctx: Context, room: Room) {
             ctx.startActivity(
@@ -52,23 +59,27 @@ class PlayerActivity : AppCompatActivity(), ITXLivePlayListener {
     private lateinit var store: TokenStore
     private lateinit var api: Api
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
+    private val ui = Handler(Looper.getMainLooper())
 
     private lateinit var videoBox: FrameLayout
-    private lateinit var videoView: TXCloudVideoView
     private lateinit var danmaku: DanmakuView
     private lateinit var status: TextView
     private lateinit var stats: TextView
+    private lateinit var resolution: TextView
     private lateinit var overlay: View
     private lateinit var btnRetry: Button
 
-    private var player: TXLivePlayer? = null
+    private var web: WebView? = null
     private var im: ImSocket? = null
     private var roomId = ""
     private var roomName = ""
+
     private var urls: List<String> = emptyList()
     private var urlIndex = 0
-    private var videoW = 0
-    private var videoH = 0
+    private var pageReady = false
+    private var playing = false
+    private var playedSeconds = 0
+    private var playStartAt = 0L
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -83,6 +94,7 @@ class PlayerActivity : AppCompatActivity(), ITXLivePlayListener {
         danmaku = findViewById(R.id.danmaku)
         status = findViewById(R.id.status)
         stats = findViewById(R.id.stats)
+        resolution = findViewById(R.id.resolution)
         overlay = findViewById(R.id.overlay)
         btnRetry = findViewById(R.id.btnRetry)
 
@@ -91,50 +103,162 @@ class PlayerActivity : AppCompatActivity(), ITXLivePlayListener {
         btnRetry.setOnClickListener { fetchAndPlay() }
         findViewById<View>(R.id.btnClose).setOnClickListener { finish() }
 
-        // 调试期打开 SDK 控制台日志，便于在 logcat 里看解封装/解码细节
-        runCatching { TXLiveBase.setConsoleEnabled(true) }
-
-        setupPlayer()
+        setupWebView()
         fetchAndPlay()
     }
 
-    private fun setupPlayer() {
+    // ─────────── WebView + jessibuca ───────────
+
+    @SuppressLint("SetJavaScriptEnabled")
+    private fun setupWebView() {
         try {
-            videoView = TXCloudVideoView(this).apply {
+            // 自己指定 MIME：decoder.wasm 必须是 application/wasm，
+            // 否则 instantiateStreaming 失败（虽然 emscripten 有兜底，但能省一次往返）
+            val loader = WebViewAssetLoader.Builder()
+                .addPathHandler("/assets/", object : WebViewAssetLoader.PathHandler {
+                    override fun handle(path: String): WebResourceResponse? {
+                        val mime = when {
+                            path.endsWith(".wasm") -> "application/wasm"
+                            path.endsWith(".js") -> "application/javascript"
+                            path.endsWith(".html") -> "text/html"
+                            path.endsWith(".json") -> "application/json"
+                            else -> "application/octet-stream"
+                        }
+                        val text = mime.startsWith("text/") || mime.contains("javascript") || mime.contains("json")
+                        return try {
+                            WebResourceResponse(mime, if (text) "utf-8" else null, assets.open(path)).apply {
+                                setResponseHeaders(
+                                    mapOf(
+                                        "Access-Control-Allow-Origin" to "*",
+                                        "Cache-Control" to "no-cache"
+                                    )
+                                )
+                            }
+                        } catch (e: Exception) {
+                            Log.w(TAG, "asset miss: $path", e)
+                            null
+                        }
+                    }
+                })
+                .build()
+
+            val w = WebView(this).apply {
                 layoutParams = FrameLayout.LayoutParams(
                     FrameLayout.LayoutParams.MATCH_PARENT,
                     FrameLayout.LayoutParams.MATCH_PARENT
                 )
-            }
-            videoBox.addView(videoView)
+                setBackgroundColor(Color.BLACK)
+                settings.apply {
+                    javaScriptEnabled = true
+                    domStorageEnabled = true
+                    // wasm 软解要内存，也给解码线程留出空间
+                    mediaPlaybackRequiresUserGesture = false
+                    allowFileAccess = false
+                    allowContentAccess = false
+                    cacheMode = android.webkit.WebSettings.LOAD_NO_CACHE
+                }
+                webViewClient = object : WebViewClient() {
+                    override fun shouldInterceptRequest(
+                        view: WebView,
+                        request: WebResourceRequest
+                    ): WebResourceResponse? = loader.shouldInterceptRequest(request.url)
 
-            player = TXLivePlayer(this).apply {
-                setPlayerView(videoView)
-                // 竖屏 1080x1920 的流放到横屏页面上：保持比例、居中留黑边，不拉伸
-                setRenderMode(TXLiveConstants.RENDER_MODE_ADJUST_RESOLUTION)
-                setRenderRotation(TXLiveConstants.RENDER_ROTATION_0)
-                setConfig(
-                    TXLivePlayConfig().apply {
-                        setAutoAdjustCacheTime(true)
-                        setMaxAutoAdjustCacheTime(3f)
-                        setMinAutoAdjustCacheTime(1f)
+                    override fun onPageFinished(view: WebView?, url: String?) {
+                        super.onPageFinished(view, url)
+                        pageReady = true
+                        Log.i(TAG, "page finished: $url")
+                        pendingUrl?.let { u ->
+                            pendingUrl = null
+                            eval("startStream(${JSONObject.quote(u)})")
+                        }
                     }
-                )
-                setPlayListener(this@PlayerActivity)
-                enableHardwareDecode(true)
+                }
+                addJavascriptInterface(Bridge(), "Native")
             }
+            web = w
+            videoBox.addView(w)
+            w.loadUrl(PAGE_URL)
         } catch (e: Throwable) {
-            // 模拟器（x86 转译）或裁剪过的 ROM 上，LiteAV 的 .so 可能加载失败
-            Log.e(TAG, "LiteAV init failed", e)
-            player = null
-            onStatus("播放组件初始化失败：${e.javaClass.simpleName}（该设备可能不支持）")
+            Log.e(TAG, "WebView init failed", e)
+            web = null
+            onStatus("播放组件初始化失败：${e.javaClass.simpleName}")
             btnRetry.visibility = View.VISIBLE
         }
     }
 
+    private var pendingUrl: String? = null
+
+    private fun eval(js: String) {
+        runOnUiThread { runCatching { web?.evaluateJavascript(js, null) } }
+    }
+
+    /** 安全地调用页面里的 startStream(url) */
+    private fun playInPage(url: String) {
+        if (!pageReady) {
+            pendingUrl = url
+            return
+        }
+        eval("startStream(${JSONObject.quote(url)})")
+    }
+
+    /** JS 回调统一入口（注意：在 WebView 的 JS 线程） */
+    private inner class Bridge {
+        @JavascriptInterface
+        fun onEvent(type: String, msg: String) {
+            Log.i(TAG, "js $type $msg")
+            ui.post { handleEvent(type, msg) }
+        }
+    }
+
+    private fun handleEvent(type: String, msg: String) {
+        when (type) {
+            "ready" -> Log.i(TAG, "jessibuca ready")
+
+            "playing" -> {
+                playing = true
+                playStartAt = System.currentTimeMillis()
+                playedSeconds = 0
+                overlay.visibility = View.GONE
+                btnRetry.visibility = View.GONE
+                status.text = "播放中"
+            }
+
+            "info" -> {
+                if (msg.isNotBlank() && msg != "0x0") resolution.text = "$msg · WASM 软解"
+            }
+
+            "stats" -> {
+                if (playing) {
+                    playedSeconds = ((System.currentTimeMillis() - playStartAt) / 1000).toInt()
+                }
+                val t = runCatching { JSONObject(msg) }.getOrNull()
+                if (t != null) {
+                    val fps = t.optInt("fps", 0)
+                    val speed = t.optInt("speed", 0)
+                    stats.text = "已播 ${playedSeconds}s · ${speed} KB/s · fps=$fps"
+                } else {
+                    stats.text = "已播 ${playedSeconds}s"
+                }
+            }
+
+            "error", "timeout" -> {
+                if (playing) {
+                    // 已经在放、偶发错误就让它自己重连，不急着换地址
+                    Log.w(TAG, "transient $type: $msg")
+                    return
+                }
+                onStatus(if (type == "timeout") "拉流超时，尝试下一档清晰度…" else "播放出错：$msg")
+                playNext()
+            }
+        }
+    }
+
+    // ─────────── 取流地址 ───────────
+
     private fun fetchAndPlay() {
         if (store.token == null) { onStatus("未设置令牌"); return }
-        if (player == null) return
+        if (web == null) return
+        playing = false
         overlay.visibility = View.VISIBLE
         onStatus("正在获取播放地址…")
         urls = emptyList()
@@ -157,7 +281,6 @@ class PlayerActivity : AppCompatActivity(), ITXLivePlayListener {
                 return@launch
             }
 
-            // 1V1 表演中：服务端不下发媒体，提前提示，不必白等
             val state = data?.optInt("oneToOneState", 1) ?: 1
             if (state == 2) {
                 onStatus("主播正在 1V1 表演中，需先购买表演项目才能观看")
@@ -170,26 +293,19 @@ class PlayerActivity : AppCompatActivity(), ITXLivePlayListener {
         }
     }
 
-    /** 依次尝试候选清晰度；播放失败会被切到下一个。 */
     private fun playNext() {
-        val p = player ?: return
+        if (web == null) return
         if (urlIndex >= urls.size) {
+            playing = false
             onStatus("播放失败：所有清晰度都无法播放")
+            overlay.visibility = View.VISIBLE
             btnRetry.visibility = View.VISIBLE
             return
         }
         val url = urls[urlIndex++]
-        runCatching { p.stopPlay(true) }
-        videoW = 0
-        videoH = 0
-        val ret = p.startPlay(url, TXLivePlayer.PLAY_TYPE_LIVE_FLV)
-        Log.i(TAG, "startPlay[$urlIndex/${urls.size}] ret=$ret url=${url.substringBefore('?')}")
-        if (ret != 0) {
-            // 常见：-5 需要 License、-1 地址非法、-2 无效地址
-            onStatus("startPlay 失败 ret=$ret")
-            playNext()
-            return
-        }
+        Log.i(TAG, "play[$urlIndex/${urls.size}] ${url.substringBefore('?')}")
+        onStatus("连接中…（第 $urlIndex/${urls.size} 档）")
+        playInPage(url)
         btnRetry.visibility = View.GONE
         if (im == null) startDanmaku()
     }
@@ -217,125 +333,22 @@ class PlayerActivity : AppCompatActivity(), ITXLivePlayListener {
         }
     }
 
-    // ─────────── ITXLivePlayListener ───────────
-
-    override fun onPlayEvent(event: Int, param: Bundle?) {
-        Log.i(TAG, "event ${evName(event)} ($event) ${dumpBundle(param)}")
-        when (event) {
-            TXLiveConstants.PLAY_EVT_PLAY_BEGIN -> {
-                runOnUiThread {
-                    overlay.visibility = View.GONE
-                    status.text = "播放中"
-                }
-            }
-
-            TXLiveConstants.PLAY_EVT_CHANGE_RESOLUTION -> {
-                val w = param?.getInt(TXLiveConstants.EVT_PARAM1) ?: 0
-                val h = param?.getInt(TXLiveConstants.EVT_PARAM2) ?: 0
-                if (w > 0 && h > 0) {
-                    videoW = w
-                    videoH = h
-                    runOnUiThread { findViewById<TextView>(R.id.resolution).text = "${w}x$h · LiteAV" }
-                }
-            }
-
-            TXLiveConstants.PLAY_EVT_PLAY_PROGRESS -> {
-                val pos = (param?.getInt(TXLiveConstants.EVT_PLAY_PROGRESS) ?: 0) / 1000
-                playSeconds = pos
-                runOnUiThread { stats.text = "已播 ${pos}s · ${netKbps} KB/s" }
-            }
-
-            TXLiveConstants.PLAY_EVT_PLAY_LOADING -> {
-                runOnUiThread { status.text = "缓冲中…" }
-            }
-
-            TXLiveConstants.PLAY_EVT_PLAY_END -> {
-                runOnUiThread {
-                    status.text = "直播已结束"
-                    overlay.visibility = View.VISIBLE
-                    btnRetry.visibility = View.VISIBLE
-                }
-            }
-        }
-
-        if (event < 0) {
-            val desc = param?.getString(TXLiveConstants.EVT_DESCRIPTION).orEmpty()
-            Log.w(TAG, "play error event=$event desc=$desc")
-            runOnUiThread { status.text = "播放错误($event) $desc" }
-            // 拉流失败就换下一档清晰度，全部失败再提示
-            if (urlIndex < urls.size) runOnUiThread { playNext() } else runOnUiThread {
-                overlay.visibility = View.VISIBLE
-                btnRetry.visibility = View.VISIBLE
-            }
-        }
-    }
-
-    @Volatile
-    private var netKbps = 0
-    @Volatile
-    private var lastNetLog = 0L
-
-    override fun onNetStatus(bundle: Bundle?) {
-        bundle ?: return
-        val speed = bundle.getInt(TXLiveConstants.NET_STATUS_NET_SPEED)        // KB/s
-        val vBit = bundle.getInt(TXLiveConstants.NET_STATUS_VIDEO_BITRATE)     // kbps
-        val aBit = bundle.getInt(TXLiveConstants.NET_STATUS_AUDIO_BITRATE)
-        val fps = bundle.getInt(TXLiveConstants.NET_STATUS_VIDEO_FPS)
-        val vw = bundle.getInt(TXLiveConstants.NET_STATUS_VIDEO_WIDTH)
-        val vh = bundle.getInt(TXLiveConstants.NET_STATUS_VIDEO_HEIGHT)
-        netKbps = speed
-        if (vw > 0 && vh > 0) { videoW = vw; videoH = vh }
-
-        // 每 2 秒打一次，用来判断「有没有收到码流 / 有没有出帧」
-        val now = System.currentTimeMillis()
-        if (now - lastNetLog > 2000) {
-            lastNetLog = now
-            Log.i(
-                TAG,
-                "net speed=${speed}KB/s vBit=${vBit}kbps aBit=${aBit}kbps fps=$fps " +
-                    "size=${vw}x$vh cache=${bundle.getInt(TXLiveConstants.NET_STATUS_VIDEO_CACHE)}"
-            )
-        }
-
-        runOnUiThread {
-            findViewById<TextView>(R.id.resolution).text =
-                "${vw}x$vh · vBit=${vBit}k aBit=${aBit} fps=$fps"
-            stats.text = "${speed} KB/s · 已播 ${playSeconds}s"
-        }
-    }
-
-    @Volatile
-    private var playSeconds = 0
-
-    private fun evName(e: Int): String = when (e) {
-        TXLiveConstants.PLAY_EVT_PLAY_BEGIN -> "PLAY_BEGIN"
-        TXLiveConstants.PLAY_EVT_PLAY_PROGRESS -> "PROGRESS"
-        TXLiveConstants.PLAY_EVT_PLAY_END -> "PLAY_END"
-        TXLiveConstants.PLAY_EVT_PLAY_LOADING -> "LOADING"
-        TXLiveConstants.PLAY_EVT_CHANGE_RESOLUTION -> "CHANGE_RESOLUTION"
-        TXLiveConstants.PLAY_EVT_RCV_FIRST_I_FRAME -> "RCV_FIRST_I_FRAME"
-        TXLiveConstants.PLAY_ERR_NET_DISCONNECT -> "ERR_NET_DISCONNECT"
-        else -> "EVT"
-    }
-
-    private fun dumpBundle(b: Bundle?): String {
-        if (b == null) return "{}"
-        val sb = StringBuilder("{")
-        for (k in b.keySet()) {
-            val v = runCatching { b.get(k) }.getOrNull()
-            sb.append(k).append('=').append(v).append(' ')
-        }
-        return sb.append('}').toString()
-    }
-
     private fun onStatus(msg: String) {
         runOnUiThread { status.text = msg }
     }
 
     override fun onDestroy() {
-        runCatching { player?.stopPlay(true) }
-        runCatching { player?.setPlayerView(null) }
-        player = null
+        playStartAt = 0
+        runCatching { web?.evaluateJavascript("stopStream()", null) }
+        runCatching {
+            web?.let {
+                videoBox.removeView(it)
+                it.removeJavascriptInterface("Native")
+                it.loadUrl("about:blank")
+                it.destroy()
+            }
+        }
+        web = null
         im?.close()
         scope.cancel()
         super.onDestroy()

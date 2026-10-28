@@ -11,8 +11,8 @@ android {
         applicationId = "com.jjlive.app"
         minSdk = 23
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 3
+        versionName = "1.3-wasm"
     }
 
     buildTypes {
@@ -52,7 +52,7 @@ dependencies {
     implementation("androidx.coordinatorlayout:coordinatorlayout:1.2.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
-    // 腾讯云播放器 SDK（8.x 免 License）。原版 App 用的就是这套解码链路：
-    // txffmpeg 自带私有 FLV 解封装，能解 HEVC 私有扩展流；MediaCodec 手写解封装解不了。
-    implementation("com.tencent.liteav:LiteAVSDK_Player:8.9.10355")
+    // WebView 资源加载器：把 assets/web 下的 wasm 播放器以 https 源托管，
+    // 这样 jessibuca 的 Worker / fetch(decoder.wasm) 才能正常同源加载
+    implementation("androidx.webkit:webkit:1.11.0")
 }
