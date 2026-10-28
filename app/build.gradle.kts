@@ -11,12 +11,24 @@ android {
         applicationId = "com.jjlive.app"
         minSdk = 23
         targetSdk = 34
-        versionCode = 5
-        versionName = "1.5-native"
+        versionCode = 6
+        versionName = "1.6-native"
+    }
+
+    // 固定签名：CI 每次重新生成 debug keystore 会导致签名变化，
+    // 装新包必须先卸载（丢令牌）。改用仓库内固定 keystore，后续可以直接覆盖安装。
+    signingConfigs {
+        create("stable") {
+            storeFile = file("jjlive.jks")
+            storePassword = "jjlive123"
+            keyAlias = "jjlive"
+            keyPassword = "jjlive123"
+        }
     }
 
     buildTypes {
         release {
+            signingConfig = signingConfigs.getByName("stable")
             isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
@@ -25,6 +37,7 @@ android {
         }
         debug {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("stable")
         }
     }
 

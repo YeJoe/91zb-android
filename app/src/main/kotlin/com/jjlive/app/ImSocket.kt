@@ -58,6 +58,9 @@ class ImSocket(
 
     private val keyBytes = "t4@*77~i&4j#~#c~".toByteArray(Charsets.UTF_8)
 
+    /** 原版写死的 IV（16 字节），见 _decodeMessage。 */
+    private val ivBytes = "16-Bytes--String".toByteArray(Charsets.UTF_8)
+
     fun connect(roomId: String) {
         liveId = roomId
         running = true
@@ -119,33 +122,47 @@ class ImSocket(
     // ─────────────────────── 解密 ───────────────────────
 
     /**
-     * Base64 → AES-128-CBC 解密。
+     * Base64 → AES 解密。
      *
-     * IV 尚未最终确定，而 CBC 模式下 IV 只影响第 1 个 16 字节块。
-     * 业务字段（evt/uid/cn/lv/…）都在后续块，因此先用 key 当 IV 解一次，
-     * 取第 2 块起的可读部分。
+     * key / iv 都是从原版 Dart 里挖出来的常量（socket_im_manager.dart::_decodeMessage）：
+     *   Encrypted.fromUtf8("t4@*77~i&4j#~#c~")  → Key
+     *   IV.fromUtf8("16-Bytes--String")        → IV
+     * 之前用 key 当 IV，只有首个 16 字节块错，所以只能读到 JSON 的尾巴（"ls":1,"us":1}），
+     * 昵称和正文全在前半段，导致聊天区只能显示「xx 进入直播间」。
+     *
+     * 模式先按 CTR 试（encrypt 包 AES 默认 sic/CTR），再退 CBC/PKCS7。
      */
     private fun decodeFrame(text: String): String {
+        val b64 = text.trim().trim('"').replace("\"", "")
         val raw = try {
-            Base64.decode(text.trim().trim('"'), Base64.DEFAULT)
+            Base64.decode(b64, Base64.DEFAULT)
         } catch (_: Exception) {
             return text
         }
-        if (raw.isEmpty() || raw.size % 16 != 0) return text
+        if (raw.isEmpty()) return text
 
-        return try {
-            val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
-            cipher.init(
-                Cipher.DECRYPT_MODE,
-                SecretKeySpec(keyBytes, "AES"),
-                IvParameterSpec(keyBytes)
-            )
-            val pt = cipher.doFinal(raw)
-            // IV 未定只影响首个 16 字节块，业务字段都在后续块
-            if (pt.size <= 16) return text
-            String(pt, 16, pt.size - 16, Charsets.UTF_8)
-        } catch (_: Exception) {
-            text
-        }
+        val candidates = listOf("AES/CTR/NoPadding", "AES/CBC/PKCS5Padding")
+            .mapNotNull { mode -> runCatching { aes(mode, raw) }.getOrNull() }
+        for (c in candidates) if (isJson(c)) return c
+        return candidates.firstOrNull() ?: text
+    }
+
+    private fun aes(mode: String, raw: ByteArray): String {
+        val cipher = Cipher.getInstance(mode)
+        cipher.init(
+            Cipher.DECRYPT_MODE,
+            SecretKeySpec(keyBytes, "AES"),
+            IvParameterSpec(ivBytes)
+        )
+        val pt = cipher.doFinal(raw)
+        return String(pt, Charsets.UTF_8)
+    }
+
+    private fun isJson(s: String): Boolean {
+        val i = s.indexOf('{')
+        if (i < 0) return false
+        val tail = s.lastIndexOf('}')
+        if (tail <= i) return false
+        return runCatching { org.json.JSONObject(s.substring(i, tail + 1)) }.isSuccess
     }
 }
