@@ -1,0 +1,828 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>直播间列表 · 91直播</title>
+<style>
+  :root{
+    --bg:#0e1117; --card:#161b24; --card2:#1d2430; --line:#252c3a;
+    --fg:#e6e9ef; --dim:#8b95a7; --accent:#ff5c8a; --ok:#3ddc97; --warn:#ffb454;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);
+       font:14px/1.5 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif}
+
+  header{position:sticky;top:0;z-index:20;background:rgba(14,17,23,.94);
+         backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+  .bar{padding:13px 20px;display:flex;gap:14px;align-items:center;flex-wrap:wrap}
+  h1{font-size:16px;margin:0;font-weight:600;letter-spacing:.3px}
+  h1 span{color:var(--accent)}
+  .meta{color:var(--dim);font-size:12px}
+  .tools{margin-left:auto;display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+  input[type=search]{background:var(--card);border:1px solid var(--line);color:var(--fg);
+        border-radius:8px;padding:7px 12px;width:210px;outline:none;font-family:inherit}
+  input[type=search]:focus{border-color:var(--accent)}
+  select{background:var(--card);border:1px solid var(--line);color:var(--fg);
+        border-radius:8px;padding:7px 10px;outline:none;font-family:inherit}
+
+  nav{display:flex;gap:7px;padding:0 20px 11px;overflow-x:auto;scrollbar-width:thin}
+  nav::-webkit-scrollbar{height:5px}
+  nav::-webkit-scrollbar-thumb{background:#2e3644;border-radius:3px}
+  nav button{white-space:nowrap;background:var(--card);border:1px solid var(--line);
+      color:var(--dim);border-radius:999px;padding:6px 15px;font-size:13px;
+      cursor:pointer;transition:.15s;font-family:inherit}
+  nav button:hover{color:var(--fg);border-color:#3a4457}
+  nav button.on{background:linear-gradient(135deg,#ff5c8a,#ff8a5c);color:#fff;
+      border-color:transparent;font-weight:600}
+  nav button .n{opacity:.65;font-size:11px;margin-left:5px}
+
+  .grid{display:grid;gap:14px;padding:18px 20px 34px;
+        grid-template-columns:repeat(auto-fill,minmax(300px,1fr))}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;
+        overflow:hidden;display:flex;flex-direction:column;transition:.18s}
+  .card:hover{border-color:#3a4457;transform:translateY(-2px)}
+  .cover{position:relative;aspect-ratio:16/10;background:var(--card2);overflow:hidden;cursor:pointer}
+  /* 封面图：绝对定位 + z-index 1 压在占位字母(.ph)之上；未加载完时自身透明，
+     占位字母自然透出来，加载完成后覆盖占位，无需 JS 切换，也没有动画竞态 */
+  .cover img{position:absolute;inset:0;z-index:1;width:100%;height:100%;object-fit:cover;
+        display:block}
+  .cover .ph{position:absolute;inset:0;z-index:0;display:flex;align-items:center;justify-content:center;
+       font-size:40px;font-weight:700;color:#5b6376;
+       background:radial-gradient(circle at 30% 25%,#2a3242,#151a23)}
+  /* 顶部/底部压暗，保证角标与文字可读（不拦截点击） */
+  .cover::after{content:'';position:absolute;inset:0;z-index:2;pointer-events:none;
+       background:linear-gradient(180deg,rgba(6,8,12,.42) 0%,rgba(6,8,12,0) 34%,
+                  rgba(6,8,12,0) 66%,rgba(6,8,12,.52) 100%)}
+  .cover .playmask{position:absolute;inset:0;z-index:3;display:flex;align-items:center;justify-content:center;
+       background:rgba(0,0,0,0);transition:.18s;font-size:34px;color:#fff;opacity:0}
+  .cover:hover .playmask{background:rgba(0,0,0,.38);opacity:1}
+  .badge{position:absolute;z-index:4;top:8px;left:8px;background:rgba(0,0,0,.62);
+         border-radius:6px;padding:2px 8px;font-size:11px;color:#ffb3c7}
+  .badge.pay{color:#ffd28a;background:rgba(120,70,0,.72)}
+  .hot{position:absolute;z-index:4;top:8px;right:8px;background:rgba(0,0,0,.62);
+       border-radius:6px;padding:2px 8px;font-size:11px;color:var(--ok)}
+  .body{padding:11px 13px 13px;display:flex;flex-direction:column;gap:7px;flex:1}
+  .name{font-weight:600;font-size:14px}
+  .title{color:var(--dim);font-size:12.5px;min-height:19px;
+         overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .row{display:flex;gap:6px;align-items:center;font-size:11.5px;color:var(--dim);flex-wrap:wrap}
+  .row code{background:#0b0e14;border:1px solid var(--line);border-radius:5px;
+            padding:1px 5px;font-size:11px;color:#9aa6ba}
+  .cats{display:flex;gap:4px;flex-wrap:wrap}
+  .cats i{font-style:normal;font-size:10.5px;background:#222b39;color:#9fb0c9;
+          border-radius:4px;padding:1px 6px}
+  .acts{display:flex;gap:7px;margin-top:auto;padding-top:6px}
+  button.play,button.cp{flex:1;text-align:center;text-decoration:none;cursor:pointer;
+     border-radius:9px;padding:8px 6px;font-size:12.5px;font-weight:600;
+     border:1px solid transparent;transition:.15s;font-family:inherit}
+  button.play{background:linear-gradient(135deg,#ff5c8a,#ff8a5c);color:#fff}
+  button.play:hover{filter:brightness(1.12)}
+  button.cp{background:var(--card2);color:var(--fg);border-color:var(--line);flex:0 0 70px}
+  button.cp:hover{border-color:var(--accent);color:var(--accent)}
+  .q{display:flex;gap:5px}
+  .q button{flex:1;background:var(--card2);border:1px solid var(--line);color:var(--dim);
+      border-radius:7px;padding:4px 0;font-size:11px;cursor:pointer;font-family:inherit}
+  .q button.on{background:#2b3446;color:#fff;border-color:#48546b}
+
+  .pager{display:flex;gap:6px;align-items:center;justify-content:center;
+         padding:6px 20px 26px;flex-wrap:wrap}
+  .pager button{background:var(--card);border:1px solid var(--line);color:var(--fg);
+      border-radius:8px;min-width:36px;padding:7px 11px;font-size:13px;
+      cursor:pointer;font-family:inherit;transition:.15s}
+  .pager button:hover:not(:disabled){border-color:var(--accent);color:var(--accent)}
+  .pager button.on{background:linear-gradient(135deg,#ff5c8a,#ff8a5c);color:#fff;
+      border-color:transparent;font-weight:600}
+  .pager button:disabled{opacity:.32;cursor:default}
+  .pager .info{color:var(--dim);font-size:12.5px;margin:0 8px}
+  .pager .gap{color:var(--dim);padding:0 2px}
+
+  .empty{color:var(--dim);padding:60px 20px;text-align:center}
+  .tip{color:var(--dim);font-size:11.5px;padding:0 20px 30px;line-height:1.7}
+  .tip b{color:#c9d2e0}
+
+  /* ---------- 播放器 ---------- */
+  #modal{position:fixed;inset:0;z-index:100;display:none;
+         background:rgba(6,8,12,.88);backdrop-filter:blur(6px);
+         align-items:center;justify-content:center;padding:18px}
+  #modal.on{display:flex}
+  .player{background:#0b0e14;border:1px solid #2a3242;border-radius:16px;
+          width:min(1180px,96vw);max-height:94vh;display:flex;flex-direction:column;overflow:hidden}
+  .phead{display:flex;align-items:center;gap:12px;padding:11px 15px;border-bottom:1px solid var(--line)}
+  .phead .t{font-weight:600;font-size:14px}
+  .phead .sub{color:var(--dim);font-size:11.5px}
+  .phead .close{margin-left:auto;background:var(--card2);border:1px solid var(--line);
+       color:var(--fg);border-radius:8px;padding:6px 13px;cursor:pointer;font-family:inherit}
+  .phead .close:hover{border-color:var(--accent);color:var(--accent)}
+  .stage{background:#000;position:relative;aspect-ratio:16/9;width:100%;overflow:hidden}
+  .stage .poster{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;
+        filter:blur(18px) brightness(.45) saturate(1.1);opacity:0;transition:opacity .45s;
+        transform:scale(1.06);pointer-events:none}
+  .stage .poster.on{opacity:1}
+  .stage #appPlayer,.stage video{position:absolute;inset:0;width:100%;height:100%;display:block}
+  .stage video{background:#000}
+  .stage .overlay{position:absolute;inset:0;display:flex;flex-direction:column;
+       align-items:center;justify-content:center;gap:10px;color:#cfd7e6;font-size:13px;
+       background:rgba(0,0,0,.55);text-align:center;padding:20px;z-index:5;white-space:pre-wrap}
+  .stage .overlay.hide{display:none}
+  .spin{width:26px;height:26px;border:3px solid #2c3648;border-top-color:var(--accent);
+        border-radius:50%;animation:sp .8s linear infinite}
+  @keyframes sp{to{transform:rotate(360deg)}}
+  .pfoot{padding:10px 15px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;
+         border-top:1px solid var(--line);font-size:12px;color:var(--dim)}
+  .pfoot .stat{font-variant-numeric:tabular-nums}
+  .pfoot .stat b{color:var(--ok);font-weight:600}
+  .pfoot .stat i{color:var(--warn);font-style:normal}
+  .pfoot .sp{flex:1}
+  .pfoot button,.pfoot a{background:var(--card2);border:1px solid var(--line);color:var(--fg);
+       border-radius:8px;padding:6px 12px;cursor:pointer;text-decoration:none;
+       font-family:inherit;font-size:12px}
+  .pfoot button:hover,.pfoot a:hover{border-color:var(--accent);color:var(--accent)}
+  .pfoot .q button.on{background:#2b3446;color:#fff;border-color:#48546b}
+  .pfoot .m{display:flex;gap:4px}
+  .pfoot .m button{font-size:11.5px;padding:5px 10px}
+  .pfoot .m button.on{background:linear-gradient(135deg,#ff5c8a,#ff8a5c);color:#fff;
+       border-color:transparent;font-weight:600}
+  .pfoot .m button.bad{opacity:.4;cursor:not-allowed}
+
+  @media (max-width: 760px){
+    .bar{padding:10px 12px;gap:8px}
+    input[type=search]{width:100%}
+    .tools{width:100%}
+    .grid{grid-template-columns:repeat(auto-fill,minmax(160px,1fr));
+          gap:10px;padding:12px 12px 26px}
+    .body{padding:9px 10px 10px;gap:6px}
+    .name{font-size:13px}
+    .title{font-size:11.5px}
+    nav{padding:0 12px 9px}
+    #modal{padding:0}
+    .player{width:100vw;max-height:100vh;border-radius:0;border:none}
+    .phead{padding:10px 12px}
+    .stage{aspect-ratio:9/16;max-height:68vh}
+    .pfoot{padding:9px 12px;gap:7px;font-size:11.5px}
+    .pfoot .q button,.pfoot .m button{padding:7px 10px;font-size:11.5px}
+    .pfoot button,.pfoot a{padding:8px 12px}
+    .tip{font-size:11px;padding:0 12px 24px}
+    .pager{padding:6px 12px 20px}
+  }
+  @media (hover:none){
+    .cover .playmask{opacity:1;background:rgba(0,0,0,.28)}
+  }
+
+  /* ---------- 令牌对话框 ---------- */
+  .tk-btn{background:var(--card2);border:1px solid var(--line);color:var(--fg);
+      border-radius:8px;padding:7px 12px;cursor:pointer;font-family:inherit;font-size:12.5px}
+  .tk-btn:hover{border-color:var(--accent);color:var(--accent)}
+  .tk-btn.warn{border-color:#7a5a1e;color:#ffc76a}
+  #tkDlg{position:fixed;inset:0;z-index:120;display:none;align-items:center;justify-content:center;
+        background:rgba(6,8,12,.86);backdrop-filter:blur(6px);padding:18px}
+  #tkDlg.on{display:flex}
+  .tk-card{background:#0b0e14;border:1px solid #2a3242;border-radius:14px;
+      width:min(620px,96vw);padding:18px 18px 14px;display:flex;flex-direction:column;gap:10px}
+  .tk-h{font-weight:600;font-size:14px}
+  .tk-status{font-size:12.5px;color:var(--dim);line-height:1.6}
+  .tk-status.ok{color:var(--ok)}
+  .tk-status.bad{color:#ff8a8a}
+  #tk-input{width:100%;height:92px;resize:vertical;background:var(--card);
+      border:1px solid var(--line);border-radius:9px;color:var(--fg);
+      padding:9px 11px;font-family:ui-monospace,Consolas,monospace;font-size:12px;outline:none}
+  #tk-input:focus{border-color:var(--accent)}
+  .tk-row{display:flex;gap:8px;flex-wrap:wrap}
+  .tk-row button{background:var(--card2);border:1px solid var(--line);color:var(--fg);
+      border-radius:9px;padding:8px 14px;cursor:pointer;font-family:inherit;font-size:12.5px}
+  .tk-row button:hover{border-color:var(--accent);color:var(--accent)}
+  #tk-save{background:linear-gradient(135deg,#ff5c8a,#ff8a5c);color:#fff;border-color:transparent;font-weight:600}
+  .tk-tip{font-size:11.5px;color:var(--dim);line-height:1.6}
+</style>
+</head>
+<body>
+<header>
+  <div class="bar">
+    <div>
+      <h1>直播间列表 <span>·</span> 91直播</h1>
+      <div class="meta" id="meta"></div>
+    </div>
+    <div class="tools">
+      <button id="tk-btn" class="tk-btn">令牌</button>
+      <input type="search" id="q" placeholder="搜索主播 / 标题 / 房间ID">
+      <select id="sort">
+        <option value="hot">按热度</option>
+        <option value="free">免费优先</option>
+        <option value="name">按主播名</option>
+        <option value="new">按房间ID倒序</option>
+      </select>
+      <select id="ps">
+        <option value="12">每页 12</option>
+        <option value="24" selected>每页 24</option>
+        <option value="48">每页 48</option>
+        <option value="96">每页 96</option>
+      </select>
+    </div>
+  </div>
+  <nav id="cats"></nav>
+</header>
+
+<div class="grid" id="grid"></div>
+<div class="empty" id="empty" style="display:none">没有匹配的房间</div>
+<div class="pager" id="pager"></div>
+
+<div class="tip">
+  <b>播放</b>：jessibuca <b>WASM 软解</b>直连源站 FLV（与官方网页版同款），不转码、画质无损。<br>
+  <b>不受 30 秒试看限制</b>——该限制是客户端读 <code>previewTime=30</code> 后自行计时停播，网页不经过这段逻辑。<br>
+  <b>令牌</b>：点右上角「令牌」可粘贴或更新 <code>authorization</code>，保存后自动刷新房间数据；
+  失效时页面会自动弹窗提醒。服务端若下发新令牌会<b>自动续期</b>。<br>
+  <b>必须用本地服务器打开</b>（双击 <code>start.bat</code> → <code>http://127.0.0.1:8899/</code>）。
+  <code>auth_key</code> 有效期约 5 小时，过期后在「令牌」里点保存即可重新抓取。
+</div>
+
+<div id="tkDlg">
+  <div class="tk-card">
+    <div class="tk-h">令牌（authorization）</div>
+    <div class="tk-status" id="tk-status">检测中…</div>
+    <textarea id="tk-input" placeholder="粘贴 authorization（很长的一串十六进制）后点「保存并刷新数据」"></textarea>
+    <div class="tk-row">
+      <button id="tk-save">保存并刷新数据</button>
+      <button id="tk-check">仅校验</button>
+      <button id="tk-close">关闭</button>
+    </div>
+    <div class="tk-tip">
+      令牌来自 App / 网页登录后的请求头 <code>authorization</code>，有效期有限。
+      失效后在此重新粘贴即可，无需改文件或重启服务。<br>
+      若服务端在响应头下发了新令牌，系统会自动保存（自动续期）。
+    </div>
+  </div>
+</div>
+
+<div id="modal">
+  <div class="player">
+    <div class="phead">
+      <div>
+        <div class="t" id="p-title">—</div>
+        <div class="sub" id="p-sub"></div>
+      </div>
+      <button class="close" id="p-close">关闭 ✕</button>
+    </div>
+    <div class="stage">
+      <img class="poster" id="p-poster" alt="">
+      <div id="appPlayer"></div>
+      <video id="video" controls playsinline webkit-playsinline preload="none" style="display:none"></video>
+      <div class="overlay" id="p-overlay">
+        <div class="spin"></div>
+        <div id="p-msg">正在连接直播流…</div>
+      </div>
+    </div>
+    <div class="pfoot">
+      <div class="q" id="p-q"></div>
+      <div class="stat" id="p-stat"></div>
+      <div class="sp"></div>
+      <button id="p-reload">重新连接</button>
+      <a id="p-pot" href="#" target="_blank">PotPlayer</a>
+      <button id="p-copy">复制地址</button>
+    </div>
+  </div>
+</div>
+
+<script src="./jessibuca.js"></script>
+<script>
+const ROOMS = [{"roomId":"2026102810383600026","userId":"7854903158784690","userName":"叶婠婠","roomName":"新人主播","hot":4753,"cover":"/15/4d258dba2ae7ec2576956c04e9c0779c.jpg","liveType":1,"payType":0,"moneyFen":30000,"oneToOneState":1,"url0":"https://pl.ycscts.com/h001/7854903158784690_eh5.flv?auth_key=1793186997-0-8643667920141492-e43e8cc3aeceba140c04b082f815782d","url360":"https://pl.ycscts.com/h001/7854903158784690_b1.flv?auth_key=1793186997-0-8643667920141492-f03c8dc58943f23b47727a3b3a8016e5","url720":"https://pl.ycscts.com/h001/7854903158784690_b3.flv?auth_key=1793186997-0-8643667920141492-2f1b4f348e8cc953b38ebd0a841126cf","exp":1793186997,"cats":["关注","热门","帖子","游戏","1V1表演","颜值"]},{"roomId":"2026102811575700081","userId":"7420442648789814","userName":"南岛","roomName":"03 游艇宝贝","hot":1676,"cover":"/83/21423cb0685b75416f5a274131b7b14f.jpg","liveType":1,"payType":0,"moneyFen":100000,"oneToOneState":1,"url0":"https://pl.ycscts.com/h001/7420442648789814_eh5.flv?auth_key=1793186997-0-8643667920141492-e7150cb8bfd471ab261d58535a7f186d","url360":"https://pl.ycscts.com/h001/7420442648789814_b1.flv?auth_key=1793186997-0-8643667920141492-2d0fd756b9f4c216a01e4ed1278cc5e3","url720":"https://pl.ycscts.com/h001/7420442648789814_b3.flv?auth_key=1793186997-0-8643667920141492-886f8aeea10cc591b78441a92286d13b","exp":1793186997,"cats":["关注","热门","帖子","游戏","1V1表演","颜值"]},{"roomId":"2026102814091400047","userId":"431512930095173","userName":"小妖精","roomName":"哥哥用力啊","hot":1307,"cover":"/6/262202490056576f9b2ccdfa0b970b1c.jpg","liveType":1,"payType":0,"moneyFen":30000,"oneToOneState":2,"url0":"","url360":"https://pl.ycscts.com/h001/431512930095173_one_b1.flv?auth_key=1793186997-0-8643667920141492-48beb089da3a91f62bbf474b72877f57","url720":"https://pl.ycscts.com/h001/431512930095173_one_b3.flv?auth_key=1793186997-0-8643667920141492-3f1e3d19c55179149a79471fbb9b657b","exp":0,"cats":["关注","热门","帖子","游戏","1V1表演","颜值"]},{"roomId":"2026102813142100046","userId":"400498251448453","userName":"玉簟秋","roomName":"小秘书来了～","hot":1245,"cover":"/26/56ab968a8380a995908823a6d7830083.jpg","liveType":1,"payType":0,"moneyFen":50000,"oneToOneState":1,"url0":"https://pl.ycscts.com/h001/400498251448453_eh5.flv?auth_key=1793186997-0-8643667920141492-8b5fbc1fff696490d22940872364e488","url360":"https://pl.ycscts.com/h001/400498251448453_b1.flv?auth_key=1793186997-0-8643667920141492-c70b743974c6091793bb7c5c16d6207f","url720":"https://pl.ycscts.com/h001/400498251448453_b3.flv?auth_key=1793186997-0-8643667920141492-7413c80ab90248f6c054eb4fec4883b3","exp":1793186997,"cats":["关注","热门","帖子","游戏","1V1表演","颜值"]},{"roomId":"2026102810191700027","userId":"4960263867156532","userName":"林安安","roomName":"仓库库里丝","hot":762,"cover":"/20/8d6391d7070857797ad3f0caf67c103a.jpg","liveType":1,"payType":0,"moneyFen":50000,"oneToOneState":1,"url0":"https://pl.ycscts.com/h001/4960263867156532_eh5.flv?auth_key=1793186997-0-8643667920141492-77f2a54162cfd2de7fd4b5ce5691af59","url360":"https://pl.ycscts.com/h001/4960263867156532_b1.flv?auth_key=1793186997-0-8643667920141492-a05223c1fb54abae277d62da5f50e9bf","url720":"https://pl.ycscts.com/h001/4960263867156532_b3.flv?auth_key=1793186997-0-8643667920141492-32168d40c496a20cb6424af7fbc1c350","exp":1793186997,"cats":["关注","热门","帖子","游戏","1V1表演","颜值"]},{"roomId":"2026102813251100010","userId":"443676620817541","userName":"米妮","roomName":"特价11","hot":734,"cover":"/100/467ac669423bfaf6c4f50fb6b4d4b4c7.jpg","liveType":1,"payType":0,"moneyFen":10000,"oneToOneState":1,"url0":"https://pl.ycscts.com/h001/443676620817541_eh5.flv?auth_key=1793186997-0-8643667920141492-2b9e8491d700578136b6e00a8931f5d9","url360":"https://pl.ycscts.com/h001/443676620817541_b1.flv?auth_key=1793186997-0-8643667920141492-63a5f85246c3a9efaa14d6b0f0c4b481","url720":"https://pl.ycscts.com/h001/443676620817541_b3.flv?auth_key=1793186997-0-8643667920141492-a22311549d9817306e702a6e36444aa0","exp":1793186997,"cats":["关注","热门","帖子","游戏","1V1表演","颜值"]},{"roomId":"2026102813435500017","userId":"7633044838608694","userName":"一个小阿酥","roomName":"新人","hot":651,"cover":"/99/31b014057d826d15c4ad2fd09171babf.jpg","liveType":1,"payType":0,"moneyFen":20000,"oneToOneState":1,"url0":"https://pl.ycscts.com/h001/7633044838608694_eh5.flv?auth_key=1793186997-0-8643667920141492-667046df4080ad4250f1aa46a7a16066","url360":"https://pl.ycscts.com/h001/7633044838608694_b1.flv?auth_key=1793186997-0-8643667920141492-2cacf0a423c0b79a2a20e9738d573e18","url720":"https://pl.ycscts.com/h001/7633044838608694_b3.flv?auth_key=1793186997-0-8643667920141492-5300e0cfbde0216094186ed5f6c35afb","exp":1793186997,"cats":["关注","热门","帖子","游戏","1V1表演","颜值"]},{"roomId":"2026102813365000025","userId":"8601328013046450","userName":"大土妞","roomName":"????水一个❤️……","hot":622,"cover":"/tx/62.png","liveType":1,"payType":0,"moneyFen":20000,"oneToOneState":1,"url0":"https://pl.ycscts.com/h001/8601328013046450_eh5.flv?auth_key=1793186997-0-8643667920141492-4f3fab5be6a43b5625198d3a35a5e7cb","url360":"https://pl.ycscts.com/h001/8601328013046450_b1.flv?auth_key=1793186997-0-8643667920141492-b2493d35ad6ca1a801c8004150c199c0","url720":"https://pl.ycscts.com/h001/8601328013046450_b3.flv?auth_key=1793186997-0-8643667920141492-fb773633a61805c4e3e0a7896150ce50","exp":1793186997,"cats":["关注","热门","帖子","新人","游戏","1V1表演","颜值"]},{"roomId":"2026102813472400013","userId":"8559933143890614","userName":"蔡耷稀_pzdM","roomName":"红灯区的少妇","hot":602,"cover":"/tx/51.png","liveType":1,"payType":0,"moneyFen":0,"oneToOneState":0,"url0":"https://pl.ycscts.com/h001/8559933143890614_eh5.flv?auth_key=1793186997-0-8643667920141492-084536d3bf0584f2feefffbd54e814af","url360":"https://pl.ycscts.com/h001/8559933143890614_b1.flv?auth_key=1793186997-0-8643667920141492-4c4e8816713318f5cd4c3cbdc8e272ef","url720":"https://pl.ycscts.com/h001/8559933143890614_b3.flv?auth_key=1793186997-0-8643667920141492-632ef3094cf8cd9f45a5049b5718a583","exp":1793186997,"cats":["关注","热门","帖子","游戏","颜值"]},{"roomId":"2026102813173100051","userId":"7603744574477497","userName":"小骚妇","roomName":"在朋友家里","hot":458,"cover":"/18/fe43af0d7f2a8a4899d633e48ade5d7f.jpg","liveType":1,"payType":0,"moneyFen":20000,"oneToOneState":1,"url0":"https://pl.ycscts.com/h001/7603744574477497_eh5.flv?auth_key=1793186997-0-8643667920141492-a9616ca63e4b00bf860b5499173e57d4","url360":"https://pl.ycscts.com/h001/7603744574477497_b1.flv?auth_key=1793186997-0-8643667920141492-389f89ff6ae238492fc9cac180583c74","url720":"https://pl.ycscts.com/h001/7603744574477497_b3.flv?auth_key=1793186997-0-8643667920141492-37eb9728e72ed3be3533dce0506183a8","exp":1793186997,"cats":["关注","热门","帖子","游戏","1V1表演","颜值"]},{"roomId":"2026102813343200062","userId":"421300940121157","userName":"一个达不溜","roomName":"办公室偷夹喷水","hot":431,"cover":"/89/7f591ecf7a6f12685764967b4eb46418.jpg","liveType":1,"payType":0,"moneyFen":0,"oneToOneState":0,"url0":"https://pl.ycscts.com/h001/421300940121157_eh5.flv?auth_key=1793186997-0-8643667920141492-48c3af6375d8b30c8dc971ea7cf3e554","url360":"https://pl.ycscts.com/h001/421300940121157_b1.flv?auth_key=1793186997-0-8643667920141492-d2ba230a93b619845c48bbbde6913b28","url720":"https://pl.ycscts.com/h001/421300940121157_b3.flv?auth_key=1793186997-0-8643667920141492-7967b78cc62daa4c01acce193ace4cc9","exp":1793186997,"cats":["关注","热门","帖子","游戏","颜值"]},{"roomId":"2026102812095400022","userId":"7947080760323250","userName":"恩恩","roomName":"距离你0.01米","hot":405,"cover":"/115/79a4580f46c73805f1953a0936c96fa4.jpg","liveType":1,"payType":0,"moneyFen":100000,"oneToOneState":1,"url0":"https://pl.ycscts.com/h001/7947080760323250_eh5.flv?auth_key=1793186997-0-8643667920141492-4fbb38e280a0693d140cab7177c546b8","url360":"https://pl.ycscts.com/h001/7947080760323250_b1.flv?auth_key=1793186997-0-8643667920141492-04c4aa0d01446cb542ff603915e04976","url720":"https://pl.ycscts.com/h001/7947080760323250_b3.flv?auth_key=1793186997-0-8643667920141492-ec185f4a1fda6bcb1b84611d69166932","exp":1793186997,"cats":["关注","热门","帖子","游戏","1V1表演","颜值"]},{"roomId":"2026102813433100018","userId":"8453849215975093","userName":"甜甜圈儿","roomName":"三点公厕收费抽插","hot":376,"cover":"/32/3f2ab266077eaea568634bda0344f712.jpg","liveType":1,"payType":0,"moneyFen":30000,"oneToOneState":1,"url0":"https://pl.ycscts.com/h001/8453849215975093_eh5.flv?auth_key=1793186997-0-8643667920141492-2e779d8747d45b07e87ca76a1c8e6bca","url360":"https://pl.ycscts.com/h001/8453849215975093_b1.flv?auth_key=1793186997-0-8643667920141492-5c59916d3f2f8659d5577f7939a40b9e","url720":"https://pl.ycscts.com/h001/8453849215975093_b3.flv?auth_key=1793186997-0-8643667920141492-05a0c5f678729da641b182656d0b11ac","exp":1793186997,"cats":["关注","热门","帖子","游戏","1V1表演","颜值"]},{"roomId":"2026102813301200024","userId":"8556848462385337","userName":"新人淼淼","roomName":"你好","hot":371,"cover":"/78/d26670c20f4a70a9a6f71160d6f98d8a.jpg","liveType":1,"payType":0,"moneyFen":0,"oneToOneState":0,"url0":"https://pl.ycscts.com/h001/8556848462385337_eh5.flv?auth_key=1793186997-0-8643667920141492-32d3e62fb18ffc1e6b9cbd536410ff09","url360":"https://pl.ycscts.com/h001/8556848462385337_b1.flv?auth_key=1793186997-0-8643667920141492-96a74130d483aea9176ab481c5557e82","url720":"https://pl.ycscts.com/h001/8556848462385337_b3.flv?auth_key=1793186997-0-8643667920141492-f6e0ca4ab37d1ff6be4b1cd8dd6c7137","exp":1793186997,"cats":["关注","热门","帖子","游戏","颜值"]},{"roomId":"2026102810371600027","userId":"8425704244515898","userName":"草莓","roomName":"转盘抽奖福利多多","hot":345,"cover":"/50/5e63683023769da40c528baad1c29aca.jpg","liveType":1,"payType":2,"moneyFen":3000,"oneToOneState":0,"url0":"https://pl.ycscts.com/h001/8425704244515898_eh5.flv?auth_key=1793186997-0-8643667920141492-64daa13986f578871dba0db361dd3511","url360":"https://pl.ycscts.com/h001/8425704244515898_b1.flv?auth_key=1793186997-0-8643667920141492-8435366abd99d1eaf8ad9f88cf52e06d","url720":"https://pl.ycscts.com/h001/8425704244515898_b3.flv?auth_key=1793186997-0-8643667920141492-3fa46683c121e244fb68b3fa6f564514","exp":1793186997,"cats":["关注","热门","收费","帖子","游戏","颜值"]},{"roomId":"2026102813020000430","userId":"7917852784611895","userName":"桃汁","roomName":"特价一折秒一","hot":337,"cover":"/94/13a23263e5603674d5a4137272809879.jpg","liveType":1,"payType":0,"moneyFen":30000,"oneToOneState":1,"url0":"https://pl.ycscts.com/h001/7917852784611895_eh5.flv?auth_key=1793186997-0-8643667920141492-19317c2c0e6b609425e86d48e16fc86f","url360":"https://pl.ycscts.com/h001/7917852784611895_b1.flv?auth_key=1793186997-0-8643667920141492-df6f74e784c6cfcdda3e08ac5023217d","url720":"https://pl.ycscts.com/h001/7917852784611895_b3.flv?auth_key=1793186997-0-8643667920141492-d91b3a85c673b7730e9407b47a0159f8","exp":1793186997,"cats":["关注","热门","帖子","游戏","1V1表演","颜值"]},{"roomId":"2026102813170700017","userId":"7130462453844536","userName":"湾湾","roomName":"上班中轻点旁边有人 太大声会听见","hot":328,"cover":"/123/2ed100ebcc2058bdec2f5de8aa196cd4.jpg","liveType":1,"payType":0,"moneyFen":30000,"oneToOneState":1,"url0":"https://pl.ycscts.com/h001/7130462453844536_eh5.flv?auth_key=1793186997-0-8643667920141492-d8565258d9ee2cf065eaa7a9bd851150","url360":"https://pl.ycscts.com/h001/7130462453844536_b1.flv?auth_key=1793186997-0-8643667920141492-4f800524bc7cbfc225f631349305abcc","url720":"https://pl.ycscts.com/h001/7130462453844536_b3.flv?auth_key=1793186997-0-8643667920141492-0e450bd30f455b4550ba0b213ad36885","exp":1793186997,"cats":["关注","热门","帖子","游戏","1V1表演","颜值"]},{"roomId":"2026102814183400094","userId":"5774561886538296","userName":"小小酥","roomName":"极品大奶头","hot":326,"cover":"/69/f13a63a50dd09990916808301c147762.jpg","liveType":1,"payType":0,"moneyFen":10000,"oneToOneState":2,"url0":"","url360":"https://pl.ycscts.com/h001/5774561886538296_one_b1.flv?auth_key=1793186997-0-8643667920141492-63c6c13c18a7175c757208bd63825061","url720":"https://pl.ycscts.com/h001/5774561886538296_one_b3.flv?auth_key=1793186997-0-8643667920141492-dfc6ec700dad434a3f4b07fbf4858dd4","exp":0,"cats":["关注","帖子","游戏","1V1表演","颜值"]},{"roomId":"2026102812195700019","userId":"8233784028409658","userName":"蜜桃臀少妇","roomName":"离婚带娃小少妇","hot":302,"cover":"/121/7943911511dc1f94cfffcc789e49d4ed.jpg","liveType":1,"payType":2,"moneyFen":1500,"oneToOneState":0,"url0":"https://pl.ycscts.com/h001/8233784028409658_eh5.flv?auth_key=1793186997-0-8643667920141492-feba4db8759836ec184927bdc86da590","url360":"https://pl.ycscts.com/h001/8233784028409658_b1.flv?auth_key=1793186997-0-8643667920141492-af9403be240ce44f4233630bab800a9f","url720":"https://pl.ycscts.com/h001/8233784028409658_b3.flv?auth_key=1793186997-0-8643667920141492-852081317e241f53474aec7e8bb5c97c","exp":1793186997,"cats":["关注","收费","帖子","游戏","颜值"]},{"roomId":"2026102813392000062","userId":"8464798464047417","userName":"巨乳宝贝","roomName":"小骚包在线接一","hot":298,"cover":"/1/0b9829117595292dafa39b3e95633e27.jpg","liveType":1,"payType":0,"moneyFen":10000,"oneToOneState":1,"url0":"https://pl.ycscts.com/h001/8464798464047417_eh5.flv?auth_key=1793186997-0-8643667920141492-9b219e3beeadeb015d0f52245f0e2050","url360":"https://pl.ycscts.com/h001/8464798464047417_b1.flv?auth_key=1793186997-0-8643667920141492-2427b878bf567e81ab61cafe2ace862e","url720":"https://pl.ycscts.com/h001/8464798464047417_b3.flv?auth_key=1793186997-0-8643667920141492-170b114148c2045971d170ed42e39773","exp":1793186997,"cats":["关注","热门","帖子","游戏","1V1表演","颜值"]},{"roomId":"2026102813010000549","userId":"8339078740508855","userName":"小婷","roomName":"婷儿新人！！等哥哥疼！！","hot":280,"cover":"/89/63eb4eb0630b3dbdae4267d2bcdb5088.jpg","liveType":1,"payType":0,"moneyFen":8000,"oneToOneState":1,"url0":"https://pl.ycscts.com/h001/8339078740508855_eh5.flv?auth_key=1793186997-0-8643667920141492-13101dfc1094681707385b8411c8f65f","url360":"https://pl.ycscts.com/h001/8339078740508855_b1.flv?auth_key=1793186997-0-8643667920141492-09e2d9d95c92089214800a410fe22247","url720":"https://pl.ycscts.com/h001/8339078740508855_b3.flv?auth_key=1793186997-0-8643667920141492-17435480d2c0fb599e3c8fb7d8d397b4","exp":1793186997,"cats":["关注","热门","帖子","新人","游戏","1V1表演","颜值"]},{"roomId":"2026102813212200033","userId":"8488038904924213","userName":"安安","roomName":"播10分钟","hot":272,"cover":"/tx/22.png","liveType":1,"payType":0,"moneyFen":50000,"oneToOneState":1,"url0":"https://pl.ycscts.com/h001/8488038904924213_eh5.flv?auth_key=1793186997-0-8643667920141492-986c9c866b845f2cadb7f40b8cea03bf","url360":"https://pl.ycscts.com/h001/8488038904924213_b1.flv?auth_key=1793186997-0-8643667920141492-6f61af9e4eb3def7d3bb062209a015d2","url720":"https://pl.ycscts.com/h001/8488038904924213_b3.flv?auth_key=1793186997-0-8643667920141492-d3ac2a7f847a51b43948f0690102a245","exp":1793186997,"cats":["关注","热门","帖子","1V1表演","颜值"]},{"roomId":"2026102811420800023","userId":"6373442511059893","userName":"奶音撩人","roomName":"哥哥我要","hot":265,"cover":"/70/40f54ecd582298b057f1e7b22a2415a6.jpg","liveType":1,"payType":0,"moneyFen":0,"oneToOneState":0,"url0":"https://pl.ycscts.com/h001/6373442511059893_eh5.flv?auth_key=1793186997-0-8643667920141492-e9bbc49efbd074b081852bb9ab6b028f","url360":"https://pl.ycscts.com/h001/6373442511059893_b1.flv?auth_key=1793186997-0-8643667920141492-5b317361109e34577f8b0f140c9bff6e","url720":"https://pl.ycscts.com/h001/6373442511059893_b3.flv?auth_key=1793186997-0-8643667920141492-4fda34deffd80af61c99b8437a3b4b4b","exp":1793186997,"cats":["关注","热门","帖子","游戏","颜值"]},{"roomId":"2026102813501400036","userId":"8202768044212539","userName":"反差御姐","roomName":"性感欲姐","hot":260,"cover":"/114/7f2b99f46d77c6a8c105228508cbdc11.jpg","liveType":1,"payType":0,"moneyFen":30000,"oneToOneState":1,"url0":"https://pl.ycscts.com/h001/8202768044212539_eh5.flv?auth_key=1793186997-0-8643667920141492-d2728e78532551b0ccf4a983df8cde8d","url360":"https://pl.ycscts.com/h001/8202768044212539_b1.flv?auth_key=1793186997-0-8643667920141492-0121e13edca9c8127464a24d9f73a945","url720":"https://pl.ycscts.com/h001/8202768044212539_b3.flv?auth_key=1793186997-0-8643667920141492-e87e98950d72392bc110922b24f8e6d9","exp":1793186997,"cats":["关注","热门","帖子","游戏","1V1表演","颜值"]},{"roomId":"2026102814042900024","userId":"8516494789827899","userName":"半夏","roomName":"户外真空","hot":254,"cover":"/72/e9adee379f0cc2d689debb491b8a3c00.jpg","liveType":1,"payType":0,"moneyFen":20000,"oneToOneState":1,"url0":"https://pl.ycscts.com/h001/8516494789827899_eh5.flv?auth_key=1793186997-0-8643667920141492-016615257936496b085efb3589f0bd7e","url360":"https://pl.ycscts.com/h001/8516494789827899_b1.flv?auth_key=1793186997-0-8643667920141492-05be919cb5d685e410f9afafdee461a1","url720":"https://pl.ycscts.com/h001/8516494789827899_b3.flv?auth_key=1793186997-0-8643667920141492-332760c1bea94adfb1ce34ac77546f5b","exp":1793186997,"cats":["关注","热门","帖子","新人","游戏","1V1表演","颜值"]},{"roomId":"2026102812403500031","userId":"6798129927948212","userName":"大秀一对一","roomName":"特价自慰喷水大秀一对一","hot":253,"cover":"/50/b306f1cdabf41c154730b2fa7ceb2f63.jpg","liveType":1,"payType":0,"moneyFen":8000,"oneToOneState":1,"url0":"https://pl.ycscts.com/h001/6798129927948212_eh5.flv?auth_key=1793186997-0-8643667920141492-2e79c774cf8b9a1ecf20832c2c443194","url360":"https://pl.ycscts.com/h001/6798129927948212_b1.flv?auth_key=1793186997-0-8643667920141492-ff3138679e18766d3117867e5d1d3afd","url720":"https://pl.ycscts.com/h001/6798129927948212_b3.flv?auth_key=1793186997-0-8643667920141492-c1ec848eb03bac9b6cfa930def0ad889","exp":1793186997,"cats":["关注","热门","帖子","1V1表演","颜值"]},{"roomId":"2026102813392100107","userId":"4934164485616696","userName":"守护老师","roomName":"两性技巧讲师","hot":251,"cover":"/80/c1b4a5c8e90307094f1a2c440ad5433c.jpg","liveType":1,"payType":0,"moneyFen":0,"oneToOneState":0,"url0":"https://pl.ycscts.com/h001/4934164485616696_eh5.flv?auth_key=1793186997-0-8643667920141492-6709e3e14b6a22dc8521461da325fa2e","url360":"https://pl.ycscts.com/h001/4934164485616696_b1.flv?auth_key=1793186997-0-8643667920141492-34808d7ff714d3c09cf8f8811a65f747","url720":"https://pl.ycscts.com/h001/4934164485616696_b3.flv?auth_key=1793186997-0-8643667920141492-85546a52f278b7f43342f634e1874613","exp":1793186997,"cats":["关注","热门","帖子","颜值"]},{"roomId":"2026102813480000544","userId":"7604634537751738","userName":"灵姐少妇","roomName":"可一一","hot":249,"cover":"/19/8d4a667009b50b798313c7fbf46da7a3.jpg","liveType":1,"payType":0,"moneyFen":3300,"oneToOneState":0,"url0":"https://pl.ycscts.com/h001/7604634537751738_eh5.flv?auth_key=1793186997-0-8643667920141492-6a54cfb0474efb9e58f2e5b6b3bba415","url360":"https://pl.ycscts.com/h001/7604634537751738_b1.flv?auth_key=1793186997-0-8643667920141492-3fbcd1237029dd9ca266f1d923a17490","url720":"https://pl.ycscts.com/h001/7604634537751738_b3.flv?auth_key=1793186997-0-8643667920141492-85368ae45480af00f711365ad85d2378","exp":1793186997,"cats":["关注","热门","帖子","游戏","颜值"]},{"roomId":"2026102809433600038","userId":"371076323676357","userName":"纯情白月光","roomName":"老师办公室偷玩跳蛋","hot":249,"cover":"/125/ac16985a77671348380224a788554fff.jpg","liveType":1,"payType":0,"moneyFen":0,"oneToOneState":0,"url0":"https://pl.ycscts.com/h001/371076323676357_eh5.flv?auth_key=1793186997-0-8643667920141492-e2345553b59eed132afd60c827e88b5a","url360":"https://pl.ycscts.com/h001/371076323676357_b1.flv?auth_key=1793186997-0-8643667920141492-959d7fbf5bf3e40d4eb3060ddee629b5","url720":"https://pl.ycscts.com/h001/371076323676357_b3.flv?auth_key=1793186997-0-8643667920141492-ce0965daad8f17d05f71f1bb6c9b5bd5","exp":1793186997,"cats":["关注","热门","帖子","游戏","颜值"]},{"roomId":"2026102814145100019","userId":"8261148691257655","userName":"美人","roomName":"新人诱惑","hot":248,"cover":"/tx/21.png","liveType":1,"payType":0,"moneyFen":30000,"oneToOneState":1,"url0":"https://pl.ycscts.com/h001/8261148691257655_eh5.flv?auth_key=1793186997-0-8643667920141492-2343504c180f6c2040dd4f812ec37cc6","url360":"https://pl.ycscts.com/h001/8261148691257655_b1.flv?auth_key=1793186997-0-8643667920141492-5700b08f62f9d327984c5afc31e75db6","url720":"https://pl.ycscts.com/h001/8261148691257655_b3.flv?auth_key=1793186997-0-8643667920141492-a950c8f64bb3aa83a5eeddfc4ebd0be2","exp":1793186997,"cats":["关注","热门","帖子","游戏","1V1表演","颜值"]},{"roomId":"2026102814134700053","userId":"7459143802607415","userName":"娜娜","roomName":"开播就干 下播就散","hot":246,"cover":"/35/952fedf49fabd34ccc8a798dd333917c.jpg","liveType":1,"payType":0,"moneyFen":20000,"oneToOneState":1,"url0":"https://pl.ycscts.com/h001/7459143802607415_eh5.flv?auth_key=1793186997-0-8643667920141492-798d878173f5c1fa63df8db44b314399","url360":"https://pl.ycscts.com/h001/7459143802607415_b1.flv?auth_key=1793186997-0-8643667920141492-7b9758bcd3ac21375e0f700da3dd0f93","url720":"https://pl.ycscts.com/h001/7459143802607415_b3.flv?auth_key=1793186997-0-8643667920141492-954db37237376772e6ea2793fd84798d","exp":1793186997,"cats":["关注","热门","帖子","游戏","1V1表演","颜值"]},{"roomId":"2026102814045100015","userId":"7936580468255413","userName":"汐瑶","roomName":"附近500米……","hot":245,"cover":"/41/fa558064bf9781f7429e06144f60875c.jpg","liveType":1,"payType":0,"moneyFen":10000,"oneToOneState":1,"url0":"https://pl.ycscts.com/h001/7936580468255413_eh5.flv?auth_key=1793186997-0-8643667920141492-3b60f426319699417f9aad25a1724163","url360":"https://pl.ycscts.com/h001/7936580468255413_b1.flv?auth_key=1793186997-0-8643667920141492-180b4252facd75246fcd28c3d59f2b9a","url720":"https://pl.ycscts.com/h001/7936580468255413_b3.flv?auth_key=1793186997-0-8643667920141492-bf960738bfaf907d93c4a01b18b162b7","exp":1793186997,"cats":["关注","热门","帖子","游戏","1V1表演","颜值"]},{"roomId":"2026102813371100015","userId":"5842667692868532","userName":"联通财务","roomName":"办公室真空偷玩","hot":245,"cover":"/16/04142329ce6a32084dd4433087950de9.jpg","liveType":1,"payType":0,"moneyFen":0,"oneToOneState":0,"url0":"https://pl.ycscts.com/h001/5842667692868532_eh5.flv?auth_key=1793186997-0-8643667920141492-b6eec0fd8a420229355f64798ebabdd4","url360":"https://pl.ycscts.com/h001/5842667692868532_b1.flv?auth_key=1793186997-0-8643667920141492-17da6e875f7cb7ea6fbddb08a274b7ef","url720":"https://pl.ycscts.com/h001/5842667692868532_b3.flv?auth_key=1793186997-0-8643667920141492-b7e864d2f861f41c05ab3400d96d4da0","exp":1793186997,"cats":["关注","热门","帖子","游戏","颜值"]},{"roomId":"2026102813321200019","userId":"8562700179967415","userName":"慕婴磬_g9eW","roomName":"新人开播","hot":245,"cover":"/tx/25.png","liveType":1,"payType":0,"moneyFen":30000,"oneToOneState":1,"url0":"https://pl.ycscts.com/h001/8562700179967415_eh5.flv?auth_key=1793186997-0-8643667920141492-c117864c6fa4290b62b7e13141ae4cca","url360":"https://pl.ycscts.com/h001/8562700179967415_b1.flv?auth_key=1793186997-0-8643667920141492-ce330824737143ccb09c9277ae4b0036","url720":"https://pl.ycscts.com/h001/8562700179967415_b3.flv?auth_key=1793186997-0-8643667920141492-32e45f3e589b87a5d8dbf03b0ce0d3ed","exp":1793186997,"cats":["关注","热门","帖子","新人","1V1表演","颜值"]},{"roomId":"2026102810073700018","userId":"8636347574745659","userName":"多多","roomName":"哥哥我来了","hot":244,"cover":"/tx/42.png","liveType":1,"payType":0,"moneyFen":0,"oneToOneState":0,"url0":"https://pl.ycscts.com/h001/8636347574745659_eh5.flv?auth_key=1793186997-0-8643667920141492-5ae88c04dea1c113fd2143e5254dc8c8","url360":"https://pl.ycscts.com/h001/8636347574745659_b1.flv?auth_key=1793186997-0-8643667920141492-885f71450f85ed484b3aaebfe77ae0a4","url720":"https://pl.ycscts.com/h001/8636347574745659_b3.flv?auth_key=1793186997-0-8643667920141492-fea192ba1ed8736529d1e7d287d48f8e","exp":1793186997,"cats":["关注","热门","帖子","新人","游戏","颜值"]},{"roomId":"2026102814142300154","userId":"6284362925724852","userName":"克拉拉","roomName":"全靠骚","hot":242,"cover":"/34/dbe2fc7b4df06c056d3deed958213e62.jpg","liveType":1,"payType":0,"moneyFen":30000,"oneToOneState":1,"url0":"https://pl.ycscts.com/h001/6284362925724852_eh5.flv?auth_key=1793186997-0-8643667920141492-29fd34f39fc1a572aca72984da59cd38","url360":"https://pl.ycscts.com/h001/6284362925724852_b1.flv?auth_key=1793186997-0-8643667920141492-3e749c35c277d5f990752b2c484bd55b","url720":"https://pl.ycscts.com/h001/6284362925724852_b3.flv?auth_key=1793186997-0-8643667920141492-f31ed485afa2513ef0f7003973ca2a30","exp":1793186997,"cats":["关注","热门","帖子","游戏","1V1表演","颜值"]},{"roomId":"2026102812542500022","userId":"8622605293820212","userName":"琴姿_2lES","roomName":"来吧哥哥","hot":241,"cover":"/tx/6.png","liveType":1,"payType":0,"moneyFen":20000,"oneToOneState":1,"url0":"https://pl.ycscts.com/h001/8622605293820212_eh5.flv?auth_key=1793186997-0-8643667920141492-8bd544cfd6dda07003926c701a08f3ba","url360":"https://pl.ycscts.com/h001/8622605293820212_b1.flv?auth_key=1793186997-0-8643667920141492-dcc36d766d00676b30075e39a6842e30","url720":"https://pl.ycscts.com/h001/8622605293820212_b3.flv?auth_key=1793186997-0-8643667920141492-fd0d02cfbe4a769535d46047f5d3519c","exp":1793186997,"cats":["关注","热门","帖子","新人","游戏","1V1表演","颜值"]},{"roomId":"2026102813054800025","userId":"8627261576787896","userName":"璩珩沂_fEf5","roomName":"真心换真情","hot":238,"cover":"/48/e60383753be8f9c6a85cbe99a3d31d97.jpg","liveType":1,"payType":0,"moneyFen":0,"oneToOneState":0,"url0":"https://pl.ycscts.com/h001/8627261576787896_eh5.flv?auth_key=1793186998-0-8643667920141492-3c31745cb63dac9fbe4327351b6d838d","url360":"https://pl.ycscts.com/h001/8627261576787896_b1.flv?auth_key=1793186998-0-8643667920141492-5540807ec624a442ad01e11ffdf43049","url720":"https://pl.ycscts.com/h001/8627261576787896_b3.flv?auth_key=1793186998-0-8643667920141492-9fcd379a509cf7ae7ec67b8e8592a377","exp":1793186998,"cats":["关注","热门","帖子","新人","游戏","颜值"]},{"roomId":"2026102813574700069","userId":"4759271086659892","userName":"闷骚文员","roomName":"上班裤里丝没人爱了","hot":237,"cover":"/15/b7cdbf6b4e292af645041aff379ad401.jpg","liveType":1,"payType":0,"moneyFen":0,"oneToOneState":0,"url0":"https://pl.ycscts.com/h001/4759271086659892_eh5.flv?auth_key=1793186998-0-8643667920141492-3d0cd8594b4575022da91356c0107946","url360":"https://pl.ycscts.com/h001/4759271086659892_b1.flv?auth_key=1793186998-0-8643667920141492-8a166ffb33b18e00f52a7491f7a6c9d1","url720":"https://pl.ycscts.com/h001/4759271086659892_b3.flv?auth_key=1793186998-0-8643667920141492-90ca8e99635cd4bbaafef119c0311a94","exp":1793186998,"cats":["关注","热门","帖子","游戏","颜值"]},{"roomId":"2026102813105900016","userId":"7108558800652210","userName":"全裸大秀","roomName":"18+ 双人大秀","hot":237,"cover":"/27/fc99c242908d34dde0fb4aac8ba3cb91.jpg","liveType":1,"payType":2,"moneyFen":300,"oneToOneState":0,"url0":"https://pl.ycscts.com/h001/7108558800652210_eh5.flv?auth_key=1793186998-0-8643667920141492-1a4f99bc270fb3e60528bd7fcc07f96c","url360":"https://pl.ycscts.com/h001/7108558800652210_b1.flv?auth_key=1793186998-0-8643667920141492-942086d258a9d8b1771106a8562a15b3","url720":"https://pl.ycscts.com/h001/7108558800652210_b3.flv?auth_key=1793186998-0-8643667920141492-9f537d411f47d7a3c3f66611e24ddad2","exp":1793186998,"cats":["关注","热门","收费","帖子","游戏","颜值"]},{"roomId":"2026102814050500016","userId":"7483768150105016","userName":"歐米婭","roomName":"新人主播","hot":236,"cover":"/95/834f9f43fa9267e1350382a386d4fa64.jpg","liveType":1,"payType":0,"moneyFen":50000,"oneToOneState":1,"url0":"https://pl.ycscts.com/h001/7483768150105016_eh5.flv?auth_key=1793186998-0-8643667920141492-36c502fe31318bcc6053053a1e15602f","url360":"https://pl.ycscts.com/h001/7483768150105016_b1.flv?auth_key=1793186998-0-8643667920141492-bf09d20372cea8fb8db1c1b0b17bb25c","url720":"https://pl.ycscts.com/h001/7483768150105016_b3.flv?auth_key=1793186998-0-8643667920141492-8e576ff1ad4181a1ca48f942bedcc481","exp":1793186998,"cats":["关注","热门","帖子","游戏","1V1表演","颜值"]},{"roomId":"2026102813005300036","userId":"8458105172218930","userName":"肉肉的感觉","roomName":"看逼逼","hot":236,"cover":"/tx/21.png","liveType":1,"payType":1,"moneyFen":500,"oneToOneState":0,"url0":"https://pl.ycscts.com/h001/8458105172218930_eh5.flv?auth_key=1793186998-0-8643667920141492-eb9cb5c4be6e0dbe8c7c0bea382110f0","url360":"https://pl.ycscts.com/h001/8458105172218930_b1.flv?auth_key=1793186998-0-8643667920141492-8648b72567b45b1db142008d10519d30","url720":"https://pl.ycscts.com/h001/8458105172218930_b3.flv?auth_key=1793186998-0-8643667920141492-7a8689ca551bc0dd7e91a11fba6e9802","exp":1793186998,"cats":["关注","热门","收费","帖子","游戏","颜值"]},{"roomId":"2026102813354200216","userId":"8429062518138291","userName":"风骚独角兽","roomName":"绝世骚妇","hot":235,"cover":"/30/2c3269ff0e2d9dc10489b31f01a68790.jpg","liveType":1,"payType":0,"moneyFen":0,"oneToOneState":0,"url0":"https://pl.ycscts.com/h001/8429062518138291_eh5.flv?auth_key=1793186998-0-8643667920141492-47d0d54c9697b48796c627e52d164277","url360":"https://pl.ycscts.com/h001/8429062518138291_b1.flv?auth_key=1793186998-0-8643667920141492-ecce4f205a6baf67c4eed9383db8fee4","url720":"https://pl.ycscts.com/h001/8429062518138291_b3.flv?auth_key=1793186998-0-8643667920141492-366c82b2fa66d91e70b3cac61c611b37","exp":1793186998,"cats":["关注","热门","帖子","游戏","颜值"]},{"roomId":"2026102813282600011","userId":"7310491601885499","userName":"逼逼吹泡泡","roomName":"花季骚女肏逼肉棒","hot":234,"cover":"/97/adab346b98e2ee0606990a28682a335a.jpg","liveType":1,"payType":1,"moneyFen":900,"oneToOneState":0,"url0":"https://pl.ycscts.com/h001/7310491601885499_eh5.flv?auth_key=1793186998-0-8643667920141492-abf3296f9e7a118432f67b21bc666c00","url360":"https://pl.ycscts.com/h001/7310491601885499_b1.flv?auth_key=1793186998-0-8643667920141492-89887eb12fa8d7e485f65d0dc41fe58e","url720":"https://pl.ycscts.com/h001/7310491601885499_b3.flv?auth_key=1793186998-0-8643667920141492-651a94cb481cf2be84592539bebb69ef","exp":1793186998,"cats":["关注","热门","收费","帖子","游戏","颜值"]},{"roomId":"2026102811551600042","userId":"8358586584118454","userName":"办公小妹","roomName":"上班偷偷玩跳蛋喷水","hot":234,"cover":"/22/7f7e0d8959da3ae045e4b5b0148f7533.jpg","liveType":1,"payType":0,"moneyFen":30000,"oneToOneState":1,"url0":"https://pl.ycscts.com/h001/8358586584118454_eh5.flv?auth_key=1793186998-0-8643667920141492-88502491f5fdac0df76d5e1e352f1921","url360":"https://pl.ycscts.com/h001/8358586584118454_b1.flv?auth_key=1793186998-0-8643667920141492-8282929e94d377aaa6046b36f188a8aa","url720":"https://pl.ycscts.com/h001/8358586584118454_b3.flv?auth_key=1793186998-0-8643667920141492-3b47c17d7ef48dc339c92ff63c2b85e6","exp":1793186998,"cats":["关注","热门","帖子","游戏","1V1表演","颜值"]},{"roomId":"2026102813015500018","userId":"8640090746236214","userName":"阿璃吖","roomName":"新人，请多关照","hot":233,"cover":"/6/757645e6af5c5d3639a2450e99e54003.jpg","liveType":1,"payType":0,"moneyFen":20000,"oneToOneState":1,"url0":"https://pl.ycscts.com/h001/8640090746236214_eh5.flv?auth_key=1793186998-0-8643667920141492-c51acb8755658b6d811a232d9c98a1c1","url360":"https://pl.ycscts.com/h001/8640090746236214_b1.flv?auth_key=1793186998-0-8643667920141492-426c7fcc81719a0c842d2da9e354d6b9","url720":"https://pl.ycscts.com/h001/8640090746236214_b3.flv?auth_key=1793186998-0-8643667920141492-b5f3c3b5621d1575bda30a8d4e0f7fff","exp":1793186998,"cats":["关注","热门","帖子","新人","游戏","1V1表演","颜值"]},{"roomId":"2026102813170600012","userId":"8627095626444215","userName":"恬恬爱吃糖","roomName":"哥哥来啊，快活啊","hot":232,"cover":"/0/b91f3d13a7e273935d34a59aee8900cc.jpg","liveType":1,"payType":0,"moneyFen":0,"oneToOneState":0,"url0":"https://pl.ycscts.com/h001/8627095626444215_eh5.flv?auth_key=1793186998-0-8643667920141492-e9de23e88d08fa5bd517fd859ed5d02d","url360":"https://pl.ycscts.com/h001/8627095626444215_b1.flv?auth_key=1793186998-0-8643667920141492-3f4952f6dbe82b2ff0113d09e0a298fb","url720":"https://pl.ycscts.com/h001/8627095626444215_b3.flv?auth_key=1793186998-0-8643667920141492-676cfc5d3e39162f55e9138b7b9ca687","exp":1793186998,"cats":["关注","热门","帖子","新人","游戏","颜值"]},{"roomId":"2026102813161600052","userId":"8438891805370298","userName":"爱上棒棒糖","roomName":" 来聊聊天","hot":232,"cover":"/tx/23.png","liveType":1,"payType":0,"moneyFen":20000,"oneToOneState":1,"url0":"https://pl.ycscts.com/h001/8438891805370298_eh5.flv?auth_key=1793186998-0-8643667920141492-0166b769d95bab6065acab355ead7ddb","url360":"https://pl.ycscts.com/h001/8438891805370298_b1.flv?auth_key=1793186998-0-8643667920141492-69868f606f175716659ec395ddbf8c8f","url720":"https://pl.ycscts.com/h001/8438891805370298_b3.flv?auth_key=1793186998-0-8643667920141492-50b8f483fb1987096321fc2433f28436","exp":1793186998,"cats":["关注","热门","帖子","游戏","1V1表演","颜值"]},{"roomId":"2026102813461800065","userId":"7399575194882611","userName":"金涵涵","roomName":"加好友有福利??","hot":231,"cover":"/22/53004bcfb2277058bcecf2f813b06dae.jpg","liveType":1,"payType":0,"moneyFen":0,"oneToOneState":0,"url0":"https://pl.ycscts.com/h001/7399575194882611_eh5.flv?auth_key=1793186998-0-8643667920141492-fed6791f3e0f451925838c171832a4b6","url360":"https://pl.ycscts.com/h001/7399575194882611_b1.flv?auth_key=1793186998-0-8643667920141492-87e70ad11e7c3c54eda50e661d513cba","url720":"https://pl.ycscts.com/h001/7399575194882611_b3.flv?auth_key=1793186998-0-8643667920141492-add1ca30ce7d470cbf782debe24285a0","exp":1793186998,"cats":["关注","热门","帖子","游戏","颜值"]},{"roomId":"2026102814250500028","userId":"7533561611961655","userName":"哼哈","roomName":"哥哥求振","hot":229,"cover":"/tx/52.png","liveType":1,"payType":0,"moneyFen":30000,"oneToOneState":1,"url0":"https://pl.ycscts.com/h001/7533561611961655_eh5.flv?auth_key=1793186998-0-8643667920141492-7bd4037c308e004d23920887507ff40d","url360":"https://pl.ycscts.com/h001/7533561611961655_b1.flv?auth_key=1793186998-0-8643667920141492-6bef1ec4b07258d7321fcdfa3185ed7a","url720":"https://pl.ycscts.com/h001/7533561611961655_b3.flv?auth_key=1793186998-0-8643667920141492-236736ffdaaaa47a5f89b32034c39d4c","exp":1793186998,"cats":["关注","热门","帖子","游戏","1V1表演","颜值"]},{"roomId":"2026102813484300049","userId":"7538870051065659","userName":"熟姐超能喷","roomName":"炮机电击狂喷","hot":229,"cover":"/41/da1ef13ca52335d922ea9a1b3dcf1293.jpg","liveType":1,"payType":0,"moneyFen":20000,"oneToOneState":1,"url0":"https://pl.ycscts.com/h001/7538870051065659_eh5.flv?auth_key=1793186998-0-8643667920141492-9c18391177cfbef0119239de5542b435","url360":"https://pl.ycscts.com/h001/7538870051065659_b1.flv?auth_key=1793186998-0-8643667920141492-9d51482f4bc271bcc74d8b1670cc4290","url720":"https://pl.ycscts.com/h001/7538870051065659_b3.flv?auth_key=1793186998-0-8643667920141492-f9826fe1988e37e900aa114022255af9","exp":1793186998,"cats":["关注","热门","帖子","游戏","1V1表演","颜值"]},{"roomId":"2026102813574900098","userId":"346916085560517","userName":"闷骚丈母娘","roomName":"丈母娘在二人世界等你","hot":226,"cover":"/39/18679aefc697cfd3eee151ca16ea97d8.jpg","liveType":1,"payType":0,"moneyFen":8000,"oneToOneState":1,"url0":"https://pl.ycscts.com/h001/346916085560517_eh5.flv?auth_key=1793186998-0-8643667920141492-5b3cbcd0646a0a0cc94e06ef4181ebef","url360":"https://pl.ycscts.com/h001/346916085560517_b1.flv?auth_key=1793186998-0-8643667920141492-38ccf9c5f3cb5ec34dc0557f1759d5bc","url720":"https://pl.ycscts.com/h001/346916085560517_b3.flv?auth_key=1793186998-0-8643667920141492-7dd2d83a85891ecb28bcdd4405eec39b","exp":1793186998,"cats":["关注","热门","帖子","游戏","1V1表演","颜值"]},{"roomId":"2026102814135500012","userId":"432707811329733","userName":"心辰如月","roomName":"学妹特惠一招男主大秀","hot":224,"cover":"/tx/23.png","liveType":1,"payType":0,"moneyFen":20000,"oneToOneState":1,"url0":"https://pl.ycscts.com/h001/432707811329733_eh5.flv?auth_key=1793186998-0-8643667920141492-1909afc4b34644c8364959d9121b4be9","url360":"https://pl.ycscts.com/h001/432707811329733_b1.flv?auth_key=1793186998-0-8643667920141492-846822a8a606980952186fd9c3a10cf4","url720":"https://pl.ycscts.com/h001/432707811329733_b3.flv?auth_key=1793186998-0-8643667920141492-68b85c97d7568f5b9225faa9a4621926","exp":1793186998,"cats":["关注","热门","帖子","游戏","1V1表演","颜值"]},{"roomId":"2026102814054500031","userId":"8109878235842614","userName":"狐狸理","roomName":"新人报道，多多关照","hot":224,"cover":"/123/8b0bed1c6d8c5e8cb67f7a690f610aa0.jpg","liveType":1,"payType":0,"moneyFen":10000,"oneToOneState":1,"url0":"https://pl.ycscts.com/h001/8109878235842614_eh5.flv?auth_key=1793186998-0-8643667920141492-c484efef3ee2b8d0358317cc48dd0859","url360":"https://pl.ycscts.com/h001/8109878235842614_b1.flv?auth_key=1793186998-0-8643667920141492-71fd3201a45fb7b761893aebd0e548f5","url720":"https://pl.ycscts.com/h001/8109878235842614_b3.flv?auth_key=1793186998-0-8643667920141492-d16f73c475feeb9be582402749b1a2a1","exp":1793186998,"cats":["关注","热门","帖子","游戏","1V1表演","颜值"]},{"roomId":"2026102813000500025","userId":"8311359872051254","userName":"亲亲小宝贝","roomName":"你的小宝贝来了","hot":223,"cover":"/tx/32.png","liveType":1,"payType":0,"moneyFen":0,"oneToOneState":0,"url0":"https://pl.ycscts.com/h001/8311359872051254_eh5.flv?auth_key=1793186998-0-8643667920141492-d4088304372b1aaff0acf1926bb6f9bc","url360":"https://pl.ycscts.com/h001/8311359872051254_b1.flv?auth_key=1793186998-0-8643667920141492-108122b6469c391832ce1d77e27fc502","url720":"https://pl.ycscts.com/h001/8311359872051254_b3.flv?auth_key=1793186998-0-8643667920141492-5b67f978c50a58693e00ea567c4425cc","exp":1793186998,"cats":["关注","热门","帖子","游戏","颜值"]},{"roomId":"2026102813560200013","userId":"8555873720385335","userName":"宝贝儿","roomName":"极品小姨夫","hot":220,"cover":"/tx/28.png","liveType":1,"payType":1,"moneyFen":900,"oneToOneState":0,"url0":"https://pl.ycscts.com/h001/8555873720385335_eh5.flv?auth_key=1793186998-0-8643667920141492-f11728122bef2c1cd74b0717bc4cd8ed","url360":"https://pl.ycscts.com/h001/8555873720385335_b1.flv?auth_key=1793186998-0-8643667920141492-486cd045ffd8033bb1c576803cc31eef","url720":"https://pl.ycscts.com/h001/8555873720385335_b3.flv?auth_key=1793186998-0-8643667920141492-bcbac7e7cb97a3c28b703145f19be955","exp":1793186998,"cats":["关注","热门","收费","帖子","游戏","颜值"]},{"roomId":"2026102814000400040","userId":"8298173055632692","userName":"人妻不可欺","roomName":"办公室午休调教男同事","hot":219,"cover":"/71/e84dc2f05356f37f9f38360bc588e1c5.jpg","liveType":1,"payType":0,"moneyFen":0,"oneToOneState":0,"url0":"https://pl.ycscts.com/h001/8298173055632692_eh5.flv?auth_key=1793186998-0-8643667920141492-e807b5c5dc985cc76ce0565826376a8a","url360":"https://pl.ycscts.com/h001/8298173055632692_b1.flv?auth_key=1793186998-0-8643667920141492-e1c7e7f08db731d0985c1cca0faa74a3","url720":"https://pl.ycscts.com/h001/8298173055632692_b3.flv?auth_key=1793186998-0-8643667920141492-c8f464a71115ddd67c6d95a46cd5e156","exp":1793186998,"cats":["关注","热门","帖子","游戏","颜值"]},{"roomId":"2026102813205700027","userId":"8626192870570933","userName":"小筱筱","roomName":"新人","hot":219,"cover":"/93/2028fb468fc7d6266e792dd0504d16fa.jpg","liveType":1,"payType":0,"moneyFen":3000,"oneToOneState":0,"url0":"https://pl.ycscts.com/h001/8626192870570933_eh5.flv?auth_key=1793186998-0-8643667920141492-2bc856496cf74ccd6585fc94f325890c","url360":"https://pl.ycscts.com/h001/8626192870570933_b1.flv?auth_key=1793186998-0-8643667920141492-1fc151abb73cdc9ec956959991410cc8","url720":"https://pl.ycscts.com/h001/8626192870570933_b3.flv?auth_key=1793186998-0-8643667920141492-4925094349c815796892aaf5f583fc6f","exp":1793186998,"cats":["关注","热门","帖子","新人","游戏","颜值"]},{"roomId":"2026102814165400018","userId":"448557180846981","userName":"鸡婆","roomName":"谢谢爸爸的关注","hot":217,"cover":"/77/31602035e651e625dcc57af986f8ef9e.jpg","liveType":1,"payType":0,"moneyFen":5000,"oneToOneState":1,"url0":"https://pl.ycscts.com/h001/448557180846981_eh5.flv?auth_key=1793186998-0-8643667920141492-d6ead6df9a82bec0bc4f23706b1b2d54","url360":"https://pl.ycscts.com/h001/448557180846981_b1.flv?auth_key=1793186998-0-8643667920141492-05bc1c7b9847280eb4b4f20702b44b98","url720":"https://pl.ycscts.com/h001/448557180846981_b3.flv?auth_key=1793186998-0-8643667920141492-24c9a19e32bee43a13b1f5a700bc31b9","exp":1793186998,"cats":["关注","热门","帖子","游戏","1V1表演","颜值"]},{"roomId":"2026102813593100062","userId":"7652802252189493","userName":"奶黄包","roomName":"一个人在家","hot":216,"cover":"/85/56775f9c5d0c85646d66a40806d2d771.jpg","liveType":1,"payType":0,"moneyFen":0,"oneToOneState":0,"url0":"https://pl.ycscts.com/h001/7652802252189493_eh5.flv?auth_key=1793186998-0-8643667920141492-1e75628ab094490bc10186d31f4c50a3","url360":"https://pl.ycscts.com/h001/7652802252189493_b1.flv?auth_key=1793186998-0-8643667920141492-9dad5b21f000c934b12b42963929951a","url720":"https://pl.ycscts.com/h001/7652802252189493_b3.flv?auth_key=1793186998-0-8643667920141492-756b2ebe9682bdc803965e9408db5dcb","exp":1793186998,"cats":["关注","热门","帖子","新人","游戏","颜值"]},{"roomId":"2026102812030400021","userId":"8584315991077811","userName":"哆米","roomName":"来啦绿","hot":215,"cover":"/60/64fc312e83e2394e2cc0c2c2fc192707.jpg","liveType":1,"payType":0,"moneyFen":0,"oneToOneState":0,"url0":"https://pl.ycscts.com/h001/8584315991077811_eh5.flv?auth_key=1793186998-0-8643667920141492-15353c990bb5a56cf297b7bec8f37bb4","url360":"https://pl.ycscts.com/h001/8584315991077811_b1.flv?auth_key=1793186998-0-8643667920141492-aad672e6acee10a13a332c5a6b8c14fa","url720":"https://pl.ycscts.com/h001/8584315991077811_b3.flv?auth_key=1793186998-0-8643667920141492-09bf950086b098fa795f87992c83e1f2","exp":1793186998,"cats":["关注","热门","帖子","游戏","颜值"]},{"roomId":"2026102813253500072","userId":"7075368872193974","userName":"空姐七七","roomName":"空姐每个整点大秀特价飞","hot":214,"cover":"/77/62ea189236f10a10762368032418ffaa.jpg","liveType":1,"payType":0,"moneyFen":100000,"oneToOneState":1,"url0":"https://pl.ycscts.com/h001/7075368872193974_eh5.flv?auth_key=1793186998-0-8643667920141492-755f1cc8d596d01c6633f4dc1db61339","url360":"https://pl.ycscts.com/h001/7075368872193974_b1.flv?auth_key=1793186998-0-8643667920141492-cae52055fdaa648c84b3488da7842d94","url720":"https://pl.ycscts.com/h001/7075368872193974_b3.flv?auth_key=1793186998-0-8643667920141492-f587445cc8918eb160f9ab54c723a803","exp":1793186998,"cats":["关注","热门","帖子","游戏","1V1表演","颜值"]},{"roomId":"2026102814290200039","userId":"8630837616253492","userName":"乐酥酥","roomName":"天花板妹妹承接一对一","hot":212,"cover":"/tx/34.png","liveType":1,"payType":0,"moneyFen":20000,"oneToOneState":1,"url0":"https://pl.ycscts.com/h001/8630837616253492_eh5.flv?auth_key=1793186998-0-8643667920141492-3a4f8f3ec36703f602ce34103e2c3749","url360":"https://pl.ycscts.com/h001/8630837616253492_b1.flv?auth_key=1793186998-0-8643667920141492-d4e098346c8b672a54b73b1f81d761bc","url720":"https://pl.ycscts.com/h001/8630837616253492_b3.flv?auth_key=1793186998-0-8643667920141492-91ec2ea2141fd1df16c88266d4dae451","exp":1793186998,"cats":["关注","热门","帖子","新人","游戏","1V1表演","颜值"]},{"roomId":"2026102814123700030","userId":"8551432920742458","userName":"井斓素_ahyg","roomName":"想要哥哥的爱","hot":212,"cover":"/0/0088484a323c643ef1f6962d905c3237.jpg","liveType":1,"payType":0,"moneyFen":0,"oneToOneState":0,"url0":"https://pl.ycscts.com/h001/8551432920742458_eh5.flv?auth_key=1793186998-0-8643667920141492-d96c7b2c35515dd5e3621a7ef9074140","url360":"https://pl.ycscts.com/h001/8551432920742458_b1.flv?auth_key=1793186998-0-8643667920141492-6a7975ccdba56561727289cab5def3b9","url720":"https://pl.ycscts.com/h001/8551432920742458_b3.flv?auth_key=1793186998-0-8643667920141492-329cd27708398a2bc13f7fb7c530830f","exp":1793186998,"cats":["关注","热门","帖子","游戏","颜值"]},{"roomId":"2026102814245700017","userId":"5880338004146611","userName":"半糖甜","roomName":"想喷水哥哥","hot":211,"cover":"/73/46760f3d5f55fa93d1e21dd9c9ac43db.jpg","liveType":1,"payType":0,"moneyFen":50000,"oneToOneState":1,"url0":"https://pl.ycscts.com/h001/5880338004146611_eh5.flv?auth_key=1793186998-0-8643667920141492-c7794df5ff5f51c1ef2e53a2a0a97d4b","url360":"https://pl.ycscts.com/h001/5880338004146611_b1.flv?auth_key=1793186998-0-8643667920141492-07fd5567fef55eb046f593c094462d45","url720":"https://pl.ycscts.com/h001/5880338004146611_b3.flv?auth_key=1793186998-0-8643667920141492-b45cbceb10f0dadd852b3f1c502b9ecf","exp":1793186998,"cats":["关注","热门","帖子","游戏","1V1表演","颜值"]},{"roomId":"2026102813592900019","userId":"7858637262903099","userName":"巨乳少妇","roomName":"特价一对一巨乳粉逼","hot":211,"cover":"/123/504bf4d240efd61247637ab842985039.jpg","liveType":1,"payType":0,"moneyFen":8000,"oneToOneState":1,"url0":"https://pl.ycscts.com/h001/7858637262903099_eh5.flv?auth_key=1793186998-0-8643667920141492-a79a8b1d3ce39a3ffe566d76cf73b83b","url360":"https://pl.ycscts.com/h001/7858637262903099_b1.flv?auth_key=1793186998-0-8643667920141492-365522856c30f6526cd79bf5fdc91eb1","url720":"https://pl.ycscts.com/h001/7858637262903099_b3.flv?auth_key=1793186998-0-8643667920141492-c6c06b55e33497d6ccbaec5663fbb2ee","exp":1793186998,"cats":["关注","热门","帖子","游戏","1V1表演","颜值"]},{"roomId":"2026102814204400011","userId":"445773468443909","userName":"终如初","roomName":"跳蛋已连接","hot":210,"cover":"/80/49cf08e411fce41d80da1b443fc23d05.jpg","liveType":1,"payType":0,"moneyFen":20000,"oneToOneState":1,"url0":"https://pl.ycscts.com/h001/445773468443909_eh5.flv?auth_key=1793186998-0-8643667920141492-8a37b899815f2fd6f5facb186e19cbba","url360":"https://pl.ycscts.com/h001/445773468443909_b1.flv?auth_key=1793186998-0-8643667920141492-4fb8a9469a2346bbdc67190fccdfde54","url720":"https://pl.ycscts.com/h001/445773468443909_b3.flv?auth_key=1793186998-0-8643667920141492-a686856df417f4262c5b9498ea2089a6","exp":1793186998,"cats":["关注","热门","帖子","游戏","1V1表演","颜值"]},{"roomId":"2026102814211100030","userId":"436888669701317","userName":"杉菜","roomName":"健身馆","hot":208,"cover":"/44/1065ba12ed228e75827a25c072e41116.jpg","liveType":1,"payType":0,"moneyFen":50000,"oneToOneState":1,"url0":"https://pl.ycscts.com/h001/436888669701317_eh5.flv?auth_key=1793186998-0-8643667920141492-ca49338e249798352df19c2739222be8","url360":"https://pl.ycscts.com/h001/436888669701317_b1.flv?auth_key=1793186998-0-8643667920141492-fcf91a660f5cf92bf468afab8cdfc8ca","url720":"https://pl.ycscts.com/h001/436888669701317_b3.flv?auth_key=1793186998-0-8643667920141492-80031ee0d17dc097427d1b2946237fb7","exp":1793186998,"cats":["关注","热门","帖子","游戏","1V1表演","颜值"]},{"roomId":"2026102814013500043","userId":"7950565662272695","userName":"小美","roomName":"新人特价，一一喷水","hot":208,"cover":"/24/d30e4660996a996fc9f1584995ec0199.jpg","liveType":1,"payType":0,"moneyFen":10000,"oneToOneState":1,"url0":"https://pl.ycscts.com/h001/7950565662272695_eh5.flv?auth_key=1793186998-0-8643667920141492-efd247621be32eab42a0799b5be284d2","url360":"https://pl.ycscts.com/h001/7950565662272695_b1.flv?auth_key=1793186998-0-8643667920141492-0dace6256455f30fd06ed58e5cad653f","url720":"https://pl.ycscts.com/h001/7950565662272695_b3.flv?auth_key=1793186998-0-8643667920141492-968b89f387fd3595e4ad6527343ffce4","exp":1793186998,"cats":["关注","热门","帖子","游戏","1V1表演","颜值"]},{"roomId":"2026102814223100078","userId":"8443394148901175","userName":"熬夜大王","roomName":"随便聊聊","hot":207,"cover":"/77/755d97d4a712d61b205ea6d0073e2864.jpg","liveType":1,"payType":0,"moneyFen":30000,"oneToOneState":1,"url0":"https://pl.ycscts.com/h001/8443394148901175_eh5.flv?auth_key=1793186998-0-8643667920141492-790c689d802c3e3232f18c2886f242f6","url360":"https://pl.ycscts.com/h001/8443394148901175_b1.flv?auth_key=1793186998-0-8643667920141492-57060e72a061130d34304f84f1e50ad9","url720":"https://pl.ycscts.com/h001/8443394148901175_b3.flv?auth_key=1793186998-0-8643667920141492-3d639b6fdfb2718e6a86fd2df5c9ce31","exp":1793186998,"cats":["关注","热门","帖子","游戏","1V1表演","颜值"]},{"roomId":"2026102812104700037","userId":"6903314597741491","userName":"宝贝要爸爸","roomName":"道具很水","hot":207,"cover":"/116/5ce81c7daa0aec335f322028780f6219.jpg","liveType":1,"payType":2,"moneyFen":500,"oneToOneState":0,"url0":"https://pl.ycscts.com/h001/6903314597741491_eh5.flv?auth_key=1793186998-0-8643667920141492-9ef2e0a225c432c558723e89006780f7","url360":"https://pl.ycscts.com/h001/6903314597741491_b1.flv?auth_key=1793186998-0-8643667920141492-1b83a4f18aff81b702036a0f4a7e6e2d","url720":"https://pl.ycscts.com/h001/6903314597741491_b3.flv?auth_key=1793186998-0-8643667920141492-bf43c6246f2ecc6e22bb91798eda6cee","exp":1793186998,"cats":["关注","热门","收费","帖子","游戏","颜值"]},{"roomId":"2026102814261400165","userId":"8592237504649657","userName":"骚骚的少妇","roomName":"水汪汪的骚妇","hot":206,"cover":"/tx/7.png","liveType":1,"payType":0,"moneyFen":10000,"oneToOneState":2,"url0":"","url360":"https://pl.ycscts.com/h001/8592237504649657_one_b1.flv?auth_key=1793186998-0-8643667920141492-4bb8f5871274b2c93ac28f39d3dfd573","url720":"https://pl.ycscts.com/h001/8592237504649657_one_b3.flv?auth_key=1793186998-0-8643667920141492-be92e910263ca9a52167e1abb89e78c3","exp":0,"cats":["关注","热门","帖子","新人","游戏","1V1表演","颜值"]},{"roomId":"2026102813495700032","userId":"7108762140181819","userName":"怼怼","roomName":"身材 户型 天花板","hot":206,"cover":"/122/37eaca653d5e543091b535a618e1686c.jpg","liveType":1,"payType":0,"moneyFen":10000,"oneToOneState":1,"url0":"https://pl.ycscts.com/h001/7108762140181819_eh5.flv?auth_key=1793186998-0-8643667920141492-c4c07f971f45113ddd0bda5b46a513ae","url360":"https://pl.ycscts.com/h001/7108762140181819_b1.flv?auth_key=1793186998-0-8643667920141492-47dab81230598931f408fa5a061296ce","url720":"https://pl.ycscts.com/h001/7108762140181819_b3.flv?auth_key=1793186998-0-8643667920141492-c042b4304ae2a29a751f4182ff9a2c3f","exp":1793186998,"cats":["关注","热门","帖子","游戏","1V1表演","颜值"]},{"roomId":"2026102813430700063","userId":"8464743053655736","userName":"清筱","roomName":"可视频","hot":206,"cover":"/97/51495d1a1562339f97f31cb31ddd83c0.jpg","liveType":1,"payType":0,"moneyFen":0,"oneToOneState":0,"url0":"https://pl.ycscts.com/h001/8464743053655736_eh5.flv?auth_key=1793186998-0-8643667920141492-0aac3c0e6f3a3055946c9e8c16163570","url360":"https://pl.ycscts.com/h001/8464743053655736_b1.flv?auth_key=1793186998-0-8643667920141492-b3b4af98e19c6a9e2392f55cf3fa797d","url720":"https://pl.ycscts.com/h001/8464743053655736_b3.flv?auth_key=1793186998-0-8643667920141492-eaa1480265722b845124f9f2003d5ab6","exp":1793186998,"cats":["关注","热门","帖子","新人","游戏","颜值"]},{"roomId":"2026102814000500017","userId":"6559319745345972","userName":"李嘉欣","roomName":"做我大哥，我宠你","hot":205,"cover":"/71/19a14fbf6616469160cfb208424d7d8d.jpg","liveType":1,"payType":0,"moneyFen":20000,"oneToOneState":1,"url0":"https://pl.ycscts.com/h001/6559319745345972_eh5.flv?auth_key=1793186998-0-8643667920141492-774f6999ad0da79ca8c33d6186a1d997","url360":"https://pl.ycscts.com/h001/6559319745345972_b1.flv?auth_key=1793186998-0-8643667920141492-f7cdc128f8db13abaf2bdb7c181b29c6","url720":"https://pl.ycscts.com/h001/6559319745345972_b3.flv?auth_key=1793186998-0-8643667920141492-fb9b832aaaebcf27a38059ba7e41d9ad","exp":1793186998,"cats":["关注","热门","帖子","游戏","1V1表演","颜值"]},{"roomId":"2026102813321200038","userId":"6074638218488378","userName":"肉肉无敌","roomName":"1️⃣1️⃣超值特价秒粉鲍鱼大馒头","hot":205,"cover":"/47/ba0de39ce87c308c132ad71cd70ae5c7.jpg","liveType":1,"payType":0,"moneyFen":10000,"oneToOneState":1,"url0":"https://pl.ycscts.com/h001/6074638218488378_eh5.flv?auth_key=1793186998-0-8643667920141492-4ea37250e68d3e0cc0c4fc1cf9eeb4cc","url360":"https://pl.ycscts.com/h001/6074638218488378_b1.flv?auth_key=1793186998-0-8643667920141492-e331f4a0aca48cebecd6613ad633e85e","url720":"https://pl.ycscts.com/h001/6074638218488378_b3.flv?auth_key=1793186998-0-8643667920141492-aa5bfc5f1bf8e6de780532be43d8be61","exp":1793186998,"cats":["关注","热门","帖子","游戏","1V1表演","颜值"]},{"roomId":"2026102814203700013","userId":"421659139510469","userName":"夏晴萌","roomName":"户外偷玩跳蛋","hot":204,"cover":"/77/2951cc271a1c5e1d17b62d16d4fde2a4.jpg","liveType":1,"payType":0,"moneyFen":50000,"oneToOneState":1,"url0":"https://pl.ycscts.com/h001/421659139510469_eh5.flv?auth_key=1793186998-0-8643667920141492-b87191e932890172a5a4f46dff3b1111","url360":"https://pl.ycscts.com/h001/421659139510469_b1.flv?auth_key=1793186998-0-8643667920141492-18e8af4cb69cbb5857533aeceea6809a","url720":"https://pl.ycscts.com/h001/421659139510469_b3.flv?auth_key=1793186998-0-8643667920141492-e804c940036586ffe981afd4ba49b104","exp":1793186998,"cats":["关注","热门","帖子","游戏","1V1表演","颜值"]},{"roomId":"2026102814015700014","userId":"7783480302387895","userName":"性感的秘书","roomName":"肥逼逼","hot":204,"cover":"/21/29ae976ff4d1f43d20a7c6018ec720e7.jpg","liveType":1,"payType":2,"moneyFen":200,"oneToOneState":0,"url0":"https://pl.ycscts.com/h001/7783480302387895_eh5.flv?auth_key=1793186998-0-8643667920141492-e16a398147a321b958d8865d3d7d1680","url360":"https://pl.ycscts.com/h001/7783480302387895_b1.flv?auth_key=1793186998-0-8643667920141492-c4de10229504d90c7d9c4af3c971598e","url720":"https://pl.ycscts.com/h001/7783480302387895_b3.flv?auth_key=1793186998-0-8643667920141492-510b1488066584c582e21d98c0d54b25","exp":1793186998,"cats":["关注","热门","收费","帖子","游戏","颜值"]},{"roomId":"2026102813461300011","userId":"7810058025381816","userName":"嗳艾妮","roomName":"确实想要","hot":204,"cover":"/4/69f327564f46880ecb72b200f96ab161.jpg","liveType":1,"payType":0,"moneyFen":10000,"oneToOneState":1,"url0":"https://pl.ycscts.com/h001/7810058025381816_eh5.flv?auth_key=1793186998-0-8643667920141492-67dca18ae3d77d78296caa13ccead3cc","url360":"https://pl.ycscts.com/h001/7810058025381816_b1.flv?auth_key=1793186998-0-8643667920141492-3c23840f2c72bc89bb1010b2eee69f5b","url720":"https://pl.ycscts.com/h001/7810058025381816_b3.flv?auth_key=1793186998-0-8643667920141492-164eb890de642dd0ac691a27983d9693","exp":1793186998,"cats":["关注","热门","帖子","游戏","1V1表演","颜值"]},{"roomId":"2026102814191200010","userId":"8255102986531250","userName":"小仙女","roomName":"跳弹已连接 不服来战","hot":203,"cover":"/86/bf91517f6625984e2b486c59b5366e18.jpg","liveType":1,"payType":0,"moneyFen":10000,"oneToOneState":1,"url0":"https://pl.ycscts.com/h001/8255102986531250_eh5.flv?auth_key=1793186998-0-8643667920141492-e7d799a81274c5f8aeadcd50e5f703e8","url360":"https://pl.ycscts.com/h001/8255102986531250_b1.flv?auth_key=1793186998-0-8643667920141492-ee89e19f08cb57562e6214c200b26695","url720":"https://pl.ycscts.com/h001/8255102986531250_b3.flv?auth_key=1793186998-0-8643667920141492-49568e5aefa886310aea8eec9b94cc53","exp":1793186998,"cats":["关注","热门","帖子","游戏","1V1表演","颜值"]},{"roomId":"2026102814142800018","userId":"7211028056403258","userName":"骚小少妇","roomName":"好想要户外，晒晒太阳","hot":202,"cover":"/17/6d82c346f679a8dc35e7b2b0f8ed4834.jpg","liveType":1,"payType":0,"moneyFen":10000,"oneToOneState":1,"url0":"https://pl.ycscts.com/h001/7211028056403258_eh5.flv?auth_key=1793186998-0-8643667920141492-c6827f39957ce45bd5f05df4c0a00a99","url360":"https://pl.ycscts.com/h001/7211028056403258_b1.flv?auth_key=1793186998-0-8643667920141492-5a9e6597160fb9f4e0fc125816d636ec","url720":"https://pl.ycscts.com/h001/7211028056403258_b3.flv?auth_key=1793186998-0-8643667920141492-651b10f3f7549a8e47941e56ed03c194","exp":1793186998,"cats":["关注","热门","帖子","游戏","1V1表演","颜值"]},{"roomId":"2026102813212700011","userId":"6690552093668538","userName":"泪泪的","roomName":"新人主播","hot":202,"cover":"/1/86297bc1a6c6f2d570c5bf6e00671a72.jpg","liveType":1,"payType":0,"moneyFen":100000,"oneToOneState":1,"url0":"https://pl.ycscts.com/h001/6690552093668538_eh5.flv?auth_key=1793186998-0-8643667920141492-45a539e34e873e4d9695ca47c9cc13f3","url360":"https://pl.ycscts.com/h001/6690552093668538_b1.flv?auth_key=1793186998-0-8643667920141492-1392093156dedaf9097d461f5db11086","url720":"https://pl.ycscts.com/h001/6690552093668538_b3.flv?auth_key=1793186998-0-8643667920141492-cc95a84b533084d0e98eaf8e36a6d3b8","exp":1793186998,"cats":["关注","热门","帖子","游戏","1V1表演","颜值"]},{"roomId":"2026102814295200088","userId":"7413794699235895","userName":"约妹聊天","roomName":"瑜伽老师自慰喷裸体高难度动作","hot":0,"cover":"/1/d2fcccb427e1ccad06095f68f861f483.jpg","liveType":1,"payType":0,"moneyFen":0,"oneToOneState":0,"url0":"https://pl.ycscts.com/h001/7413794699235895_eh5.flv?auth_key=1793187001-0-8643667920141492-87f160f44364b32bb06286227c7f9f5f","url360":"https://pl.ycscts.com/h001/7413794699235895_b1.flv?auth_key=1793187001-0-8643667920141492-8a5bbc3dac91caecec84e11638e50cc1","url720":"https://pl.ycscts.com/h001/7413794699235895_b3.flv?auth_key=1793187001-0-8643667920141492-a118ba8e41524e402dd69c1b2ad45f35","exp":1793187001,"cats":["热门","游戏","颜值"]}];
+const CATS  = ["关注","热门","收费","帖子","新人","游戏","1V1表演","颜值"];
+const BUILD = "2026-10-28 14:30:09";
+const IMG_BASES = [
+  "https://rgf.rucqnij.xyz",
+  "https://utp.opuxrcm.com",
+  "https://ytt.jvjzmc.com"
+];
+
+/* 封面图地址链路
+   源站图床（imgEncryDomain = rgf.rucqnij.xyz）在真实 JPEG 前面多塞了 1 个字节做防盗链，
+   浏览器直接 <img src> 解码失败 = 页面上看不到任何封面。
+   因此优先走本地服务的 /img 代理（剥掉前缀字节后下发，带磁盘缓存），
+   代理不可用时再退回各图床直连（大概率仍然解码失败，仅作兜底）。*/
+function coverSources(path){
+  if(!path) return [];
+  if(/^https?:\/\//i.test(path)) return [path];
+  const list = [];
+  if(location.protocol === 'http:' || location.protocol === 'https:'){
+    list.push('/img?u=' + encodeURIComponent(path));
+  }
+  IMG_BASES.forEach(b => list.push(b + path));
+  return list;
+}
+
+const CAT_COUNT = {};
+CATS.forEach(c => CAT_COUNT[c] = 0);
+ROOMS.forEach(r => (r.cats || []).forEach(c => {
+  if (CAT_COUNT[c] === undefined) CAT_COUNT[c] = 0;
+  CAT_COUNT[c]++;
+}));
+
+let curCat  = "全部";
+let curPage = 1;
+let pageSize = 24;
+const quality = {};
+
+const $grid  = document.getElementById('grid');
+const $empty = document.getElementById('empty');
+const $pager = document.getElementById('pager');
+const $cats  = document.getElementById('cats');
+
+document.getElementById('meta').textContent =
+  `共 ${ROOMS.length} 个在线房间 · ${CATS.length} 个类别 · 数据时间 ${BUILD}`;
+
+function el(tag, cls, txt){
+  const e = document.createElement(tag);
+  if(cls) e.className = cls;
+  if(txt !== undefined) e.textContent = txt;
+  return e;
+}
+
+/* 1V1 常见：原画位为空，只有 360/720（_one_ 前缀） */
+function defaultQuality(r){
+  if(r.url0) return 'url0';
+  if(r.url720) return 'url720';
+  if(r.url360) return 'url360';
+  return 'url0';
+}
+function pickUrl(r){
+  const want = quality[r.roomId] || defaultQuality(r);
+  return r[want] || r.url0 || r.url720 || r.url360 || '';
+}
+function isOneToOne(r){
+  if((r.cats || []).includes('1V1表演')) return true;
+  const u = (r.url0 || '') + (r.url360 || '') + (r.url720 || '');
+  return u.indexOf('_one_') >= 0;
+}
+
+/* ============ 播放器 ============ */
+const modal    = document.getElementById('modal');
+const video    = document.getElementById('video');
+const appPlayer= document.getElementById('appPlayer');
+const overlay  = document.getElementById('p-overlay');
+const pMsg     = document.getElementById('p-msg');
+const pTitle   = document.getElementById('p-title');
+const pSub     = document.getElementById('p-sub');
+const pStat    = document.getElementById('p-stat');
+const pQ       = document.getElementById('p-q');
+const pPot     = document.getElementById('p-pot');
+const pCopy    = document.getElementById('p-copy');
+const pReload  = document.getElementById('p-reload');
+const pPoster  = document.getElementById('p-poster');
+
+/* 播放器背景：连接期间先铺一张模糊封面，避免黑屏 */
+function setPoster(r){
+  const srcs = coverSources(r && r.cover);
+  pPoster.classList.remove('on');
+  if(!srcs.length){ pPoster.removeAttribute('src'); return; }
+  let i = 0;
+  pPoster.onload  = () => pPoster.classList.add('on');
+  pPoster.onerror = () => { i++; if(i < srcs.length) pPoster.src = srcs[i];
+                            else pPoster.classList.remove('on'); };
+  pPoster.src = srcs[0];
+}
+
+let jess   = null;      // jessibuca
+let curRoom = null;
+let statTimer = null;
+let playStart = 0;
+let lastBytes = 0;
+let curBitrate = 0;
+
+function destroyAll(){
+  if(jess){
+    try{ jess.destroy(); }catch(_){}
+    jess = null;
+  }
+  try{
+    video.pause();
+    video.removeAttribute('src');
+    video.load();
+  }catch(_){}
+  if(statTimer){ clearInterval(statTimer); statTimer = null; }
+}
+
+function showMsg(text, spinning){
+  overlay.classList.remove('hide');
+  pMsg.textContent = text;
+  const sp = overlay.querySelector('.spin');
+  if(sp) sp.style.display = spinning ? 'block' : 'none';
+}
+function hideMsg(){ overlay.classList.add('hide'); }
+
+function fmtBytes(n){
+  if(n > 1048576) return (n/1048576).toFixed(1) + ' MB';
+  if(n > 1024) return (n/1024).toFixed(0) + ' KB';
+  return n + ' B';
+}
+
+function updateStat(){
+  const sec = Math.round((Date.now() - playStart)/1000);
+  const over = sec >= 30;
+  pStat.innerHTML =
+    `已播 <b>${sec}s</b>` +
+    (over ? ' <i>已越过 30s 限制</i>' : '') +
+    (lastBytes ? ` · ${fmtBytes(lastBytes)}` : '') +
+    (curBitrate ? ` · ${(curBitrate/1000).toFixed(0)} KB/s` : '') +
+    ` · WASM`;
+}
+
+function playRoom(r){
+  curRoom = r;
+  pTitle.textContent = r.userName + (r.roomName ? ' · ' + r.roomName : '');
+  pSub.textContent = `${r.roomId} · payType=${r.payType ?? '-'} · moneyFen=${r.moneyFen || 0}` +
+                     (r.moneyFen > 0 ? '（收费房）' : '（免费）');
+  setPoster(r);
+
+  pQ.textContent = '';
+  [['url0','原画'],['url720','720P'],['url360','360P']].forEach(([k,label])=>{
+    const b = el('button', null, label);
+    if((quality[r.roomId]||defaultQuality(r)) === k) b.classList.add('on');
+    if(!r[k]){ b.disabled = true; b.style.opacity = .3; b.style.cursor='default'; }
+    b.onclick = () => {
+      quality[r.roomId] = k;
+      pQ.querySelectorAll('button').forEach(x=>x.classList.remove('on'));
+      b.classList.add('on');
+      startPlay();
+    };
+    pQ.appendChild(b);
+  });
+
+  modal.classList.add('on');
+  startPlay();
+}
+
+function startPlay(){
+  const r = curRoom;
+  if(!r) return;
+  const rawUrl = pickUrl(r);
+  pPot.href = 'potplayer://' + rawUrl;
+
+  destroyAll();
+  lastBytes = 0; curBitrate = 0;
+  playStart = Date.now();
+  updateStat();
+  statTimer = setInterval(updateStat, 500);
+
+  if(r.oneToOneState === 2){
+    showMsg('主播正在 1V1 表演中。\n服务端此时不下发视频流，需先购买表演项目才能观看。', false);
+    return;
+  }
+  if(!rawUrl){
+    showMsg('该房间当前没有可播放的推流地址（可能未开播或已下播）', false);
+    return;
+  }
+
+  startWasm(rawUrl);
+}
+/* ---------- WASM 直连（jessibuca，软解 HEVC） ---------- */
+function startWasm(rawUrl){
+  if(!window.Jessibuca){
+    showMsg('jessibuca.js 未加载，请确认 web 目录下有 jessibuca.js / decoder.js / decoder.wasm', false);
+    return;
+  }
+  appPlayer.style.display = 'block';
+  video.style.display = 'none';
+  showMsg('正在连接直播流（WASM 软解）…', true);
+
+  if(!jess){
+    jess = new window.Jessibuca({
+      container: appPlayer,
+      decoder: './decoder.js',
+      videoBuffer: 0.15,
+      loadingText: '',
+      debug: false,
+      isNotMute: true,
+      hasVideo: true,
+      hasAudio: true,
+      keepScreenOn: true,
+      forceNoOffscreen: false,
+      useWCS: true,
+      autoWasm: true,
+      heartTimeoutReplay: true,
+      heartTimeoutReplayTimes: 2,
+      text: ''
+    });
+    jess.on('error', (e) => {
+      console.warn('jessibuca error', e);
+      showMsg('WASM 播放出错：' + e + '\n可点「重新连接」重试，或检查网络。', false);
+    });
+    jess.on('timeout', () => showMsg('拉流超时。可点「重新连接」重试。', false));
+    jess.on('videoInfo', (info) => {
+      try{
+        if(info && info.width) pSub.textContent += ` · ${info.width}x${info.height}`;
+      }catch(_){}
+    });
+  }
+  const doPlay = () => {
+    try{
+      const p = jess.play(rawUrl);
+      if(p && p.then) p.then(()=>{ hideMsg(); updateStat(); }).catch(err=>showMsg('播放失败：'+err, false));
+      else setTimeout(hideMsg, 800);
+    }catch(e){ showMsg('播放失败：' + e.message, false); }
+  };
+  let loaded = false;
+  try{ loaded = jess.hasLoaded && jess.hasLoaded(); }catch(_){ loaded = false; }
+  if(loaded) doPlay();
+  else jess.on('load', doPlay);
+}
+
+function closePlayer(){
+  destroyAll();
+  modal.classList.remove('on');
+  curRoom = null;
+}
+document.getElementById('p-close').onclick = closePlayer;
+pReload.onclick = () => { if(curRoom) startPlay(); };
+modal.addEventListener('click', (e) => { if(e.target === modal) closePlayer(); });
+document.addEventListener('keydown', (e) => {
+  if(e.key === 'Escape' && modal.classList.contains('on')) closePlayer();
+});
+
+pCopy.onclick = async () => {
+  const u = curRoom ? pickUrl(curRoom) : '';
+  try{ await navigator.clipboard.writeText(u); pCopy.textContent = '已复制'; }
+  catch(_){
+    const ta = document.createElement('textarea');
+    ta.value = u; document.body.appendChild(ta); ta.select();
+    document.execCommand('copy'); ta.remove(); pCopy.textContent = '已复制';
+  }
+  setTimeout(()=>pCopy.textContent='复制地址', 1200);
+};
+
+/* ============ 令牌管理 ============ */
+const tkDlg    = document.getElementById('tkDlg');
+const tkStatus = document.getElementById('tk-status');
+const tkInput  = document.getElementById('tk-input');
+const tkBtn    = document.getElementById('tk-btn');
+
+function setTkStatus(txt, cls){
+  tkStatus.textContent = txt;
+  tkStatus.className = 'tk-status' + (cls ? ' ' + cls : '');
+}
+
+function renderToken(j){
+  if(!j) return;
+  if(!j.has_token){
+    setTkStatus('未设置令牌，请粘贴后再试', 'bad');
+    tkBtn.classList.add('warn');
+    return;
+  }
+  if(j.valid){
+    setTkStatus('令牌有效 · ' + j.preview + (j.source === 'rotated' ? ' · 服务端已自动续期' : ''), 'ok');
+    tkBtn.classList.remove('warn');
+  }else{
+    setTkStatus('令牌已失效：' + (j.msg || '未知原因') + ' · ' + j.preview, 'bad');
+    tkBtn.classList.add('warn');
+  }
+}
+
+async function checkToken(force){
+  try{
+    const r = await fetch('/api/token' + (force ? '?force=1' : ''), {cache:'no-store'});
+    const j = await r.json();
+    renderToken(j);
+    return j;
+  }catch(e){
+    setTkStatus('无法连接本地服务：' + e.message, 'bad');
+    return null;
+  }
+}
+
+tkBtn.onclick = () => { tkDlg.classList.add('on'); checkToken(false); };
+document.getElementById('tk-close').onclick = () => tkDlg.classList.remove('on');
+document.getElementById('tk-check').onclick = () => { setTkStatus('校验中…'); checkToken(true); };
+
+document.getElementById('tk-save').onclick = async () => {
+  const t = tkInput.value.trim();
+  if(!t){ setTkStatus('请先粘贴令牌', 'bad'); return; }
+  setTkStatus('校验令牌中…');
+  try{
+    const r = await fetch('/api/token', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({token: t})
+    });
+    const j = await r.json();
+    if(!j.ok){ setTkStatus('保存失败：' + (j.msg || ''), 'bad'); return; }
+    setTkStatus('令牌已保存，正在刷新房间数据（约 30 秒）…');
+    const r2 = await fetch('/api/refresh', {method:'POST'});
+    const j2 = await r2.json();
+    if(j2.ok){
+      setTkStatus('完成，即将重新加载页面', 'ok');
+      setTimeout(()=>location.reload(), 800);
+    }else{
+      setTkStatus('刷新失败：' + (j2.msg || ''), 'bad');
+    }
+  }catch(e){
+    setTkStatus('请求失败：' + e.message, 'bad');
+  }
+};
+
+/* 启动时自检：令牌缺失/失效就自动弹窗 */
+(async () => {
+  const j = await checkToken(false);
+  if(j && (!j.has_token || !j.valid)) tkDlg.classList.add('on');
+})();
+
+/* ============ 列表 ============ */
+function renderCats(){
+  $cats.textContent = '';
+  const all = el('button', null, '全部');
+  all.appendChild(el('span','n', String(ROOMS.length)));
+  if(curCat === '全部') all.classList.add('on');
+  all.onclick = () => { curCat = '全部'; curPage = 1; renderCats(); render(); };
+  $cats.appendChild(all);
+
+  CATS.forEach(c => {
+    const b = el('button', null, c);
+    b.appendChild(el('span','n', String(CAT_COUNT[c] || 0)));
+    if(curCat === c) b.classList.add('on');
+    b.onclick = () => { curCat = c; curPage = 1; renderCats(); render(); };
+    $cats.appendChild(b);
+  });
+}
+
+function makeCover(r){
+  const wrap = el('div','cover');
+  const ph = el('div','ph', (r.userName||'?').slice(0,1));
+  wrap.appendChild(ph);
+
+  // 按 coverSources() 的顺序逐个尝试：本地代理 → 各图床直连
+  const srcs = coverSources(r.cover);
+  if(srcs.length){
+    let i = 0;
+    const img = document.createElement('img');
+    img.alt = r.userName || '';
+    img.loading = 'lazy';
+    img.referrerPolicy = 'no-referrer';
+    img.onerror = () => {
+      i++;
+      if(i < srcs.length) img.src = srcs[i];
+      else img.remove();   // 全部失败 → 只留占位字母
+    };
+    img.src = srcs[0];
+    wrap.appendChild(img);
+  }
+  const isPay = (r.moneyFen || 0) > 0;
+  const performing = r.oneToOneState === 2;
+  let t = r.liveType === 1 ? '视频直播' : (r.liveType === 2 ? '语音房' : '直播');
+  if(performing) t = '1V1表演中';
+  else if(isOneToOne(r)) t = '1V1 · ' + t;
+  if(isPay && !performing) t += ' · 收费';
+  wrap.appendChild(el('div', 'badge' + ((isPay || performing) ? ' pay' : ''), t));
+  wrap.appendChild(el('div','hot', '🔥 ' + r.hot));
+  wrap.appendChild(el('div','playmask', '▶'));
+  wrap.onclick = () => playRoom(r);
+  return wrap;
+}
+
+function makeCard(r){
+  const card = el('div','card');
+  card.appendChild(makeCover(r));
+
+  const body = el('div','body');
+  body.appendChild(el('div','name', r.userName));
+  body.appendChild(el('div','title', r.roomName || '（无标题）'));
+
+  const row = el('div','row');
+  row.appendChild(el('code', null, r.roomId));
+  if(r.exp){
+    const left = Math.round((r.exp*1000 - Date.now())/60000);
+    const tag = el('span', null, left > 0 ? `有效 ${left} 分钟` : '已过期');
+    tag.style.color = left > 0 ? 'var(--ok)' : '#ff7a7a';
+    row.appendChild(tag);
+  }
+  if((r.moneyFen || 0) > 0){
+    const tag = el('span', null, `门票 ¥${(r.moneyFen/100).toFixed(0)}`);
+    tag.style.color = 'var(--warn)';
+    row.appendChild(tag);
+  }
+  body.appendChild(row);
+
+  if(r.cats && r.cats.length){
+    const cs = el('div','cats');
+    r.cats.forEach(c => cs.appendChild(el('i', null, c)));
+    body.appendChild(cs);
+  }
+
+  const q = el('div','q');
+  [['url0','原画'],['url720','720P'],['url360','360P']].forEach(([k,label])=>{
+    const b = el('button', null, label);
+    if((quality[r.roomId]||defaultQuality(r))===k) b.classList.add('on');
+    if(!r[k]) { b.disabled = true; b.style.opacity = .35; b.style.cursor='default'; }
+    b.onclick = () => {
+      quality[r.roomId] = k;
+      q.querySelectorAll('button').forEach(x=>x.classList.remove('on'));
+      b.classList.add('on');
+    };
+    q.appendChild(b);
+  });
+  body.appendChild(q);
+
+  const acts = el('div','acts');
+  const play = el('button','play','▶ 播放');
+  play.style.flex = '1';
+  play.onclick = () => playRoom(r);
+  acts.appendChild(play);
+
+  // 复制当前所选清晰度的播放地址
+  const cp = el('button','cp','复制');
+  cp.style.flex = '0 0 52px';
+  cp.title = '复制播放地址';
+  cp.onclick = async (ev) => {
+    ev.stopPropagation();
+    const u = pickUrl(r);
+    if(!u) return;
+    try{ await navigator.clipboard.writeText(u); }
+    catch(_){
+      const ta = document.createElement('textarea');
+      ta.value = u; document.body.appendChild(ta); ta.select();
+      document.execCommand('copy'); ta.remove();
+    }
+    cp.textContent = '已复制';
+    setTimeout(()=>{ cp.textContent = '复制'; }, 1200);
+  };
+  acts.appendChild(cp);
+
+  const pp = el('button','cp','Pot');
+  pp.style.flex = '0 0 46px';
+  pp.onclick = (ev) => {
+    ev.stopPropagation();
+    const u = pickUrl(r);
+    if(u) window.open('potplayer://' + u, '_blank');
+  };
+  acts.appendChild(pp);
+  body.appendChild(acts);
+
+  card.appendChild(body);
+  return card;
+}
+
+function renderPager(total, totalPages){
+  $pager.textContent = '';
+  if(totalPages <= 1){
+    if(total) $pager.appendChild(el('span','info', `共 ${total} 个房间`));
+    return;
+  }
+  const mk = (label, page, opts={}) => {
+    const b = el('button', null, label);
+    if(page === curPage && !opts.nav) b.classList.add('on');
+    if(opts.disabled) b.disabled = true;
+    if(!opts.disabled) b.onclick = () => {
+      curPage = page; render();
+      document.querySelector('header').scrollIntoView({behavior:'smooth', block:'start'});
+    };
+    return b;
+  };
+  $pager.appendChild(mk('‹ 上一页', Math.max(1, curPage-1), {nav:true, disabled:curPage===1}));
+  const win = new Set([1, totalPages, curPage, curPage-1, curPage+1, curPage-2, curPage+2]);
+  const pages = [...win].filter(p => p >= 1 && p <= totalPages).sort((a,b)=>a-b);
+  let prev = 0;
+  for(const p of pages){
+    if(prev && p - prev > 1) $pager.appendChild(el('span','gap','…'));
+    $pager.appendChild(mk(String(p), p));
+    prev = p;
+  }
+  $pager.appendChild(mk('下一页 ›', Math.min(totalPages, curPage+1), {nav:true, disabled:curPage===totalPages}));
+  $pager.appendChild(el('span','info', `第 ${curPage}/${totalPages} 页 · 共 ${total} 个`));
+}
+
+function render(){
+  const q = document.getElementById('q').value.trim().toLowerCase();
+  const sort = document.getElementById('sort').value;
+  pageSize = parseInt(document.getElementById('ps').value, 10) || 24;
+
+  let list = ROOMS.filter(r => {
+    if(curCat !== '全部' && !(r.cats || []).includes(curCat)) return false;
+    if(!q) return true;
+    return r.userName.toLowerCase().includes(q)
+        || r.roomName.toLowerCase().includes(q)
+        || r.roomId.includes(q);
+  });
+
+  if(sort === 'hot')  list.sort((a,b)=> b.hot - a.hot);
+  if(sort === 'free') list.sort((a,b)=> (b.moneyFen>0?1:0) - (a.moneyFen>0?1:0) || b.hot - a.hot);
+  if(sort === 'name') list.sort((a,b)=> a.userName.localeCompare(b.userName,'zh'));
+  if(sort === 'new')  list.sort((a,b)=> b.roomId.localeCompare(a.roomId));
+
+  const totalPages = Math.max(1, Math.ceil(list.length / pageSize));
+  if(curPage > totalPages) curPage = totalPages;
+  const start = (curPage - 1) * pageSize;
+  const pageItems = list.slice(start, start + pageSize);
+
+  $grid.textContent = '';
+  pageItems.forEach(r => $grid.appendChild(makeCard(r)));
+
+  $empty.style.display = list.length ? 'none' : 'block';
+  $empty.textContent = curCat === '全部' ? '没有匹配的房间' : `「${curCat}」下没有匹配的房间`;
+
+  renderPager(list.length, totalPages);
+}
+
+document.getElementById('q').addEventListener('input', () => { curPage = 1; render(); });
+document.getElementById('sort').addEventListener('change', () => { curPage = 1; render(); });
+document.getElementById('ps').addEventListener('change', () => { curPage = 1; render(); });
+
+renderCats();
+render();
+</script>
+</body>
+</html>

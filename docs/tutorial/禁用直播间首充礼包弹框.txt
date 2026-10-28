@@ -1,0 +1,38 @@
+showFirstRechargeDialog（0x12e31bc）内部就是 showDialog()（0x12e3288）+ 图片弹框 builder（0x12e331c），并先判断 getIsSdkMerchant()。要去掉弹窗，最干净的就是让这个函数“什么都不做”。先确认有没有别的调用点（避免漏网）：
+
+搜索
+0x12e31bc
+搜索
+showFirstRechargeDialog
+深度思考
+找到了，而且只有一个调用点，所以改动非常干净。下面是结论。
+
+一、弹窗触发的完整调用链
+页面 audience_live_room_page__State（混淆名 EZo__vVa）里：
+
+步骤	位置	说明
+拉取首充状态	audience_live_room_page.dart → _requestFirstRechargeState (blutter 偏移 0x12e2ee0)	调 AudienceRequest::firstRecharge 拿 firstRechargeState
+启动周期定时器	同一文件的回调 (closure 0x12e2f8c) → TimingWheel.periodic(Instance_Duration) @ 0x12e3050	这就是约 20 秒一次的定时器（Instance_Duration 是那个 20s 常量）
+判定并弹窗	定时器回调 (closure 0x12e308c) → 0x12e3190 cmp w0,NULL + 0x12e3194 b.eq + 0x12e319c bl #0x12e31bc	state 非空就弹窗
+弹窗本体	live_dialog_utils.dart → LiveDialogUtils::showFirstRechargeDialog (blutter 偏移 0x12e31bc)，内部 showDialog() @ 0x12e3288，builder @ 0x12e331c（即「首充大礼包」图片框）	先判断 getIsSdkMerchant()
+全工程只有这一处调用 showFirstRechargeDialog（已搜遍 0x12e31bc 的 xref，唯一来源就是 0x12e319c）。所以只要让这个弹窗函数什么都不做，弹窗就彻底消失，定时器照常跑但无副作用。
+
+方案 B：静态 Patch libapp.so（永久，需重签）
+用已打开的 idapro-mcp 跳到调用点（blutter 偏移 0x12e319c，在代码段内）。你已经用 out_dir/ida_script/addNames.py 导入过名字，直接搜 LiveDialogUtils::showFirstRechargeDialog 看它的唯一 xref 就能定位。把那行：
+
+code
+0x12e319c: bl #0x12e31bc   ; showFirstRechargeDialog
+改成 nop（4 字节 1F 20 03 D5，即 0xD503201F）。等价地也可以把上一行 b.eq #0x12e31b8（0x12e3194）改成无条件 b #0x12e31b8（09 00 00 14）——效果一样，都是「永远不弹」。
+
+然后重签 APK：
+
+code
+zipalign + apksigner (v1+v2+v3) 重新签名
+⚠️ 注意（apk-reverse 技能强调的风险点）：
+
+Flutter 的 libapp.so 是纯机器码，改一条指令本身安全，但有些版本会做 libapp.so 完整性校验，patch 后可能触发「非法/闪退」。先用方案 A 确认弹窗消失且 App 正常，再决定要不要做 B；B 做完必须在真机跑一遍验证启动与进房无异常。
+改完保留原始 libapp.so 备份。
+三、验证
+方案 A：Frida 加载后控制台应打印 [+] 已禁用 showFirstRechargeDialog @ 0x...；进任意直播间，等 >20 秒，原本的「首充大礼包」不再弹出。
+方案 B：重签安装后同样进房观察，并确认 App 不会因完整性校验崩溃。
+需要的话，我可以把「禁用首充弹窗」这段直接合进你之前那个 frida_live_capture.js，让它顺带把弹窗也一起干掉。

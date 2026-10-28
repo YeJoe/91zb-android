@@ -1,3 +1,4 @@
+# Android
 *.iml
 .gradle/
 local.properties
@@ -12,3 +13,18 @@ captures/
 *.aab
 *.keystore
 *.jks
+
+# Web：运行时产物（可随时重建）
+web/_imgcache/
+web/_logs/
+web/data/rooms_all.json
+
+# Web：本地凭据，绝不入库
+web/data/token.txt
+
+# Python
+__pycache__/
+*.pyc
+
+# 其他
+*.log
