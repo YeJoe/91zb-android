@@ -91,8 +91,8 @@ class PlayerActivity : AppCompatActivity(), ITXLivePlayListener {
         btnRetry.setOnClickListener { fetchAndPlay() }
         findViewById<View>(R.id.btnClose).setOnClickListener { finish() }
 
-        // 关掉 SDK 的控制台日志，线上不必刷 logcat
-        runCatching { TXLiveBase.setConsoleEnabled(false) }
+        // 调试期打开 SDK 控制台日志，便于在 logcat 里看解封装/解码细节
+        runCatching { TXLiveBase.setConsoleEnabled(true) }
 
         setupPlayer()
         fetchAndPlay()
@@ -220,6 +220,7 @@ class PlayerActivity : AppCompatActivity(), ITXLivePlayListener {
     // ─────────── ITXLivePlayListener ───────────
 
     override fun onPlayEvent(event: Int, param: Bundle?) {
+        Log.i(TAG, "event ${evName(event)} ($event) ${dumpBundle(param)}")
         when (event) {
             TXLiveConstants.PLAY_EVT_PLAY_BEGIN -> {
                 runOnUiThread {
@@ -234,16 +235,14 @@ class PlayerActivity : AppCompatActivity(), ITXLivePlayListener {
                 if (w > 0 && h > 0) {
                     videoW = w
                     videoH = h
-                    runOnUiThread {
-                        findViewById<TextView>(R.id.resolution).text = "${w}x$h · LiteAV 硬解"
-                    }
+                    runOnUiThread { findViewById<TextView>(R.id.resolution).text = "${w}x$h · LiteAV" }
                 }
             }
 
             TXLiveConstants.PLAY_EVT_PLAY_PROGRESS -> {
                 val pos = (param?.getInt(TXLiveConstants.EVT_PLAY_PROGRESS) ?: 0) / 1000
-                val kbps = netKbps
-                runOnUiThread { stats.text = "已播 ${pos}s · ${kbps} KB/s" }
+                playSeconds = pos
+                runOnUiThread { stats.text = "已播 ${pos}s · ${netKbps} KB/s" }
             }
 
             TXLiveConstants.PLAY_EVT_PLAY_LOADING -> {
@@ -260,11 +259,9 @@ class PlayerActivity : AppCompatActivity(), ITXLivePlayListener {
         }
 
         if (event < 0) {
-            Log.w(TAG, "play error event=$event desc=${param?.getString(TXLiveConstants.EVT_DESCRIPTION)}")
-            runOnUiThread {
-                val desc = param?.getString(TXLiveConstants.EVT_DESCRIPTION).orEmpty()
-                status.text = "播放错误($event) $desc"
-            }
+            val desc = param?.getString(TXLiveConstants.EVT_DESCRIPTION).orEmpty()
+            Log.w(TAG, "play error event=$event desc=$desc")
+            runOnUiThread { status.text = "播放错误($event) $desc" }
             // 拉流失败就换下一档清晰度，全部失败再提示
             if (urlIndex < urls.size) runOnUiThread { playNext() } else runOnUiThread {
                 overlay.visibility = View.VISIBLE
@@ -275,18 +272,60 @@ class PlayerActivity : AppCompatActivity(), ITXLivePlayListener {
 
     @Volatile
     private var netKbps = 0
+    @Volatile
+    private var lastNetLog = 0L
 
-    override fun onNetStatus(status: Bundle?) {
-        status ?: return
-        val speed = status.getInt(TXLiveConstants.NET_STATUS_NET_SPEED)   // KB/s
-        val vBitrate = status.getInt(TXLiveConstants.NET_STATUS_VIDEO_BITRATE) // kbps
+    override fun onNetStatus(bundle: Bundle?) {
+        bundle ?: return
+        val speed = bundle.getInt(TXLiveConstants.NET_STATUS_NET_SPEED)        // KB/s
+        val vBit = bundle.getInt(TXLiveConstants.NET_STATUS_VIDEO_BITRATE)     // kbps
+        val aBit = bundle.getInt(TXLiveConstants.NET_STATUS_AUDIO_BITRATE)
+        val fps = bundle.getInt(TXLiveConstants.NET_STATUS_VIDEO_FPS)
+        val vw = bundle.getInt(TXLiveConstants.NET_STATUS_VIDEO_WIDTH)
+        val vh = bundle.getInt(TXLiveConstants.NET_STATUS_VIDEO_HEIGHT)
         netKbps = speed
-        if (videoW > 0) {
-            runOnUiThread {
-                findViewById<TextView>(R.id.resolution).text =
-                    "${videoW}x$videoH · LiteAV 硬解 · ${vBitrate}kbps"
-            }
+        if (vw > 0 && vh > 0) { videoW = vw; videoH = vh }
+
+        // 每 2 秒打一次，用来判断「有没有收到码流 / 有没有出帧」
+        val now = System.currentTimeMillis()
+        if (now - lastNetLog > 2000) {
+            lastNetLog = now
+            Log.i(
+                TAG,
+                "net speed=${speed}KB/s vBit=${vBit}kbps aBit=${aBit}kbps fps=$fps " +
+                    "size=${vw}x$vh cache=${bundle.getInt(TXLiveConstants.NET_STATUS_VIDEO_CACHE)}"
+            )
         }
+
+        runOnUiThread {
+            findViewById<TextView>(R.id.resolution).text =
+                "${vw}x$vh · vBit=${vBit}k aBit=${aBit} fps=$fps"
+            stats.text = "${speed} KB/s · 已播 ${playSeconds}s"
+        }
+    }
+
+    @Volatile
+    private var playSeconds = 0
+
+    private fun evName(e: Int): String = when (e) {
+        TXLiveConstants.PLAY_EVT_PLAY_BEGIN -> "PLAY_BEGIN"
+        TXLiveConstants.PLAY_EVT_PLAY_PROGRESS -> "PROGRESS"
+        TXLiveConstants.PLAY_EVT_PLAY_END -> "PLAY_END"
+        TXLiveConstants.PLAY_EVT_PLAY_LOADING -> "LOADING"
+        TXLiveConstants.PLAY_EVT_CHANGE_RESOLUTION -> "CHANGE_RESOLUTION"
+        TXLiveConstants.PLAY_EVT_RCV_FIRST_I_FRAME -> "RCV_FIRST_I_FRAME"
+        TXLiveConstants.PLAY_ERR_NET_DISCONNECT -> "ERR_NET_DISCONNECT"
+        else -> "EVT"
+    }
+
+    private fun dumpBundle(b: Bundle?): String {
+        if (b == null) return "{}"
+        val sb = StringBuilder("{")
+        for (k in b.keySet()) {
+            val v = runCatching { b.get(k) }.getOrNull()
+            sb.append(k).append('=').append(v).append(' ')
+        }
+        return sb.append('}').toString()
     }
 
     private fun onStatus(msg: String) {
