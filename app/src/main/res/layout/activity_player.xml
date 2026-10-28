@@ -4,8 +4,9 @@
     android:layout_height="match_parent"
     android:background="#000000">
 
-    <SurfaceView
-        android:id="@+id/surface"
+    <!-- TXCloudVideoView 由代码动态创建后加入这里（LiteAV 播放器专用渲染视图） -->
+    <FrameLayout
+        android:id="@+id/videoBox"
         android:layout_width="match_parent"
         android:layout_height="match_parent" />
 

@@ -3,15 +3,18 @@ package com.jjlive.app
 import android.content.Context
 import android.content.Intent
 import android.os.Bundle
-import android.view.Gravity
-import android.view.SurfaceHolder
-import android.view.SurfaceView
+import android.util.Log
 import android.view.View
 import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.TextView
-import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import com.tencent.rtmp.ITXLivePlayListener
+import com.tencent.rtmp.TXLiveBase
+import com.tencent.rtmp.TXLiveConstants
+import com.tencent.rtmp.TXLivePlayConfig
+import com.tencent.rtmp.TXLivePlayer
+import com.tencent.rtmp.ui.TXCloudVideoView
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -22,12 +25,21 @@ import kotlinx.coroutines.withContext
 /**
  * 播放页。
  *
- * 流程：调 /app/live/joinRoom 拿最新播放地址（字段 pullAddress*，
- * 同时兼容列表接口的 pullStreamAddr*）→ FlvLivePlayer 硬解 HEVC。
+ * 解码链路与原版 App 一致：腾讯云 LiteAV / TXLivePlayer。
+ *
+ * 为什么不能自己解封装：这个 CDN 下发的是腾讯云私有扩展 FLV —— 序列头是
+ * codecId=12(HEVC)，但关键帧 tag 统一标成 0x1d(codecId=13)，载荷不是标准
+ * Annex-B NAL，ffmpeg / ExoPlayer 都直接报 "Video codec (d) is not implemented"。
+ * 只有 LiteAV 内置的 txffmpeg 认这个封装，所以这里直接复用它的播放器。
+ *
+ * 流程：/app/live/joinRoom 拿最新地址（pullAddress*，兼容 pullStreamAddr*）
+ * → TXLivePlayer.startPlay(url, PLAY_TYPE_LIVE_FLV)。
  */
-class PlayerActivity : AppCompatActivity(), SurfaceHolder.Callback, FlvLivePlayer.Listener {
+class PlayerActivity : AppCompatActivity(), ITXLivePlayListener {
 
     companion object {
+        private const val TAG = "PlayerActivity"
+
         fun start(ctx: Context, room: Room) {
             ctx.startActivity(
                 Intent(ctx, PlayerActivity::class.java)
@@ -41,19 +53,22 @@ class PlayerActivity : AppCompatActivity(), SurfaceHolder.Callback, FlvLivePlaye
     private lateinit var api: Api
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
 
-    private lateinit var surface: SurfaceView
+    private lateinit var videoBox: FrameLayout
+    private lateinit var videoView: TXCloudVideoView
     private lateinit var danmaku: DanmakuView
     private lateinit var status: TextView
     private lateinit var stats: TextView
     private lateinit var overlay: View
     private lateinit var btnRetry: Button
 
-    private var player: FlvLivePlayer? = null
+    private var player: TXLivePlayer? = null
     private var im: ImSocket? = null
     private var roomId = ""
     private var roomName = ""
     private var urls: List<String> = emptyList()
     private var urlIndex = 0
+    private var videoW = 0
+    private var videoH = 0
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -64,7 +79,7 @@ class PlayerActivity : AppCompatActivity(), SurfaceHolder.Callback, FlvLivePlaye
         roomId = intent.getStringExtra("roomId") ?: ""
         roomName = intent.getStringExtra("name") ?: ""
 
-        surface = findViewById(R.id.surface)
+        videoBox = findViewById(R.id.videoBox)
         danmaku = findViewById(R.id.danmaku)
         status = findViewById(R.id.status)
         stats = findViewById(R.id.stats)
@@ -72,37 +87,67 @@ class PlayerActivity : AppCompatActivity(), SurfaceHolder.Callback, FlvLivePlaye
         btnRetry = findViewById(R.id.btnRetry)
 
         findViewById<TextView>(R.id.title).text = roomName
-        surface.holder.addCallback(this)
 
         btnRetry.setOnClickListener { fetchAndPlay() }
         findViewById<View>(R.id.btnClose).setOnClickListener { finish() }
-    }
 
-    override fun surfaceCreated(holder: SurfaceHolder) {
+        // 关掉 SDK 的控制台日志，线上不必刷 logcat
+        runCatching { TXLiveBase.setConsoleEnabled(false) }
+
+        setupPlayer()
         fetchAndPlay()
     }
 
-    override fun surfaceChanged(holder: SurfaceHolder, f: Int, w: Int, h: Int) {}
-    override fun surfaceDestroyed(holder: SurfaceHolder) {
-        player?.stop(); player = null
+    private fun setupPlayer() {
+        try {
+            videoView = TXCloudVideoView(this).apply {
+                layoutParams = FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.MATCH_PARENT
+                )
+            }
+            videoBox.addView(videoView)
+
+            player = TXLivePlayer(this).apply {
+                setPlayerView(videoView)
+                // 竖屏 1080x1920 的流放到横屏页面上：保持比例、居中留黑边，不拉伸
+                setRenderMode(TXLiveConstants.RENDER_MODE_ADJUST_RESOLUTION)
+                setRenderRotation(TXLiveConstants.RENDER_ROTATION_0)
+                setConfig(
+                    TXLivePlayConfig().apply {
+                        setAutoAdjustCacheTime(true)
+                        setMaxAutoAdjustCacheTime(3f)
+                        setMinAutoAdjustCacheTime(1f)
+                    }
+                )
+                setPlayListener(this@PlayerActivity)
+                enableHardwareDecode(true)
+            }
+        } catch (e: Throwable) {
+            // 模拟器（x86 转译）或裁剪过的 ROM 上，LiteAV 的 .so 可能加载失败
+            Log.e(TAG, "LiteAV init failed", e)
+            player = null
+            onStatus("播放组件初始化失败：${e.javaClass.simpleName}（该设备可能不支持）")
+            btnRetry.visibility = View.VISIBLE
+        }
     }
 
     private fun fetchAndPlay() {
         if (store.token == null) { onStatus("未设置令牌"); return }
+        if (player == null) return
         overlay.visibility = View.VISIBLE
         onStatus("正在获取播放地址…")
         urls = emptyList()
         urlIndex = 0
 
         scope.launch {
-            // 进房接口拿最新地址；失败则退回列表里带来的（此处重新请求列表）
             val detail = withContext(Dispatchers.IO) {
                 runCatching { api.call("/app/live/joinRoom", mapOf("liveId" to roomId)) }.getOrNull()
             }
             val data = detail?.optJSONObject("data")
             val room = data?.let { Parser.room(it) }
 
-            // 依次尝试：原画 → 720P → 360P，换个地址可能换一种编码（H.265/H.264）
+            // 原画 → 720P → 360P
             urls = listOf(room?.url0, room?.url720, room?.url360)
                 .filterNotNull().filter { it.isNotBlank() }.distinct()
 
@@ -125,18 +170,25 @@ class PlayerActivity : AppCompatActivity(), SurfaceHolder.Callback, FlvLivePlaye
         }
     }
 
-    /** 播放候选地址里的下一个；解码器启动失败时会被调用。 */
+    /** 依次尝试候选清晰度；播放失败会被切到下一个。 */
     private fun playNext() {
+        val p = player ?: return
         if (urlIndex >= urls.size) {
-            onStatus("所有清晰度都无法解码（设备不支持该视频编码）")
+            onStatus("播放失败：所有清晰度都无法播放")
             btnRetry.visibility = View.VISIBLE
             return
         }
         val url = urls[urlIndex++]
-        player?.stop()
-        player = FlvLivePlayer(surface.holder.surface).also {
-            it.listener = this
-            it.start(url)
+        runCatching { p.stopPlay(true) }
+        videoW = 0
+        videoH = 0
+        val ret = p.startPlay(url, TXLivePlayer.PLAY_TYPE_LIVE_FLV)
+        Log.i(TAG, "startPlay[$urlIndex/${urls.size}] ret=$ret url=${url.substringBefore('?')}")
+        if (ret != 0) {
+            // 常见：-5 需要 License、-1 地址非法、-2 无效地址
+            onStatus("startPlay 失败 ret=$ret")
+            playNext()
+            return
         }
         btnRetry.visibility = View.GONE
         if (im == null) startDanmaku()
@@ -147,7 +199,7 @@ class PlayerActivity : AppCompatActivity(), SurfaceHolder.Callback, FlvLivePlaye
         im?.close()
         im = ImSocket(token, store.deviceUid).also { s ->
             s.listener = object : ImSocket.Listener {
-                override fun onOpen() { runOnUiThread { onStatus("已连接弹幕") } }
+                override fun onOpen() {}
                 override fun onClosed(reason: String) {}
                 override fun onMessage(text: String) {
                     val cn = Regex("\"cn\":\"([^\"]*)\"").find(text)?.groupValues?.getOrNull(1)
@@ -165,70 +217,86 @@ class PlayerActivity : AppCompatActivity(), SurfaceHolder.Callback, FlvLivePlaye
         }
     }
 
-    // ─────────── FlvLivePlayer.Listener ───────────
+    // ─────────── ITXLivePlayListener ───────────
 
-    override fun onStatus(msg: String) {
-        runOnUiThread {
-            status.text = msg
-            if (msg.contains("解码") || msg.contains("已连接")) overlay.visibility = View.GONE
-        }
-    }
-
-    override fun onVideoSize(w: Int, h: Int) {
-        runOnUiThread {
-            // 展示实际启用的解码器：本机没有硬解时会落到 OMX.google.*（软解）
-            val label = player?.codecLabel.orEmpty()
-            val mode = when {
-                label.startsWith("OMX.google") -> "软解"
-                label.isEmpty() -> "解码中"
-                else -> "硬解"
+    override fun onPlayEvent(event: Int, param: Bundle?) {
+        when (event) {
+            TXLiveConstants.PLAY_EVT_PLAY_BEGIN -> {
+                runOnUiThread {
+                    overlay.visibility = View.GONE
+                    status.text = "播放中"
+                }
             }
-            findViewById<TextView>(R.id.resolution).text = "${w}x${h} · ${mode}"
-            fitVideo(w, h)
+
+            TXLiveConstants.PLAY_EVT_CHANGE_RESOLUTION -> {
+                val w = param?.getInt(TXLiveConstants.EVT_PARAM1) ?: 0
+                val h = param?.getInt(TXLiveConstants.EVT_PARAM2) ?: 0
+                if (w > 0 && h > 0) {
+                    videoW = w
+                    videoH = h
+                    runOnUiThread {
+                        findViewById<TextView>(R.id.resolution).text = "${w}x$h · LiteAV 硬解"
+                    }
+                }
+            }
+
+            TXLiveConstants.PLAY_EVT_PLAY_PROGRESS -> {
+                val pos = (param?.getInt(TXLiveConstants.EVT_PLAY_PROGRESS) ?: 0) / 1000
+                val kbps = netKbps
+                runOnUiThread { stats.text = "已播 ${pos}s · ${kbps} KB/s" }
+            }
+
+            TXLiveConstants.PLAY_EVT_PLAY_LOADING -> {
+                runOnUiThread { status.text = "缓冲中…" }
+            }
+
+            TXLiveConstants.PLAY_EVT_PLAY_END -> {
+                runOnUiThread {
+                    status.text = "直播已结束"
+                    overlay.visibility = View.VISIBLE
+                    btnRetry.visibility = View.VISIBLE
+                }
+            }
+        }
+
+        if (event < 0) {
+            Log.w(TAG, "play error event=$event desc=${param?.getString(TXLiveConstants.EVT_DESCRIPTION)}")
+            runOnUiThread {
+                val desc = param?.getString(TXLiveConstants.EVT_DESCRIPTION).orEmpty()
+                status.text = "播放错误($event) $desc"
+            }
+            // 拉流失败就换下一档清晰度，全部失败再提示
+            if (urlIndex < urls.size) runOnUiThread { playNext() } else runOnUiThread {
+                overlay.visibility = View.VISIBLE
+                btnRetry.visibility = View.VISIBLE
+            }
         }
     }
 
-    /** 按视频宽高比缩放 SurfaceView，居中留黑边，避免被拉伸变形。 */
-    private fun fitVideo(vw: Int, vh: Int) {
-        if (vw <= 0 || vh <= 0) return
-        val parent = surface.parent as? View ?: return
-        val cw = parent.width
-        val chh = parent.height
-        if (cw <= 0 || chh <= 0) return
-        val scale = minOf(cw.toFloat() / vw, chh.toFloat() / vh)
-        val lp = (surface.layoutParams as? FrameLayout.LayoutParams)
-            ?: FrameLayout.LayoutParams(surface.width, surface.height)
-        lp.width = (vw * scale).toInt()
-        lp.height = (vh * scale).toInt()
-        lp.gravity = Gravity.CENTER
-        surface.layoutParams = lp
-    }
+    @Volatile
+    private var netKbps = 0
 
-    override fun onStats(bytes: Long, seconds: Int, kbps: Int) {
-        runOnUiThread {
-            stats.text = "已播 ${seconds}s · ${kbps} KB/s · ${bytes / 1024} KB"
-            if (seconds >= 30) stats.append(" · 已越过 30s 限制")
+    override fun onNetStatus(status: Bundle?) {
+        status ?: return
+        val speed = status.getInt(TXLiveConstants.NET_STATUS_NET_SPEED)   // KB/s
+        val vBitrate = status.getInt(TXLiveConstants.NET_STATUS_VIDEO_BITRATE) // kbps
+        netKbps = speed
+        if (videoW > 0) {
+            runOnUiThread {
+                findViewById<TextView>(R.id.resolution).text =
+                    "${videoW}x$videoH · LiteAV 硬解 · ${vBitrate}kbps"
+            }
         }
     }
 
-    override fun onError(msg: String) {
-        if (msg == "CODEC_FAIL") {
-            // 解码器起不来，换下一个清晰度地址再试
-            runOnUiThread { playNext() }
-            return
-        }
-        onStatus(msg)
-    }
-
-    override fun onFinished() {
-        runOnUiThread {
-            overlay.visibility = View.VISIBLE
-            btnRetry.visibility = View.VISIBLE
-        }
+    private fun onStatus(msg: String) {
+        runOnUiThread { status.text = msg }
     }
 
     override fun onDestroy() {
-        player?.stop()
+        runCatching { player?.stopPlay(true) }
+        runCatching { player?.setPlayerView(null) }
+        player = null
         im?.close()
         scope.cancel()
         super.onDestroy()

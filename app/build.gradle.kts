@@ -52,4 +52,7 @@ dependencies {
     implementation("androidx.coordinatorlayout:coordinatorlayout:1.2.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    // 腾讯云播放器 SDK（8.x 免 License）。原版 App 用的就是这套解码链路：
+    // txffmpeg 自带私有 FLV 解封装，能解 HEVC 私有扩展流；MediaCodec 手写解封装解不了。
+    implementation("com.tencent.liteav:LiteAVSDK_Player:8.9.10355")
 }
