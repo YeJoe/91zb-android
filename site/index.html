@@ -1,0 +1,759 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>天美直播 · 真人直播间</title>
+<style>
+:root{
+  --bg:#0b0d12; --panel:#12151d; --panel2:#171b25; --line:#232838;
+  --txt:#e8ecf4; --dim:#8892a6; --dim2:#5d6678;
+  --red:#ff4d6d; --gold:#f5b544; --green:#3ddc97;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{
+  background:var(--bg); color:var(--txt);
+  font:14px/1.5 -apple-system,"PingFang SC","Microsoft YaHei",system-ui,sans-serif;
+  -webkit-font-smoothing:antialiased; overflow:hidden;
+}
+.app{display:flex;height:100vh}
+
+/* ============ 左栏 ============ */
+.side{width:354px;flex:0 0 354px;display:flex;flex-direction:column;
+  background:var(--panel);border-right:1px solid var(--line)}
+.head{padding:15px 16px 8px}
+.brand{display:flex;align-items:center;gap:8px;margin-bottom:12px}
+.logo{width:26px;height:26px;border-radius:8px;flex:0 0 26px;
+  background:linear-gradient(135deg,#ff4d6d,#ff8a5c);
+  display:grid;place-items:center;font-size:13px;font-weight:700;color:#fff}
+.brand h1{font-size:15px;font-weight:600;letter-spacing:.3px}
+.brand .tag{margin-left:auto;font-size:10.5px;color:var(--dim2);
+  border:1px solid var(--line);padding:2px 7px;border-radius:20px;white-space:nowrap}
+
+.search{width:100%;background:var(--panel2);border:1px solid var(--line);
+  border-radius:9px;padding:8px 11px;color:var(--txt);font-size:13px;outline:none;
+  transition:border-color .15s}
+.search:focus{border-color:#3a4256}
+.search::placeholder{color:var(--dim2)}
+
+.cats{display:flex;flex-wrap:wrap;gap:6px;padding:11px 16px 6px}
+.chip{font-size:12.5px;padding:5px 9px;border-radius:7px;cursor:pointer;
+  background:var(--panel2);border:1px solid transparent;color:var(--dim);
+  transition:all .13s;user-select:none}
+.chip:hover{color:var(--txt);border-color:var(--line)}
+.chip.on{background:rgba(255,77,109,.14);color:#ff8095;
+  border-color:rgba(255,77,109,.45);font-weight:600}
+.chip b{font-weight:400;opacity:.5;margin-left:3px;font-size:11px}
+
+.bar{display:flex;align-items:center;gap:11px;
+  padding:5px 16px 9px;font-size:12px;color:var(--dim2)}
+.bar .sort{cursor:pointer;transition:color .13s}
+.bar .sort:hover{color:var(--dim)}
+.bar .sort.on{color:var(--txt)}
+.bar .sp{margin-left:auto}
+.sw{display:flex;align-items:center;gap:5px;cursor:pointer;user-select:none}
+.sw i{width:25px;height:14px;border-radius:9px;background:#2a3040;position:relative;
+  transition:background .16s;display:block}
+.sw i::after{content:'';position:absolute;top:2px;left:2px;width:10px;height:10px;
+  border-radius:50%;background:#7b869c;transition:all .16s}
+.sw.on i{background:rgba(255,77,109,.5)}
+.sw.on i::after{left:13px;background:#fff}
+
+.list{flex:1;overflow-y:auto;padding:0 10px 14px}
+.list::-webkit-scrollbar{width:8px}
+.list::-webkit-scrollbar-thumb{background:#242a38;border-radius:4px}
+.list::-webkit-scrollbar-thumb:hover{background:#333b4d}
+
+.row{display:flex;gap:11px;padding:9px;border-radius:10px;cursor:pointer;
+  transition:background .12s;position:relative}
+.row:hover{background:var(--panel2)}
+.row.on{background:linear-gradient(90deg,rgba(255,77,109,.13),rgba(255,77,109,.03))}
+.row.on::before{content:'';position:absolute;left:0;top:12px;bottom:12px;width:3px;
+  background:var(--red);border-radius:0 3px 3px 0}
+.av{width:46px;height:46px;flex:0 0 46px;border-radius:11px;
+  display:grid;place-items:center;font-size:17px;font-weight:600;color:#fff;overflow:hidden}
+.av span{opacity:.94}
+.info{min-width:0;flex:1;display:flex;flex-direction:column;justify-content:center;gap:3px}
+.nm{font-size:13.5px;font-weight:500;white-space:nowrap;overflow:hidden;
+  text-overflow:ellipsis;line-height:1.25}
+.mt{display:flex;align-items:center;gap:7px;font-size:11.5px;color:var(--dim2);white-space:nowrap}
+.mt .live{color:var(--green);display:flex;align-items:center;gap:4px}
+.dot{width:5px;height:5px;border-radius:50%;background:var(--green);display:inline-block}
+.mt .pay{color:var(--gold)}
+.mt .ad{color:#a06a20;background:rgba(245,181,68,.1);padding:0 4px;border-radius:3px}
+/* 行内快捷操作：hover 才出现，避免列表太吵 */
+.acts{display:none;gap:5px;align-items:center;margin-left:auto;flex:0 0 auto}
+.row:hover .acts,.row.on .acts{display:flex}
+.act{font-size:10.5px;line-height:16px;padding:0 6px;border-radius:5px;cursor:pointer;
+  background:rgba(255,255,255,.05);border:1px solid var(--line);color:var(--dim);
+  white-space:nowrap;transition:all .12s}
+.act:hover{color:var(--txt);border-color:#3a4256;background:#212836}
+.act.pri{color:#ff8095;border-color:rgba(255,77,109,.35);background:rgba(255,77,109,.1)}
+.empty{padding:40px 20px;text-align:center;color:var(--dim2);font-size:13px}
+
+/* ============ 右栏 ============ */
+.main{flex:1;display:flex;flex-direction:column;min-width:0;background:var(--bg)}
+.stage{position:relative;background:#000;flex:0 0 auto;aspect-ratio:16/9;
+  max-height:calc(100vh - 290px);display:flex;align-items:center;justify-content:center;overflow:hidden}
+.stage video{width:100%;height:100%;object-fit:contain;background:#000}
+.ph{text-align:center;padding:22px;max-width:600px}
+.ph .ico{width:50px;height:50px;margin:0 auto 13px;border-radius:50%;
+  background:rgba(255,255,255,.05);display:grid;place-items:center;font-size:20px;color:var(--dim)}
+.ph h2{font-size:16px;font-weight:600;margin-bottom:8px}
+.ph p{font-size:12.5px;color:var(--dim);line-height:1.75}
+.ph code{display:block;text-align:left;margin-top:11px;padding:10px 13px;
+  background:#0a0c11;border:1px solid var(--line);border-radius:8px;
+  font:11.5px/1.65 ui-monospace,Menlo,Consolas,monospace;color:#9fb4d6;
+  white-space:pre-wrap;word-break:break-all}
+.ph .row2{display:flex;gap:8px;justify-content:center;margin-top:12px;flex-wrap:wrap}
+.btn{font-size:12.5px;padding:7px 14px;border-radius:8px;cursor:pointer;
+  background:var(--panel2);border:1px solid var(--line);color:var(--txt);transition:all .13s}
+.btn:hover{background:#1f2532;border-color:#333b4d}
+.btn.pri{background:rgba(255,77,109,.15);border-color:rgba(255,77,109,.45);color:#ff8095}
+
+.ov{position:absolute;left:0;right:0;top:0;padding:12px 16px;
+  background:linear-gradient(180deg,rgba(0,0,0,.72),transparent);
+  display:flex;align-items:center;gap:10px;pointer-events:none;z-index:2}
+.ov .t{font-size:13.5px;font-weight:500;text-shadow:0 1px 3px rgba(0,0,0,.8)}
+.ov .badge{font-size:11px;padding:2px 7px;border-radius:5px;
+  background:rgba(255,77,109,.85);color:#fff;font-weight:600}
+.ov .cnt{margin-left:auto;font-size:12px;color:#cfd6e4;text-shadow:0 1px 3px #000}
+/* 播放区右下角：复制播放源 / 调起本机播放器 */
+.stagebar{position:absolute;right:12px;top:48px;display:flex;gap:8px;z-index:3}
+.sbtn{font-size:12px;padding:6px 12px;border-radius:8px;cursor:pointer;
+  background:rgba(12,15,22,.82);border:1px solid rgba(255,255,255,.14);color:#dfe5f0;
+  backdrop-filter:blur(6px);transition:all .12s;white-space:nowrap}
+.sbtn:hover{background:rgba(20,25,36,.95);border-color:rgba(255,255,255,.28)}
+.sbtn.pri{color:#ffc0cb;border-color:rgba(255,77,109,.5);background:rgba(255,77,109,.18)}
+.sbtn.ok{color:#8fe3b0;border-color:rgba(61,220,151,.5)}
+/* 轻提示 */
+.toast{position:fixed;left:50%;bottom:32px;transform:translate(-50%,14px);
+  padding:9px 16px;border-radius:9px;background:rgba(18,22,30,.96);
+  border:1px solid var(--line);color:var(--txt);font-size:12.5px;z-index:99;
+  box-shadow:0 8px 24px rgba(0,0,0,.45);opacity:0;pointer-events:none;transition:all .2s}
+.toast.on{opacity:1;transform:translate(-50%,0)}
+
+/* ============ 聊天区 ============ */
+.chat{flex:1;display:flex;flex-direction:column;min-height:0;
+  border-top:1px solid var(--line);background:var(--panel)}
+.chat-h{display:flex;align-items:center;gap:9px;padding:9px 16px;
+  border-bottom:1px solid var(--line);font-size:12.5px;color:var(--dim)}
+.chat-h b{color:var(--txt);font-weight:500;font-size:13px;max-width:40%;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.chat-h .sp{margin-left:auto;display:flex;gap:8px;align-items:center}
+.chat-h .mini{font-size:11.5px;padding:3px 9px;border-radius:6px;cursor:pointer;
+  background:var(--panel2);border:1px solid var(--line);color:var(--dim)}
+.chat-h .mini:hover{color:var(--txt)}
+.msgs{flex:1;overflow-y:auto;padding:10px 16px 4px}
+.msgs::-webkit-scrollbar{width:8px}
+.msgs::-webkit-scrollbar-thumb{background:#242a38;border-radius:4px}
+.msg{padding:3px 0;font-size:13px;line-height:1.6;animation:in .28s ease}
+@keyframes in{from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:none}}
+.msg .u{font-weight:600;margin-right:6px}
+.msg.chat .u{color:#7fb0ff}
+.msg.bet .u{color:var(--gold)}
+.msg.bet{color:#f0c274}
+.msg.win{color:var(--green)}
+.msg.win .u{color:var(--green)}
+.msg.sys{color:var(--dim2);font-size:12.5px}
+.msg.enter{color:var(--dim);font-size:12.5px}
+.msg.enter .u{color:#b48cff}
+.msg.ad{color:#8a93a6}
+.msg.draw{color:#7fb0ff}
+.msg.follow{color:#8a93a6}
+.msg.admin{color:#8a93a6}
+.msg .tag{display:inline-block;margin-right:6px;padding:0 5px;border-radius:4px;
+  font-size:10.5px;line-height:16px;vertical-align:1px;
+  background:#2a3142;color:#9aa4b8;border:1px solid #333c50}
+.fbar{padding:6px 16px;font-size:11.5px;line-height:1.9;
+  color:var(--dim2);border-bottom:1px solid var(--line);background:#12151d;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.fbar b{color:#9aa4b8;font-weight:500}
+.fbar .dot{display:inline-block;width:4px;height:4px;border-radius:50%;
+  background:#394357;vertical-align:2px;margin:0 7px}
+.input{display:flex;gap:9px;padding:10px 16px 14px;border-top:1px solid var(--line);align-items:center}
+.input input{flex:1;background:var(--panel2);border:1px solid var(--line);border-radius:9px;
+  padding:9px 12px;color:var(--txt);font-size:13px;outline:none}
+.input input:focus{border-color:#3a4256}
+.input input::placeholder{color:var(--dim2)}
+.input button{background:var(--red);border:none;color:#fff;font-size:13px;font-weight:500;
+  padding:9px 18px;border-radius:9px;cursor:pointer;transition:filter .13s}
+.input button:hover{filter:brightness(1.1)}
+
+@media(max-width:900px){
+  .app{flex-direction:column}
+  .side{width:100%;flex:0 0 44vh;border-right:none;border-bottom:1px solid var(--line)}
+  .stage{aspect-ratio:16/10;max-height:none}
+}
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="side">
+    <div class="head">
+      <div class="brand">
+        <div class="logo">多</div>
+        <h1>真人直播间</h1>
+        <span class="tag" id="stat">—</span>
+      </div>
+      <input class="search" id="q" placeholder="搜索房间名 / 房间号">
+    </div>
+    <div class="cats" id="cats"></div>
+    <div class="bar">
+      <span class="sort on" data-sort="online">按在线</span>
+      <span class="sort" data-sort="name">按名字</span>
+      <span class="sp"></span>
+      <span class="sw" id="adsw"><i></i>含推广</span>
+    </div>
+    <div class="list" id="list"></div>
+  </aside>
+
+  <main class="main">
+    <div class="stage" id="stage">
+      <div class="ph">
+        <div class="ico">▷</div>
+        <h2>选一个直播间</h2>
+        <p>左侧是平台官方分类下的真人主播：交友 · 星秀 · 女神 · 颜值 · 舞蹈 · 音乐 · 新人。<br>
+           分类取自接口的 <code style="display:inline;padding:1px 5px;margin:0">menu_id</code> 字段，不是靠拉流猜的。</p>
+      </div>
+    </div>
+
+    <div class="chat">
+      <div class="chat-h">
+        <b id="ctitle">聊天区</b>
+        <span id="cmeta"></span>
+        <span class="sp"><span class="mini on" id="fchat" title="只显示真人聊天">只看聊天</span><span class="mini" id="fall" title="连系统消息一起看，用于核对过滤效果">全部</span><span class="mini" id="pause">暂停</span></span>
+      </div>
+      <div class="fbar" id="fbar">过滤开关决定这里出现什么：<b>只看聊天</b> 丢掉博彩/关注/开奖/广告，<b>全部</b> 保留并打标签。</div>
+      <div class="msgs" id="msgs">
+        <div class="msg sys">选中房间后这里滚动弹幕，样本取自真实抓包。</div>
+      </div>
+      <div class="input">
+        <input id="txt" placeholder="说点什么…（本地回显）">
+        <button id="send">发送</button>
+      </div>
+    </div>
+  </main>
+</div>
+
+<script src="vendor/hls.min.js"></script>
+<script src="dm_filter.js"></script>
+<script src="data.js"></script>
+<script src="dm_samples.js"></script>
+<script>
+var ROOMS = window.ROOMS || [];
+var CATS  = window.CATS  || [];
+var DMS   = window.DANMAKU || [];
+
+var S = {cat:'全部', q:'', sort:'online', showAd:false, cur:null, timer:null, paused:false};
+
+var PALETTE = [
+  ['#ff6b81','#c44569'], ['#5b9dff','#3b5bdb'], ['#3ddc97','#12805c'],
+  ['#f5b544','#c47f17'], ['#b48cff','#7048e8'], ['#ff9f68','#d95f02'],
+  ['#4dd0e1','#0097a7'], ['#ff87ab','#c2185b'], ['#9ccc65','#558b2f'],
+  ['#7986cb','#303f9f'], ['#ffd54f','#f57f17'], ['#4db6ac','#00695c']
+];
+function avStyle(id){
+  var p = PALETTE[Math.abs(id) % PALETTE.length];
+  return 'background:linear-gradient(135deg,' + p[0] + ',' + p[1] + ')';
+}
+function initial(name){
+  var s = String(name || '?').replace(/[\uFE0F\u200D]/g, '').trim();
+  var m = s.match(/[\u4e00-\u9fa5]/);
+  if (m) return m[0];
+  var al = s.match(/[A-Za-z0-9]/);
+  return al ? al[0].toUpperCase() : '·';
+}
+function fmt(n){
+  n = +n || 0;
+  if (n >= 10000) return (n / 10000).toFixed(1).replace(/\.0$/, '') + '万';
+  return String(n);
+}
+function esc(s){
+  return String(s == null ? '' : s).replace(/[&<>"]/g, function(c){
+    return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];
+  });
+}
+
+/* ---------- 分类 ---------- */
+function renderCats(){
+  var total = ROOMS.filter(function(r){ return S.showAd || !r.ad; }).length;
+  var h = '<div class="chip ' + (S.cat === '全部' ? 'on' : '') + '" data-c="全部">全部<b>' + total + '</b></div>';
+  for (var i = 0; i < CATS.length; i++){
+    var name = CATS[i][0];
+    var c = ROOMS.filter(function(r){
+      return r.cat === name && (S.showAd || !r.ad);
+    }).length;
+    if (!c) continue;
+    h += '<div class="chip ' + (S.cat === name ? 'on' : '') + '" data-c="' + esc(name) + '">' +
+         esc(name) + '<b>' + c + '</b></div>';
+  }
+  document.getElementById('cats').innerHTML = h;
+  var els = document.querySelectorAll('.chip');
+  for (var j = 0; j < els.length; j++){
+    els[j].onclick = function(){
+      S.cat = this.dataset.c;
+      renderCats(); renderList();
+    };
+  }
+}
+
+/* ---------- 列表 ---------- */
+function visible(){
+  var a = ROOMS.filter(function(r){ return S.showAd || !r.ad; });
+  if (S.cat !== '全部') a = a.filter(function(r){ return r.cat === S.cat; });
+  if (S.q){
+    var q = S.q.toLowerCase();
+    a = a.filter(function(r){
+      return (r.name || '').toLowerCase().indexOf(q) >= 0 || String(r.id).indexOf(q) >= 0;
+    });
+  }
+  if (S.sort === 'online') a.sort(function(x, y){ return y.online - x.online; });
+  else a.sort(function(x, y){ return String(x.name).localeCompare(String(y.name), 'zh'); });
+  return a;
+}
+
+function renderList(){
+  var a = visible();
+  var el = document.getElementById('list');
+  if (!a.length){
+    el.innerHTML = '<div class="empty">没有匹配的直播间</div>';
+    return;
+  }
+  var html = [];
+  for (var i = 0; i < a.length; i++){
+    var r = a[i];
+    html.push(
+      '<div class="row ' + (S.cur === r.id ? 'on' : '') + '" data-id="' + r.id + '">' +
+        '<div class="av" style="' + avStyle(r.id) + '"><span>' + esc(initial(r.name)) + '</span></div>' +
+        '<div class="info">' +
+          '<div class="nm">' + esc(r.name) + '</div>' +
+          '<div class="mt">' +
+            '<span class="live"><i class="dot"></i>' + fmt(r.online) + '</span>' +
+            '<span>' + esc(r.cat) + '</span>' +
+            (r.city && r.city !== '火星' ? '<span>' + esc(r.city) + '</span>' : '') +
+            (r.coins ? '<span class="pay">' + r.coins + '钻</span>' : '') +
+            (r.ad ? '<span class="ad">推广</span>' : '') +
+          '</div>' +
+        '</div>' +
+        '<div class="acts">' +
+          '<span class="act" data-act="copy" data-id="' + r.id + '" title="复制 rtmp 播放源">复制源</span>' +
+          '<span class="act pri" data-act="local" data-id="' + r.id + '" title="用本机播放器打开">本地播</span>' +
+        '</div>' +
+      '</div>');
+  }
+  el.innerHTML = html.join('');
+  var rows = el.querySelectorAll('.row');
+  for (var k = 0; k < rows.length; k++){
+    rows[k].onclick = function(){ select(+this.dataset.id); };
+  }
+  var acts = el.querySelectorAll('.act');
+  for (var m = 0; m < acts.length; m++){
+    acts[m].onclick = function(ev){
+      ev.stopPropagation();                 // 别把"复制/本地播"当成"选中房间"
+      var id = +this.dataset.id;
+      if (this.dataset.act === 'copy') copySource(id, this);
+      else openLocal(id);
+    };
+  }
+}
+
+/* ---------- 播放 ---------- */
+var DOMAIN = window.RTMP_DOMAIN || '1dtluv36amaiuckq.7kv5kqq7k77g.hebeisaixin.com';
+var GW = 'http://127.0.0.1:8899';   // tools/gateway.py 没开时这一路会快速失败
+var GW_OK = false;                  // 网关探活结果，决定"本地播放器"走哪条路
+var PLAYER_NAME = '';               // 网关探测到的本机播放器名
+
+function candidates(id){
+  return [
+    // 本地网关把 RTMP 无损转成 HLS，浏览器唯一能直接播的方式
+    {u: GW + '/live/' + id + '.m3u8', t:'hls', wait:14000, gw:true},
+    {u:'http://' + DOMAIN + ':1935/live/' + id + '.flv', t:'flv', wait:3500},
+    {u:'http://' + DOMAIN + '/live/' + id + '.flv',       t:'flv', wait:3500},
+    {u:'http://' + DOMAIN + '/live/' + id + '.m3u8',      t:'hls', wait:3500}
+  ];
+}
+
+/* ---------- 播放源：复制 / 调起本机播放器 ---------- */
+function rtmpOf(id){ return 'rtmp://' + DOMAIN + '/live/' + id; }
+
+function toast(msg, ok){
+  var t = document.getElementById('toast');
+  if (!t){ t = document.createElement('div'); t.id = 'toast'; t.className = 'toast';
+    document.body.appendChild(t); }
+  t.textContent = msg;
+  t.className = 'toast on' + (ok ? ' ok' : '');
+  clearTimeout(t._h);
+  t._h = setTimeout(function(){ t.className = 'toast'; }, 1900);
+}
+
+function copyText(text){
+  // 剪贴板 API 在 file:// 下会被限制，退回 execCommand
+  if (navigator.clipboard && window.isSecureContext !== false){
+    return navigator.clipboard.writeText(text).catch(function(){ return legacyCopy(text); });
+  }
+  return Promise.resolve(legacyCopy(text));
+}
+function legacyCopy(text){
+  var ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.cssText = 'position:fixed;left:-9999px;top:0';
+  document.body.appendChild(ta);
+  ta.select();
+  var ok = false;
+  try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+  document.body.removeChild(ta);
+  return ok;
+}
+
+function copySource(id, el){
+  var url = rtmpOf(id);
+  copyText(url).then(function(){
+    toast('已复制播放源：' + url, true);
+    if (el){ var old = el.textContent; el.textContent = '已复制';
+      setTimeout(function(){ el.textContent = old; }, 1400); }
+  });
+}
+
+/* 点"本地播放器"：让网关在本机起 VLC / PotPlayer / mpv；
+   网关没开就退回下载 m3u（系统默认播放器）或提示手动粘贴。 */
+function openLocal(id){
+  var url = rtmpOf(id);
+  fetch(GW + '/api/play?room=' + id, { cache: 'no-store' })
+    .then(function(r){ return r.json(); })
+    .then(function(j){
+      if (j && j.ok){
+        toast('已用 ' + (j.player || '本机播放器') + ' 打开房间 ' + id, true);
+      } else {
+        toast('本机没有找到播放器，已复制地址：' + url);
+        copyText(url);
+      }
+    })
+    .catch(function(){
+      // 网关没起：给一个 m3u 下载，浏览器会交给系统默认播放器
+      var a = document.createElement('a');
+      a.href = GW + '/play/' + id + '.m3u';
+      a.download = 'tianmei_' + id + '.m3u';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      copyText(url);
+      toast('网关未启动：已下载 m3u 并复制地址（手动粘贴到 VLC/PotPlayer 也能看）');
+    });
+}
+
+function select(id){
+  var r = null;
+  for (var i = 0; i < ROOMS.length; i++) if (ROOMS[i].id === id) r = ROOMS[i];
+  if (!r) return;
+  S.cur = id;
+  renderList();
+  document.getElementById('ctitle').textContent = r.name;
+  document.getElementById('cmeta').innerHTML =
+    '· ' + esc(r.cat) +
+    (r.city && r.city !== '火星' ? ' · ' + esc(r.city) : '') +
+    ' · ' + fmt(r.online) + ' 人在线';
+  startChat(r);
+  play(r);
+}
+
+function overlay(r){
+  return '<div class="ov">' +
+    '<span class="badge">直播</span>' +
+    '<span class="t">' + esc(r.name) + '</span>' +
+    '<span class="cnt">' + fmt(r.online) + ' 人在线</span>' +
+  '</div>';
+}
+
+function stagebar(){
+  var tip = PLAYER_NAME
+    ? ('用本机 ' + PLAYER_NAME + ' 打开（网关调起）')
+    : '用本机播放器（VLC / PotPlayer / mpv）打开；网关没开会下载 m3u';
+  return '<div class="stagebar">' +
+    '<span class="sbtn" id="sbcopy" title="复制 rtmp:// 播放源">复制播放源</span>' +
+    '<span class="sbtn pri" id="sblocal" title="' + tip + '">本地播放器</span>' +
+  '</div>';
+}
+
+function wireBar(id){
+  var c = document.getElementById('sbcopy');
+  if (c) c.onclick = function(){ copySource(id, this); };
+  var l = document.getElementById('sblocal');
+  if (l) l.onclick = function(){ openLocal(id); };
+}
+
+function play(r){
+  var st = document.getElementById('stage');
+  var cands = candidates(r.id);
+  st.innerHTML = overlay(r) + stagebar() +
+    '<div class="ph" id="ld"><div class="ico">⋯</div>' +
+    '<h2>正在连接视频流</h2><p id="pst">…</p></div>';
+  wireBar(r.id);
+
+  var pst = document.getElementById('pst');
+  var i = 0, hls = null;
+
+  function cleanup(){
+    if (hls){ try { hls.destroy(); } catch(e){} hls = null; }
+  }
+
+  function next(){
+    cleanup();
+    if (i >= cands.length){ fallback(st, r); return; }
+    var c = cands[i++];
+    pst.textContent = c.gw
+      ? '通过本地网关播放（RTMP 转 HLS）…'
+      : ('尝试 ' + c.t.toUpperCase() + '：' + c.u.replace(/^https?:\/\//, ''));
+
+    var v = document.createElement('video');
+    v.muted = true; v.autoplay = true; v.playsInline = true; v.controls = true;
+    st.appendChild(v);
+
+    var settled = false;
+    var to = setTimeout(function(){ if (!settled){ settled = true; cleanup(); v.remove(); next(); } }, c.wait || 4000);
+
+    function ok(){
+      if (settled) return;
+      settled = true; clearTimeout(to);
+      var ld = document.getElementById('ld');
+      if (ld && ld.parentNode) ld.parentNode.removeChild(ld);
+      v.play().catch(function(){});
+      // 播放停滞检测：清单解析成功不代表有画面，主播断流时会一直黑屏
+      setTimeout(function(){
+        if (!v.currentTime || v.currentTime < 0.15){
+          if (v.parentNode) v.parentNode.removeChild(v);
+          cleanup(); next();
+        }
+      }, 9000);
+    }
+    function fail(){
+      if (settled) return;
+      settled = true; clearTimeout(to);
+      cleanup(); v.remove(); next();
+    }
+
+    if (c.t === 'hls'){
+      if (window.Hls && window.Hls.isSupported()){
+        hls = new Hls({ enableWorker: true, lowLatencyMode: false });
+        hls.loadSource(c.u);
+        hls.attachMedia(v);
+        hls.on(Hls.Events.MANIFEST_PARSED, ok);
+        hls.on(Hls.Events.ERROR, function(ev, data){
+          if (data && data.fatal) fail();
+        });
+      } else if (v.canPlayType('application/vnd.apple.mpegurl')){
+        v.onloadedmetadata = ok;
+        v.onerror = fail;
+        v.src = c.u;
+      } else {
+        fail();
+      }
+    } else {
+      v.onloadeddata = ok;
+      v.onerror = fail;
+      v.src = c.u;
+    }
+  }
+  next();
+}
+
+function fallback(st, r){
+  var url = rtmpOf(r.id);
+  st.innerHTML = overlay(r) + stagebar() +
+    '<div class="ph"><div class="ico">!</div>' +
+    '<h2 id="fh">这个房间暂时拉不到流</h2>' +
+    '<p id="fp">正在确认原因…</p>' +
+    '<code>' + url + '</code>' +
+    '<p style="margin-top:11px;font-size:12px;color:#5d6678">' +
+    'PotPlayer / VLC 直接贴上面地址就能看。</p>' +
+    '<div class="row2"><span class="btn pri" id="cp">复制 RTMP 地址</span></div>' +
+    '</div>';
+
+  wireBar(r.id);
+  document.getElementById('cp').onclick = function(){
+    copySource(r.id, this);
+  };
+
+  // 分清是「网关没开」还是「房间没流」——这两种情况给的建议完全不同
+  fetch(GW + '/ping', { cache: 'no-store' })
+    .then(function(r){ return r.json(); })
+    .then(function(){
+      document.getElementById('fh').textContent = '这个房间此刻没有推流';
+      document.getElementById('fp').innerHTML =
+        '网关是通的，但这个房间的 RTMP 拉不到数据——通常是主播刚好没在播。<br>' +
+        '换一个在线人数高的房间试试。';
+    })
+    .catch(function(){
+      document.getElementById('fh').textContent = '要在页面里播放，先启动本地网关';
+      document.getElementById('fp').innerHTML =
+        '浏览器内核不支持 RTMP，需要把流转成 HLS。<br>' +
+        '在项目目录运行下面这行，然后刷新页面（同一条命令也会托管本页）：';
+      document.getElementById('fp').innerHTML +=
+        '<code>python tools/gateway.py</code>' +
+        '<p style="margin-top:10px;font-size:12px;color:#5d6678">' +
+        '不启动也能看列表、分类和弹幕，只是播放区会停在提示上。</p>';
+    });
+}
+
+/* ---------- 弹幕（分类 + 广告过滤） ---------- */
+// FMODE=chat 只留真人聊天；all 全显示但给非聊天内容打标签，方便核对过滤效果
+var FMODE = 'chat';
+
+function dmClassify(m){ return DmFilter.classify(m, {chat:1, gift:1}); }
+
+function dmStats(){
+  var s = {}, kept = 0, drop = 0;
+  for (var i = 0; i < DMS.length; i++){
+    var c = dmClassify(DMS[i]);
+    s[c.kind] = (s[c.kind] || 0) + 1;
+    if (c.keep) kept++; else drop++;
+  }
+  return {byKind: s, kept: kept, drop: drop, total: DMS.length};
+}
+
+function censusStats(){
+  var s = window.DM_STATS;
+  if (!s) return null;
+  var total = 0, kept = 0;
+  for (var k in s){ if (!s.hasOwnProperty(k)) continue; total += s[k]; if (k === 'chat' || k === 'gift') kept += s[k]; }
+  return {byKind: s, total: total, kept: kept, drop: total - kept};
+}
+
+function renderFilterBar(){
+  var el = document.getElementById('fbar');
+  var st = censusStats() || dmStats();
+  if (!st.total){ el.textContent = '暂无弹幕样本'; return; }
+  var order = ['bet','win','draw','ad','follow','sys','admin','gift','other'];
+  var parts = [];
+  for (var i = 0; i < order.length; i++){
+    var k = order[i];
+    if (!st.byKind[k]) continue;
+    parts.push('<b>' + (DmFilter.KIND_LABEL[k] || k) + '</b> ' + st.byKind[k]);
+  }
+  var pct = Math.round(st.drop * 100 / st.total);
+  el.innerHTML = '采样 ' + st.total + ' 条：聊天 ' + (st.byKind.chat || 0) +
+    ' · 已过滤 ' + st.drop + ' 条（' + pct + '%）' +
+    (parts.length ? ' <span class="dot"></span> ' + parts.join(' · ') : '') +
+    ' <span class="dot"></span> 下方只演示 ' + DMS.length + ' 条';
+}
+
+function startChat(r){
+  var box = document.getElementById('msgs');
+  box.innerHTML = '';
+  if (S.timer) clearInterval(S.timer);
+
+  var pool = DMS.length ? DMS : [{k:'chat', n:'观众', t:'主播好'}];
+  var order = pool.slice().sort(function(){ return Math.random() - 0.5; });
+  if (FMODE === 'chat'){
+    order = order.filter(function(m){ return dmClassify(m).keep; });
+  }
+  if (!order.length) order = pool.slice().sort(function(){ return Math.random() - 0.5; });
+  var pi = 0;
+
+  function addMsg(m){
+    var c = dmClassify(m);
+    var d = document.createElement('div');
+    d.className = 'msg ' + (c.kind || 'chat');
+    var tag = c.keep ? '' : '<span class="tag">' + (DmFilter.KIND_LABEL[c.kind] || '系统') + '</span>';
+    d.innerHTML = tag + '<span class="u">' + esc(m.n || c.nick || '观众') + '</span>' +
+      esc(m.t || c.text || '');
+    if (c.reason && !c.keep) d.title = '过滤原因：' + c.reason;
+    box.appendChild(d);
+    while (box.children.length > 200) box.removeChild(box.firstChild);
+    box.scrollTop = box.scrollHeight;
+  }
+
+  for (var i = 0; i < 5 && i < order.length; i++) addMsg(order[i]);
+  pi = Math.min(5, order.length);
+
+  var n = 0;
+  S.timer = setInterval(function(){
+    if (S.paused) return;
+    if (++n % 4 === 0){
+      var d = document.createElement('div');
+      d.className = 'msg enter';
+      d.innerHTML = '<span class="u">' +
+        esc(order[(Math.random() * order.length) | 0].n || '观众') + '</span> 进入直播间';
+      box.appendChild(d);
+      while (box.children.length > 200) box.removeChild(box.firstChild);
+      box.scrollTop = box.scrollHeight;
+    } else {
+      addMsg(order[pi++ % order.length]);
+    }
+  }, 2100);
+}
+
+/* ---------- 交互 ---------- */
+document.getElementById('q').oninput = function(){
+  S.q = this.value.trim();
+  renderList();
+};
+var sorts = document.querySelectorAll('.sort');
+for (var si = 0; si < sorts.length; si++){
+  sorts[si].onclick = function(){
+    S.sort = this.dataset.sort;
+    var all = document.querySelectorAll('.sort');
+    for (var j = 0; j < all.length; j++) all[j].classList.toggle('on', all[j] === this);
+    renderList();
+  };
+}
+document.getElementById('adsw').onclick = function(){
+  S.showAd = !S.showAd;
+  this.classList.toggle('on', S.showAd);
+  renderCats(); renderList();
+};
+document.getElementById('pause').onclick = function(){
+  S.paused = !S.paused;
+  this.textContent = S.paused ? '继续' : '暂停';
+};
+function setMode(m){
+  FMODE = m;
+  document.getElementById('fchat').classList.toggle('on', m === 'chat');
+  document.getElementById('fall').classList.toggle('on', m === 'all');
+  renderFilterBar();
+  if (S.cur) startChat(S.cur);
+}
+document.getElementById('fchat').onclick = function(){ setMode('chat'); };
+document.getElementById('fall').onclick = function(){ setMode('all'); };
+document.getElementById('send').onclick = sendMsg;
+document.getElementById('txt').onkeydown = function(e){ if (e.key === 'Enter') sendMsg(); };
+function sendMsg(){
+  var inp = document.getElementById('txt');
+  var t = inp.value.trim();
+  if (!t) return;
+  var box = document.getElementById('msgs');
+  var d = document.createElement('div');
+  d.className = 'msg chat';
+  d.innerHTML = '<span class="u" style="color:#ff8095">我</span>' + esc(t);
+  box.appendChild(d);
+  box.scrollTop = box.scrollHeight;
+  inp.value = '';
+}
+
+/* ---------- 启动 ---------- */
+// 探一下本地网关：决定"本地播放器"是直接调起，还是退回下载 m3u
+fetch(GW + '/ping', { cache: 'no-store' })
+  .then(function(r){ return r.json(); })
+  .then(function(j){
+    GW_OK = !!(j && j.ok);
+    PLAYER_NAME = (j && j.player) || '';
+  })
+  .catch(function(){ GW_OK = false; });
+
+document.getElementById('stat').textContent = ROOMS.length + ' 个 · ' + (window.BUILD_AT || '');
+renderCats();
+renderList();
+renderFilterBar();
+
+// 支持 #room=<id> 直接打开某个房间（方便分享）
+(function(){
+  var m = (location.hash || '').match(/room=(\d+)/);
+  if (m){
+    var id = +m[1];
+    if (ROOMS.some(function(r){ return r.id === id; })) select(id);
+  }
+})();
+</script>
+</body>
+</html>

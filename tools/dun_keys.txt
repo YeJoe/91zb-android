@@ -1,0 +1,10 @@
+# 8.5.3 盾配置 AES 密钥（来源: tianmei/outdir/pp.txt, pp+0x42208 / pp+0x42210）
+# 算法: AES-256-ECB/PKCS7 (pp+0x42200 常量确认)
+# 用途: 解密 ApiUrls.dunUrl 下发的盾配置 (kiwi_starts / kiwi_live / kiwi_hd ...)
+# 对比 8.1.7: 当时是 ASCII 字符串 "56c51dbc887d0487f942e6fca95108e4"
+key1 = a1182768fece235c01744986c0a40f34bf9f43d62bd907f57926abdc3657064f
+key2 = c92461137e46acc67006e5347931c8f9162ea76fde15d12fa43346281f660d5f
+
+# 8.1.7 的请求签名盐 (已确认在 8.5.3 中删除, 不可再用)
+# SALT_817 = "jQBUO&2pfS5sC」¥\?AtglXv*w+PcRK8%i"
+# 8.5.3 同区域改为 [pp+0x5b600] / [pp+0x5b608] 两个 List<int>(35) 字节数组（非合法 UTF-8）
