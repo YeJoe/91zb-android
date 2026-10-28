@@ -23,6 +23,8 @@ import android.widget.FrameLayout
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import androidx.webkit.WebViewAssetLoader
@@ -132,6 +134,9 @@ class PlayerActivity : AppCompatActivity() {
     private var dragDy = 0f
     private var dragging = false
     private var switching = false
+    private var chatTake = false
+    private var chatDownY = 0f
+    private var chatDownX = 0f
     private val touchSlop by lazy { ViewConfiguration.get(this).scaledTouchSlop }
     private val switchThreshold by lazy { 76f * resources.displayMetrics.density }
 
@@ -173,6 +178,7 @@ class PlayerActivity : AppCompatActivity() {
             addDuration = 120
         }
         chat.adapter = chatAdapter
+        setupChatGesture()
 
         title.text = roomName
 
@@ -181,9 +187,27 @@ class PlayerActivity : AppCompatActivity() {
 
         page.setOnTouchListener { _, ev -> onPageTouch(ev) }
 
+        applyInsets()
         setupSurface()
         fetchAndPlay()
     }
+
+    /** 沉浸式下避开状态栏 / 导航栏，避免标题和关闭按钮被系统图标压住。 */
+    private fun applyInsets() {
+        val topBar = findViewById<View>(R.id.topBar)
+        val bottomBar = findViewById<View>(R.id.bottomBar)
+        ViewCompat.setOnApplyWindowInsetsListener(page) { _, insets ->
+            val sys = insets.getInsets(WindowInsetsCompat.Type.systemBars())
+            topBar.setPadding(dp(14), sys.top + dp(8), dp(14), dp(10))
+            bottomBar.setPadding(dp(14), dp(6), dp(14), sys.bottom + dp(10))
+            (chat.layoutParams as FrameLayout.LayoutParams).bottomMargin = dp(52) + sys.bottom
+            chat.requestLayout()
+            insets
+        }
+        ViewCompat.requestApplyInsets(page)
+    }
+
+    private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
 
     // ─────────── 上下滑动切换直播间 ───────────
 
@@ -219,17 +243,74 @@ class PlayerActivity : AppCompatActivity() {
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                 if (!dragging) return false
                 dragging = false
-                val fast = System.currentTimeMillis() - downAt < 240 && abs(dragDy) > switchThreshold * 0.4f
-                val far = abs(dragDy) > switchThreshold
-                when {
-                    dragDy < 0 && (far || fast) -> switchRoom(1)
-                    dragDy > 0 && (far || fast) -> switchRoom(-1)
-                    else -> page.animate().translationY(0f).setDuration(160).start()
-                }
+                finishDrag()
                 return true
             }
         }
         return false
+    }
+
+    /** 松手：位移够远或速度够快就切间，否则回弹。 */
+    private fun finishDrag() {
+        val fast = System.currentTimeMillis() - downAt < 240 && abs(dragDy) > switchThreshold * 0.4f
+        val far = abs(dragDy) > switchThreshold
+        when {
+            dragDy < 0 && (far || fast) -> switchRoom(1)
+            dragDy > 0 && (far || fast) -> switchRoom(-1)
+            else -> page.animate().translationY(0f).setDuration(160).start()
+        }
+    }
+
+    /**
+     * 聊天区也能上下切间：列表还能继续滚时让 RecyclerView 自己滚，
+     * 已经滚到头了才把手势交给页面（这也是抖音一类直播间的做法）。
+     */
+    private fun setupChatGesture() {
+        chat.addOnItemTouchListener(object : RecyclerView.SimpleOnItemTouchListener() {
+            override fun onInterceptTouchEvent(rv: RecyclerView, e: MotionEvent): Boolean {
+                if (switching) return true
+                when (e.actionMasked) {
+                    MotionEvent.ACTION_DOWN -> {
+                        chatTake = false
+                        chatDownY = e.rawY
+                        chatDownX = e.rawX
+                        downY = e.rawY
+                        downX = e.rawX
+                        downAt = System.currentTimeMillis()
+                        dragDy = 0f
+                        return false
+                    }
+
+                    MotionEvent.ACTION_MOVE -> {
+                        val dy = e.rawY - chatDownY
+                        val dx = e.rawX - chatDownX
+                        if (!chatTake && abs(dy) > touchSlop && abs(dy) > abs(dx) * 1.3f) {
+                            val canStillScroll =
+                                if (dy < 0) rv.canScrollVertically(1) else rv.canScrollVertically(-1)
+                            if (!canStillScroll) {
+                                chatTake = true
+                                swipeHint.visibility = View.GONE
+                            }
+                        }
+                        if (chatTake) {
+                            dragDy = dy
+                            page.translationY = dy * 0.55f
+                            return true
+                        }
+                        return false
+                    }
+
+                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                        if (chatTake) {
+                            chatTake = false
+                            finishDrag()
+                            return true
+                        }
+                    }
+                }
+                return false
+            }
+        })
     }
 
     /** @param delta +1 下一个（内容向上滑出），-1 上一个 */
@@ -258,9 +339,10 @@ class PlayerActivity : AppCompatActivity() {
                 resetForRoom()
                 fetchAndPlay()
                 page.animate().translationY(0f).alpha(1f).setDuration(220).start()
-                switching = false
             }
             .start()
+        // 动画被打断时也要解锁手势，别让页面卡在“切换中”
+        ui.postDelayed({ switching = false }, 480)
     }
 
     /** 切房间时把上一条流、聊天、IM 全部清干净。 */
@@ -324,14 +406,17 @@ class PlayerActivity : AppCompatActivity() {
         val sv = surfaceView ?: return
         player?.stop()
         val p = FlvLivePlayer(sv.holder.surface)
+        // 切房间的瞬间，旧播放器的回调可能还在路上；用实例比对把它们全部作废，
+        // 否则旧流一句 onFinished 就会把新房间顶进 WebView 兜底。
         p.listener = object : FlvLivePlayer.Listener {
             override fun onStatus(msg: String) {
-                ui.post { if (!isFinishing) status.text = msg }
+                if (player !== p) return
+                ui.post { if (player === p && !isFinishing) status.text = msg }
             }
 
             override fun onVideoSize(w: Int, h: Int) {
                 ui.post {
-                    if (isFinishing) return@post
+                    if (player !== p || isFinishing) return@post
                     fitVideo(w, h)
                     val codec = p.codecLabel.ifBlank { "MediaCodec" }
                     resolution.text = "$w×$h · $codec"
@@ -341,7 +426,7 @@ class PlayerActivity : AppCompatActivity() {
 
             override fun onStats(bytes: Long, seconds: Int, kbps: Int) {
                 ui.post {
-                    if (isFinishing) return@post
+                    if (player !== p || isFinishing) return@post
                     playedSeconds = seconds
                     stats.text = "已播 ${seconds}s · ${kbps} KB/s"
                 }
@@ -349,16 +434,17 @@ class PlayerActivity : AppCompatActivity() {
 
             override fun onError(msg: String) {
                 Log.w(TAG, "player error: $msg")
-                if (msg == "CODEC_FAIL") ui.post { playNext() }
+                if (player !== p) return
+                if (msg == "CODEC_FAIL") ui.post { if (player === p) playNext() }
             }
 
             override fun onFinished() {
-                ui.post { if (!isFinishing) playNext() }
+                ui.post { if (player === p && !isFinishing) playNext() }
             }
 
             override fun onFirstFrame() {
                 ui.post {
-                    if (isFinishing) return@post
+                    if (player !== p || isFinishing) return@post
                     playing = true
                     playStartAt = System.currentTimeMillis()
                     overlay.visibility = View.GONE
@@ -629,6 +715,9 @@ class PlayerActivity : AppCompatActivity() {
     }
 
     private fun playNext() {
+        // 地址还没取回来（刚切房间/刚进页面）时收到旧回调，直接忽略，
+        // 否则会把 urlIndex 推满并误判成“所有清晰度都失败”而切去软解。
+        if (urls.isEmpty()) return
         if (urlIndex >= urls.size) {
             switchToWeb("所有清晰度都无法播放")
             return

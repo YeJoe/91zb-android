@@ -32,6 +32,7 @@
 
         <!-- 顶栏：直播中 + 主播名 + 关闭 -->
         <LinearLayout
+            android:id="@+id/topBar"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_gravity="top"
@@ -99,6 +100,7 @@
 
         <!-- 底部信息条 -->
         <LinearLayout
+            android:id="@+id/bottomBar"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_gravity="bottom"
