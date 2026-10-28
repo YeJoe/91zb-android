@@ -5,6 +5,9 @@ on:
     branches: [ main, master ]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -63,3 +66,13 @@ jobs:
           name: jjlive-debug-apk
           path: app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
+
+      # 同时挂到 release，方便直接在手机上点链接下载（无需登录）
+      - name: Publish APK to release
+        if: github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: latest build
+          prerelease: true
+          files: app/build/outputs/apk/debug/*.apk

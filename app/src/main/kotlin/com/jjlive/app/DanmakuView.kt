@@ -11,8 +11,16 @@ import java.util.ArrayDeque
  *
  * 刻意避开 ValueAnimator / Handler，改用 Choreographer 驱动：
  * onDraw 内零分配、不拼字符串，对象池复用。
+ *
+ * 注意：XML 里引用自定义 View 时，LayoutInflater 只认
+ * (Context, AttributeSet) 构造函数，少了它会在 setContentView 时
+ * 抛 InflateException（NoSuchMethodException），整个 Activity 直接崩。
  */
-class DanmakuView(context: android.content.Context) : View(context) {
+class DanmakuView @JvmOverloads constructor(
+    context: android.content.Context,
+    attrs: android.util.AttributeSet? = null,
+    defStyleAttr: Int = 0
+) : View(context, attrs, defStyleAttr) {
 
     private class Item {
         var text: String = ""
