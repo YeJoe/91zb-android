@@ -17,10 +17,15 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      # 只用来提供 cmdline-tools 并接受 licenses。
-      # 不要用它的 packages 输入：多行值会被当成单个包名传给 sdkmanager。
+      # 用 v4 + 显式 packages：v3 的默认值是 "tools platform-tools"，
+      # 而 Google 已从 SDK 仓库下架 legacy "tools" 包，v3 会直接
+      # "Failed to find package 'tools'" 并以 exit code 1 结束，整个 job 在编译前就挂掉。
+      # v4 的默认值只有 platform-tools；这里再显式写一遍，避免依赖默认值变化。
+      # 只接受单个包名，多行/空格分隔的值会被当成一个包名传给 sdkmanager。
       - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
+        with:
+          packages: platform-tools
 
       # 包名必须加引号（; 是 shell 命令分隔符），且每个包是独立参数
       - name: Install SDK 34 packages
