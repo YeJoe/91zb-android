@@ -109,7 +109,8 @@ class FlvLivePlayer(private val surface: Surface) {
                 val type = tagHead[0].toInt() and 0xFF
                 val dataSize = int24(tagHead, 1)
                 if (dataSize <= 0 || dataSize > 4 * 1024 * 1024) { post("tag 大小异常: $dataSize"); break }
-                val ts = int24(tagHead, 4) or (tagHead[7].toLong() and 0xFF shl 24)
+                // 时间戳是 24 位 + 扩展字节(高 8 位)，整体按 Long 处理
+                val ts = int24(tagHead, 4).toLong() or ((tagHead[7].toLong() and 0xFFL) shl 24)
                 val data = ByteArray(dataSize)
                 if (!readFully(input, data)) break
                 if (!readFully(input, scratch)) break       // PreviousTagSize
@@ -266,7 +267,8 @@ class FlvLivePlayer(private val surface: Surface) {
             format.setByteBuffer("csd-0", java.nio.ByteBuffer.wrap(asc))
             format.setInteger(MediaFormat.KEY_IS_ADTS, 0)
             audioCodec = MediaCodec.createDecoderByType(MediaFormat.MIMETYPE_AUDIO_AAC).apply {
-                configure(format, null, 0)
+                // MediaCodec 没有 3 参重载：format, surface, crypto, flags
+                configure(format, null, null, 0)
                 start()
             }
 
