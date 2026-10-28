@@ -11,8 +11,8 @@ android {
         applicationId = "com.jjlive.app"
         minSdk = 23
         targetSdk = 34
-        versionCode = 4
-        versionName = "1.4-native"
+        versionCode = 5
+        versionName = "1.5-native"
     }
 
     buildTypes {

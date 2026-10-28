@@ -200,17 +200,51 @@ data class Room(
     val url0: String,
     val url360: String,
     val url720: String,
-    val cats: List<String>
+    val cats: List<String>,
+    val anchorType: Int = 2,
+    val gameRoom: Int = 0
 ) {
     val isPay: Boolean get() = moneyFen > 0
     val performing: Boolean get() = oneToOneState == 2
     val hasStream: Boolean get() = url0.isNotEmpty() || url360.isNotEmpty() || url720.isNotEmpty()
+
+    /**
+     * 广告 / 赌博直播间。
+     *
+     * 实测样本里 anchorType=1 的房间全是「凤凰快三 / 百家乐 / pc28 / 龙虎」这类博彩推广房，
+     * 正常主播都是 anchorType=2；再加一层名称关键字兜底（有些广告房仍用 2）。
+     */
+    val isAd: Boolean
+        get() = anchorType == 1 || JUNK_WORDS.any { hit(it, userName, roomName) }
+
+    /** 游戏直播间：接口的 gameRoom 标记 + 名称关键字。 */
+    val isGame: Boolean
+        get() = gameRoom == 1 || GAME_WORDS.any { hit(it, userName, roomName) }
+
+    private fun hit(k: String, vararg fields: String): Boolean =
+        fields.any { it.contains(k, ignoreCase = true) }
 
     /** 取优先级：原画 > 720P > 360P */
     fun bestUrl(): String =
         url0.ifEmpty { url720.ifEmpty { url360 } }
 
     fun coverUrl(): String = if (cover.isEmpty()) "" else Cfg.IMG_HOST + cover
+
+    companion object {
+        /** 广告、博彩、引流话术 */
+        private val JUNK_WORDS = listOf(
+            "快三", "百家乐", "龙虎", "时时彩", "彩票", "棋牌", "包赢", "回血",
+            "加微", "加v", "加V", "微信", "飞机", "电报", "telegram", "扣扣", "企鹅群",
+            "兼职", "日赚", "日入", "月入", "返利", "招商", "代理", "推广", "引流",
+            "官方推荐", "下载app", "下载APP", "注册送", "首充", "福利群", "上车"
+        )
+
+        /** 游戏直播（这类房基本没有人看，和需求里说的「游戏直播间」一起过滤掉） */
+        private val GAME_WORDS = listOf(
+            "王者荣耀", "英雄联盟", "和平精英", "吃鸡", "开黑", "陪玩", "代练",
+            "游戏直播", "蛋仔派对", "穿越火线", "csgo", "CSGO", "刀塔", "DOTA", "永劫无间"
+        )
+    }
 }
 
 private fun JSONObject.str(vararg keys: String): String {
@@ -257,7 +291,9 @@ object Parser {
             url0 = o.str("pullStreamAddr", "pullAddress"),
             url360 = o.str("pullStreamAddr360", "pullAddress360"),
             url720 = o.str("pullStreamAddr720", "pullAddress720"),
-            cats = cats
+            cats = cats,
+            anchorType = o.int("anchorType", def = 2),
+            gameRoom = o.int("gameRoom", def = 0)
         )
     }
 

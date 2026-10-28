@@ -20,6 +20,8 @@ import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
+import androidx.recyclerview.widget.LinearLayoutManager
+import androidx.recyclerview.widget.RecyclerView
 import androidx.webkit.WebViewAssetLoader
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -66,11 +68,15 @@ class PlayerActivity : AppCompatActivity() {
 
     private lateinit var videoBox: FrameLayout
     private lateinit var danmaku: DanmakuView
+    private lateinit var chat: RecyclerView
     private lateinit var status: TextView
     private lateinit var stats: TextView
     private lateinit var resolution: TextView
     private lateinit var overlay: View
     private lateinit var btnRetry: Button
+
+    private val chatItems = ArrayList<ChatMsg>()
+    private lateinit var chatAdapter: ChatAdapter
 
     private var surfaceView: SurfaceView? = null
     private var player: FlvLivePlayer? = null
@@ -102,11 +108,17 @@ class PlayerActivity : AppCompatActivity() {
 
         videoBox = findViewById(R.id.videoBox)
         danmaku = findViewById(R.id.danmaku)
+        chat = findViewById(R.id.chat)
         status = findViewById(R.id.status)
         stats = findViewById(R.id.stats)
         resolution = findViewById(R.id.resolution)
         overlay = findViewById(R.id.overlay)
         btnRetry = findViewById(R.id.btnRetry)
+
+        // 底部聊天区：从下往上堆，最多留 60 条
+        chat.layoutManager = LinearLayoutManager(this).apply { stackFromEnd = true }
+        chatAdapter = ChatAdapter(chatItems)
+        chat.adapter = chatAdapter
 
         findViewById<TextView>(R.id.title).text = roomName
 
@@ -454,22 +466,93 @@ class PlayerActivity : AppCompatActivity() {
         im?.close()
         im = ImSocket(token, store.deviceUid).also { s ->
             s.listener = object : ImSocket.Listener {
-                override fun onOpen() {}
-                override fun onClosed(reason: String) {}
+                override fun onOpen() {
+                    Log.i(TAG, "im open")
+                }
+
+                override fun onClosed(reason: String) {
+                    Log.w(TAG, "im closed: $reason")
+                }
+
                 override fun onMessage(text: String) {
-                    val cn = Regex("\"cn\":\"([^\"]*)\"").find(text)?.groupValues?.getOrNull(1)
-                    val body = Regex("\"(?:txt|msg|content)\":\"([^\"]*)\"")
-                        .find(text)?.groupValues?.getOrNull(1)
-                    val shown = when {
-                        !body.isNullOrEmpty() -> body
-                        !cn.isNullOrEmpty() -> "$cn 进入直播间"
-                        else -> null
-                    }
-                    shown?.let { danmaku.submit(it) }
+                    handleIm(text)
                 }
             }
             s.connect(roomId)
         }
+    }
+
+    /**
+     * IM 帧 → 聊天区 + 弹幕。
+     *
+     * 帧是 AES 解出来的 protobuf，业务字段以 JSON 片段嵌在里面（cn 昵称 / txt 正文），
+     * 所以先截取 JSON 段落正经解析，失败再退回正则捞字段。原始帧打日志便于排查格式变化。
+     */
+    private fun handleIm(raw: String) {
+        Log.i(TAG, "im << " + raw.replace("\n", " ").take(240))
+        val msg = parseChat(raw) ?: return
+        ui.post {
+            if (isFinishing) return@ui
+            chatItems.add(msg)
+            while (chatItems.size > 60) chatItems.removeAt(0)
+            chatAdapter.notifyDataSetChanged()
+            chat.scrollToPosition(chatItems.size - 1)
+            danmaku.submit(if (msg.system || msg.nick.isEmpty()) msg.body else "${msg.nick}: ${msg.body}")
+        }
+    }
+
+    private fun parseChat(raw: String): ChatMsg? {
+        val i = raw.indexOf('{')
+        val j = raw.lastIndexOf('}')
+        if (i in 0 until j) {
+            val js = runCatching { JSONObject(raw.substring(i, j + 1)) }.getOrNull()
+            if (js != null) {
+                val nick = js.optString("cn")
+                    .ifEmpty { js.optString("nickname") }
+                    .ifEmpty { js.optString("un") }
+                val body = js.optString("txt")
+                    .ifEmpty { js.optString("msg") }
+                    .ifEmpty { js.optString("content") }
+                    .ifEmpty { js.optString("txts") }
+                if (body.isNotEmpty()) return ChatMsg(unescape(nick), unescape(body))
+                if (nick.isNotEmpty()) return ChatMsg("", unescape(nick) + " 进入直播间", true)
+            }
+        }
+
+        val nick = Regex("\"cn\"\\s*:\\s*\"([^\"]*)\"").find(raw)?.groupValues?.get(1)
+            ?: Regex("\"nickname\"\\s*:\\s*\"([^\"]*)\"").find(raw)?.groupValues?.get(1)
+        val body = Regex("\"(?:txt|msg|content)\"\\s*:\\s*\"([^\"]*)\"")
+            .find(raw)?.groupValues?.get(1)
+        return when {
+            !body.isNullOrBlank() -> ChatMsg(unescape(nick ?: ""), unescape(body))
+            !nick.isNullOrBlank() -> ChatMsg("", unescape(nick) + " 进入直播间", true)
+            else -> null
+        }
+    }
+
+    /** 处理 JSON 里残留的 \uXXXX、\n 转义。 */
+    private fun unescape(s: String): String {
+        if (!s.contains('\\')) return s
+        val sb = StringBuilder(s.length)
+        var i = 0
+        while (i < s.length) {
+            val c = s[i]
+            if (c == '\\' && i + 1 < s.length) {
+                when (s[i + 1]) {
+                    'u' -> {
+                        val hex = if (i + 6 <= s.length) s.substring(i + 2, i + 6) else ""
+                        val code = hex.toIntOrNull(16)
+                        if (code != null) { sb.append(code.toChar()); i += 6; continue }
+                    }
+                    'n' -> { sb.append('\n'); i += 2; continue }
+                    't' -> { sb.append(' '); i += 2; continue }
+                    '"' -> { sb.append('"'); i += 2; continue }
+                }
+            }
+            sb.append(c)
+            i++
+        }
+        return sb.toString()
     }
 
     private fun onStatus(msg: String) {

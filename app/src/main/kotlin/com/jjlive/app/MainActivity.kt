@@ -35,11 +35,15 @@ class MainActivity : AppCompatActivity() {
     private lateinit var meta: TextView
     private lateinit var chips: ChipGroup
     private lateinit var search: EditText
+    private lateinit var btnFilter: TextView
 
     private val all = ArrayList<Room>()
     private val shown = ArrayList<Room>()
     private var category = ALL
     private var query = ""
+    private var hideJunk = true
+    private var filteredOut = 0
+    private var cats: List<Category> = emptyList()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -54,6 +58,17 @@ class MainActivity : AppCompatActivity() {
         meta = findViewById(R.id.meta)
         chips = findViewById(R.id.chips)
         search = findViewById(R.id.search)
+        btnFilter = findViewById(R.id.btnFilter)
+
+        hideJunk = getSharedPreferences("jjlive", MODE_PRIVATE).getBoolean("hideJunk", true)
+        renderFilterButton()
+        btnFilter.setOnClickListener {
+            hideJunk = !hideJunk
+            getSharedPreferences("jjlive", MODE_PRIVATE).edit().putBoolean("hideJunk", hideJunk).apply()
+            renderFilterButton()
+            buildChips(cats)
+            filter(query)
+        }
 
         // 列数按屏幕宽度自适应：手机 2 列，平板/横屏 4~6 列，避免卡片被拉成长条
         rv.layoutManager = GridLayoutManager(this, spanCount())
@@ -109,6 +124,7 @@ class MainActivity : AppCompatActivity() {
             val cats = withContext(Dispatchers.IO) {
                 runCatching { Parser.categories(api.call("/home/recommend/cls")) }.getOrDefault(emptyList())
             }
+            this@MainActivity.cats = cats
             val rooms = withContext(Dispatchers.IO) {
                 val out = LinkedHashMap<String, Room>()
                 for (c in cats) {
@@ -133,7 +149,6 @@ class MainActivity : AppCompatActivity() {
             all.addAll(rooms)
             buildChips(cats)
             filter(query)
-            meta.text = "共 ${all.size} 个在线房间 · ${cats.size} 个分类"
             if (all.isEmpty()) {
                 empty.visibility = View.VISIBLE
                 empty.text = "没有获取到房间\n请检查令牌是否有效（右下角按钮更新）"
@@ -146,7 +161,9 @@ class MainActivity : AppCompatActivity() {
     private fun buildChips(cats: List<Category>) {
         chips.removeAllViews()
         addChip(ALL)
-        cats.map { it.name }.distinct().forEach { addChip(it) }
+        cats.map { it.name }.distinct()
+            .filter { !(hideJunk && it == "游戏") }   // 过滤开启时游戏分类恒为空，干脆不显示
+            .forEach { addChip(it) }
 
         // 当前分类已经不在了（例如刷新后分类变动）就回到“全部”
         if (category != ALL && chips.findViewWithTag<Chip>(category) == null) category = ALL
@@ -185,11 +202,23 @@ class MainActivity : AppCompatActivity() {
         chips.addView(chip)
     }
 
+    private fun renderFilterButton() {
+        btnFilter.text = if (hideJunk) "已过滤广告" else "未过滤"
+        btnFilter.setTextColor(
+            if (hideJunk) Color.parseColor("#7FD1A8") else Color.parseColor("#8B95A7")
+        )
+    }
+
     private fun filter(q: String) {
         query = q
         val key = q.trim().lowercase()
+
+        // 广告 / 博彩 / 游戏房：默认过滤掉（anchorType=1 全是博彩推广房，名称关键字兜底）
+        val base = if (hideJunk) all.filter { !it.isAd && !it.isGame } else all
+        filteredOut = all.size - base.size
+
         shown.clear()
-        shown.addAll(all.filter {
+        shown.addAll(base.filter {
             (category == ALL || it.cats.contains(category)) &&
                     (key.isEmpty() || it.userName.lowercase().contains(key) ||
                             it.roomName.lowercase().contains(key) || it.roomId.contains(key))
@@ -198,6 +227,11 @@ class MainActivity : AppCompatActivity() {
         rv.scrollToPosition(0)
         empty.visibility = if (shown.isEmpty()) View.VISIBLE else View.GONE
         if (shown.isEmpty() && all.isNotEmpty()) empty.text = "该分类下暂无主播"
+
+        meta.text = buildString {
+            append("共 ${shown.size} 个在线房间")
+            if (filteredOut > 0) append(" · 已过滤 $filteredOut 个广告/游戏")
+        }
     }
 
     companion object {
