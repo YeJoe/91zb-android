@@ -39,6 +39,11 @@ class FlvLivePlayer(private val surface: Surface) {
     @Volatile
     var listener: Listener? = null
 
+    /** 实际启用的解码器描述，形如 "OMX.google.hevc.decoder 1080x1920"，用于界面展示。 */
+    @Volatile
+    var codecLabel: String = ""
+        private set
+
     private val running = AtomicBoolean(false)
     private var thread: Thread? = null
 
@@ -59,6 +64,7 @@ class FlvLivePlayer(private val surface: Surface) {
     @Volatile private var audioClockUs = 0L
     @Volatile private var audioStartUs = -1L
     @Volatile private var droppedFrames = 0
+    private var renderedFrames = 0
 
     private val bufInfo = MediaCodec.BufferInfo()
     private val scratch = ByteArray(4)
@@ -185,28 +191,229 @@ class FlvLivePlayer(private val surface: Surface) {
     private fun configureVideo(cfg: ByteArray) {
         if (videoConfigured || codecFailed || cfg.size < 7) return
         val isAvc = vidCodecId == 7
-        try {
-            // avcC 第 4 字节 / hvcC 第 21 字节：低 2 位 = lengthSizeMinusOne
-            nalLenSize = if (isAvc) (cfg[4].toInt() and 0x03) + 1
-            else (if (cfg.size > 21) cfg[21].toInt() and 0x03 else 3) + 1
+        val mime = if (isAvc) MediaFormat.MIMETYPE_VIDEO_AVC else MediaFormat.MIMETYPE_VIDEO_HEVC
 
-            val mime = if (isAvc) MediaFormat.MIMETYPE_VIDEO_AVC else MediaFormat.MIMETYPE_VIDEO_HEVC
-            val format = MediaFormat.createVideoFormat(mime, 0, 0)
-            format.setByteBuffer("csd-0", java.nio.ByteBuffer.wrap(cfg))
-            videoCodec = MediaCodec.createDecoderByType(mime).apply {
-                configure(format, surface, null, 0)
-                start()
+        // avcC 第 4 字节 / hvcC 第 21 字节：低 2 位 = lengthSizeMinusOne
+        nalLenSize = if (isAvc) (cfg[4].toInt() and 0x03) + 1
+        else (if (cfg.size > 21) cfg[21].toInt() and 0x03 else 3) + 1
+
+        // 必须给 MediaFormat 真实宽高。硬件解码器能从 SPS 自己取（传 0×0 也能跑），
+        // 但软件解码器（OMX.google.*）会拿 format 宽高去校验裁剪框，0×0 直接
+        // "Wrong cropped rect (0,0,0,0) vs. frame (0,0)" → configureCodec 返回 -22。
+        val spsSize = runCatching { if (isAvc) parseAvcSize(cfg) else parseHevcSize(cfg) }.getOrNull()
+        Log.i(TAG, "sps size: ${spsSize?.first}x${spsSize?.second}")
+
+        val candidates = ArrayList<Pair<Int, Int>>(3)
+        spsSize?.let { candidates.add(it) }
+        candidates.add(720 to 1280)   // 竖屏直播常见兜底
+        candidates.add(1280 to 720)
+
+        var lastError: Exception? = null
+        for ((w, h) in candidates) {
+            var codec: MediaCodec? = null
+            try {
+                val format = MediaFormat.createVideoFormat(mime, w, h)
+                format.setByteBuffer("csd-0", java.nio.ByteBuffer.wrap(cfg))
+                codec = MediaCodec.createDecoderByType(mime)
+                codec.configure(format, surface, null, 0)
+                codec.start()
+                videoCodec = codec
+                videoConfigured = true
+                codecLabel = "${codec.name} ${w}x$h"
+                Log.i(TAG, "video decoder ready: $codecLabel")
+                post(if (isAvc) "H.264 解码已启动 ${w}×$h" else "H.265 解码已启动 ${w}×$h")
+                return
+            } catch (e: Exception) {
+                lastError = e
+                Log.w(TAG, "configure failed at ${w}x$h: ${e.javaClass.simpleName} ${e.message}")
+                try { codec?.release() } catch (_: Exception) {}
             }
-            videoConfigured = true
-            post(if (isAvc) "H.264 解码已启动" else "HEVC 硬件解码已启动")
-        } catch (e: Exception) {
-            Log.w(TAG, "video configure failed (codecId=$vidCodecId)", e)
-            post("无法启动解码器：${e.javaClass.simpleName}（本机可能不支持该编码）")
-            // 让页面换下一个清晰度地址再试（只通知一次，避免反复重试）
-            if (!codecFailed) {
-                codecFailed = true
-                listener?.onError("CODEC_FAIL")
+        }
+
+        Log.w(TAG, "video configure failed (codecId=$vidCodecId)", lastError)
+        post("无法启动解码器：${lastError?.javaClass?.simpleName}（本机可能不支持该编码）")
+        // 让页面换下一个清晰度地址再试（只通知一次，避免反复重试）
+        if (!codecFailed) {
+            codecFailed = true
+            listener?.onError("CODEC_FAIL")
+        }
+    }
+
+    // ─────────── SPS 解析：拿真实分辨率 ───────────
+
+    private fun parseAvcSize(avcC: ByteArray): Pair<Int, Int>? {
+        if (avcC.size < 8) return null
+        val numSps = avcC[5].toInt() and 0x1F
+        if (numSps < 1) return null
+        var p = 6
+        if (p + 2 > avcC.size) return null
+        val spsLen = ((avcC[p].toInt() and 0xFF) shl 8) or (avcC[p + 1].toInt() and 0xFF)
+        p += 2
+        if (spsLen <= 0 || p + spsLen > avcC.size) return null
+        val sps = rbsp(avcC, p, spsLen)
+        if (sps.size < 4) return null
+
+        val b = Bits(sps, 1)              // 跳过 1 字节 NAL header
+        val profile = b.u(8)
+        b.u(8)                            // constraint flags
+        b.u(8)                            // level_idc
+        b.ue()                            // seq_parameter_set_id
+
+        var chroma = 1
+        if (profile in AVC_HIGH_PROFILES) {
+            chroma = b.ue()
+            if (chroma == 3) b.u(1)
+            b.ue()                        // bit_depth_luma_minus8
+            b.ue()                        // bit_depth_chroma_minus8
+            b.u(1)                        // qpprime_y_zero_transform_bypass
+            if (b.u(1) == 1) {            // seq_scaling_matrix_present
+                val lists = if (chroma != 3) 8 else 12
+                for (i in 0 until lists) {
+                    if (b.u(1) == 1) {
+                        val count = if (i < 6) 16 else 64
+                        var last = 8
+                        var next = 8
+                        for (j in 0 until count) {
+                            if (next != 0) next = (last + b.se() + 256) % 256
+                            if (next != 0) last = next
+                        }
+                    }
+                }
             }
+        }
+        b.ue()                            // log2_max_frame_num_minus4
+        when (b.ue()) {                   // pic_order_cnt_type
+            0 -> b.ue()
+            1 -> {
+                b.u(1); b.se(); b.se()
+                val n = b.ue()
+                for (i in 0 until n) b.se()
+            }
+        }
+        b.ue()                            // max_num_ref_frames
+        b.u(1)                            // gaps_in_frame_num_value_allowed
+        val wMbs = b.ue() + 1
+        val hMap = b.ue() + 1
+        val frameOnly = b.u(1)
+        if (frameOnly == 0) b.u(1)        // mb_adaptive_frame_field
+        b.u(1)                            // direct_8x8_inference
+
+        var w = wMbs * 16
+        var h = (2 - frameOnly) * hMap * 16
+        if (b.u(1) == 1) {                // frame_cropping_flag
+            val l = b.ue(); val r = b.ue(); val t = b.ue(); val bo = b.ue()
+            w -= (l + r) * (if (chroma == 1 || chroma == 2) 2 else 1)
+            h -= (t + bo) * (if (chroma == 1) 2 else 1)
+        }
+        return if (w > 0 && h > 0) w to h else null
+    }
+
+    private fun parseHevcSize(hvcC: ByteArray): Pair<Int, Int>? {
+        if (hvcC.size < 23) return null
+        var p = 22
+        val numArrays = hvcC[p].toInt() and 0xFF
+        p++
+        var sps: ByteArray? = null
+        for (a in 0 until numArrays) {
+            if (p + 3 > hvcC.size) break
+            val nalType = hvcC[p].toInt() and 0x3F
+            val numNalus = ((hvcC[p + 1].toInt() and 0xFF) shl 8) or (hvcC[p + 2].toInt() and 0xFF)
+            p += 3
+            for (n in 0 until numNalus) {
+                if (p + 2 > hvcC.size) break
+                val len = ((hvcC[p].toInt() and 0xFF) shl 8) or (hvcC[p + 1].toInt() and 0xFF)
+                p += 2
+                if (len <= 0 || p + len > hvcC.size) break
+                if (nalType == 33 && sps == null) sps = rbsp(hvcC, p, len)
+                p += len
+            }
+            if (sps != null) break
+        }
+        val s = sps ?: return null
+        if (s.size < 4) return null
+
+        val b = Bits(s, 2)                // 跳过 2 字节 NAL header
+        b.u(4)                            // sps_video_parameter_set_id
+        val maxSub = b.u(3)               // sps_max_sub_layers_minus1
+        b.u(1)                            // sps_temporal_id_nesting_flag
+
+        // profile_tier_level(1, maxSub)
+        b.skip(88)                        // general profile/tier/compat/preset(44)
+        b.u(8)                            // general_level_idc
+        if (maxSub > 0) {
+            val prof = BooleanArray(maxSub)
+            val lvl = BooleanArray(maxSub)
+            for (i in 0 until maxSub) { prof[i] = b.u(1) == 1; lvl[i] = b.u(1) == 1 }
+            var i = maxSub
+            while (i < 8) { b.u(2); i++ }
+            for (j in 0 until maxSub) {
+                if (prof[j]) b.skip(88)
+                if (lvl[j]) b.u(8)
+            }
+        }
+
+        b.ue()                            // sps_seq_parameter_set_id
+        val chroma = b.ue()
+        if (chroma == 3) b.u(1)           // separate_colour_plane_flag
+        var w = b.ue()                    // pic_width_in_luma_samples
+        var h = b.ue()                    // pic_height_in_luma_samples
+        if (b.u(1) == 1) {                // conformance_window_flag
+            val l = b.ue(); val r = b.ue(); val t = b.ue(); val bo = b.ue()
+            w -= (l + r) * (if (chroma == 1 || chroma == 2) 2 else 1)
+            h -= (t + bo) * (if (chroma == 1) 2 else 1)
+        }
+        return if (w > 0 && h > 0) w to h else null
+    }
+
+    /** 去掉防竞争字节 0x03（EBSP → RBSP）。 */
+    private fun rbsp(src: ByteArray, from: Int, len: Int): ByteArray {
+        val out = java.io.ByteArrayOutputStream(len)
+        var zeros = 0
+        val end = minOf(src.size, from + len)
+        var i = from
+        while (i < end) {
+            val v = src[i].toInt() and 0xFF
+            if (zeros >= 2 && v == 3) {
+                zeros = 0
+                i++
+                continue
+            }
+            out.write(v)
+            zeros = if (v == 0) zeros + 1 else 0
+            i++
+        }
+        return out.toByteArray()
+    }
+
+    /** 按位读取，MSB 优先。越界抛异常，由外层 runCatching 兜住。 */
+    private class Bits(private val d: ByteArray, var bytePos: Int = 0) {
+        private var bitPos = 0
+
+        fun u(n: Int): Int {
+            var v = 0
+            var k = 0
+            while (k < n) {
+                if (bytePos >= d.size) throw IllegalStateException("bitstream EOF")
+                v = (v shl 1) or ((d[bytePos].toInt() shr (7 - bitPos)) and 1)
+                if (++bitPos == 8) { bitPos = 0; bytePos++ }
+                k++
+            }
+            return v
+        }
+
+        fun skip(n: Int) { var i = 0; while (i < n) { u(1); i++ } }
+
+        fun ue(): Int {
+            var zeros = 0
+            while (u(1) == 0) {
+                if (++zeros > 31) throw IllegalStateException("bad ue(v)")
+            }
+            return ((1 shl zeros) - 1) + u(zeros)
+        }
+
+        fun se(): Int {
+            val k = ue()
+            return if (k and 1 == 0) -(k shr 1) else (k + 1) shr 1
         }
     }
 
@@ -243,17 +450,25 @@ class FlvLivePlayer(private val surface: Surface) {
     }
 
     private fun drainVideo(codec: MediaCodec, ptsUs: Long) {
-        // 落后音频 1 秒以上就丢帧，避免延迟累积
-        val ref = if (audioStartUs >= 0) audioClockUs else ptsUs
-        val late = ptsUs - ref > 1_000_000
+        // 落后音频 1 秒以上就丢帧，避免延迟累积。
+        // 注意方向：视频 pts 小于音频时钟才是"落后"，超前反而要保留。
+        // 音频时钟尚未建立时不能判迟到，否则开头会被整段丢掉。
+        val synced = audioStartUs >= 0 && audioClockUs > 0
+        val late = synced && audioClockUs - ptsUs > 1_000_000
         if (late) { droppedFrames++ ; if (droppedFrames % 60 == 1) post("丢帧追赶中…") }
 
         while (true) {
             val out = codec.dequeueOutputBuffer(bufInfo, 0)
             when {
                 out >= 0 -> {
-                    if (!late) codec.releaseOutputBuffer(out, true)
-                    else codec.releaseOutputBuffer(out, false)
+                    if (!late) {
+                        codec.releaseOutputBuffer(out, true)
+                        renderedFrames++
+                        if (renderedFrames == 1 || renderedFrames % 120 == 0)
+                            Log.i(TAG, "rendered frames=$renderedFrames")
+                    } else {
+                        codec.releaseOutputBuffer(out, false)
+                    }
                 }
                 out == MediaCodec.INFO_TRY_AGAIN_LATER -> return
                 out == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
@@ -432,6 +647,10 @@ class FlvLivePlayer(private val surface: Surface) {
 
     companion object {
         private const val TAG = "FlvLivePlayer"
+
+        /** 这些 profile 的 SPS 里多出 chroma_format_idc 等字段，解析时要跳过。 */
+        private val AVC_HIGH_PROFILES =
+            intArrayOf(100, 110, 122, 244, 44, 83, 86, 118, 128, 138, 139, 134, 135)
 
         /** AAC 采样频率索引表 */
         val SAMPLE_RATES = intArrayOf(

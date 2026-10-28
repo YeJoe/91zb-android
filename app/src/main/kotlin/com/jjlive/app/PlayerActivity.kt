@@ -176,7 +176,14 @@ class PlayerActivity : AppCompatActivity(), SurfaceHolder.Callback, FlvLivePlaye
 
     override fun onVideoSize(w: Int, h: Int) {
         runOnUiThread {
-            findViewById<TextView>(R.id.resolution).text = "${w}x${h} · HEVC 硬解"
+            // 展示实际启用的解码器：本机没有硬解时会落到 OMX.google.*（软解）
+            val label = player?.codecLabel.orEmpty()
+            val mode = when {
+                label.startsWith("OMX.google") -> "软解"
+                label.isEmpty() -> "解码中"
+                else -> "硬解"
+            }
+            findViewById<TextView>(R.id.resolution).text = "${w}x${h} · ${mode}"
             fitVideo(w, h)
         }
     }
