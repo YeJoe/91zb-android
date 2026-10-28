@@ -30,6 +30,7 @@ import argparse
 import json
 import os
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -334,10 +335,35 @@ class H(SimpleHTTPRequestHandler):
         return super().do_GET()
 
 
+def lan_ips():
+    """枚举本机局域网 IPv4，用来给出手机能访问的地址。
+    先连一个不存在的公网地址骗内核选出默认出口网卡，拿不到再退回 getaddrinfo。"""
+    ips = []
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            s.connect(('8.8.8.8', 80))
+            ips.append(s.getsockname()[0])
+        finally:
+            s.close()
+    except OSError:
+        pass
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            ip = info[4][0]
+            if ip not in ips and not ip.startswith('127.'):
+                ips.append(ip)
+    except OSError:
+        pass
+    return [ip for ip in ips if not ip.startswith('127.') and not ip.startswith('169.254.')]
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--port', type=int, default=8899)
-    ap.add_argument('--host', default='127.0.0.1')
+    # 默认监听 0.0.0.0：手机在同一 Wi-Fi 下要能连上；
+    # 只想本机用就加 --host 127.0.0.1
+    ap.add_argument('--host', default='0.0.0.0')
     a = ap.parse_args()
 
     dom = domain()
@@ -348,9 +374,19 @@ def main():
 
     threading.Thread(target=janitor, daemon=True).start()
     srv = ThreadingHTTPServer((a.host, a.port), H)
-    print('网关已启动: http://%s:%d/' % (a.host, a.port))
-    print('RTMP 域名: %s' % dom)
-    print('浏览器打开上面的地址，点任意房间即可播放；Ctrl+C 停止。')
+    print('网关已启动，RTMP 域名: %s' % dom)
+    print('  本机:   http://127.0.0.1:%d/' % a.port)
+    if a.host in ('0.0.0.0', ''):
+        ips = lan_ips()
+        if ips:
+            # 第一个是默认出口网卡（真 Wi-Fi），其余多半是 VMware/Hyper-V 虚拟网卡
+            print('  手机:   http://%s:%d/   <-- 手机浏览器打开这个' % (ips[0], a.port))
+            for ip in ips[1:]:
+                print('  备用:   http://%s:%d/   （虚拟网卡，一般不用）' % (ip, a.port))
+        print('  手机打不开就先放行防火墙：')
+        print('    netsh advfirewall firewall add rule name="tianmei-gw" dir=in '
+              'action=allow protocol=TCP localport=%d' % a.port)
+    print('点任意房间即可播放；Ctrl+C 停止。')
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
