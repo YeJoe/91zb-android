@@ -65,6 +65,7 @@ class FlvLivePlayer(private val surface: Surface) {
     @Volatile private var audioStartUs = -1L
     @Volatile private var droppedFrames = 0
     private var renderedFrames = 0
+    private var queuedFrames = 0
 
     private val bufInfo = MediaCodec.BufferInfo()
     private val scratch = ByteArray(4)
@@ -213,14 +214,25 @@ class FlvLivePlayer(private val surface: Surface) {
             var codec: MediaCodec? = null
             try {
                 val format = MediaFormat.createVideoFormat(mime, w, h)
-                format.setByteBuffer("csd-0", java.nio.ByteBuffer.wrap(cfg))
+                // csd 必须和帧格式配套：
+                //   帧已转成 Annex-B（00 00 00 01），csd 就必须是独立的
+                //   VPS/SPS/PPS NAL，而不是整块 hvcC/avcC。
+                //   否则解码器按长度前缀解析 Annex-B 数据，一个 NAL 都认不出来 → 有声音没画面。
+                //   这与 ExoPlayer（原版 Flutter video_player 的底层）的做法一致。
+                val csd = runCatching { if (isAvc) avcCsd(cfg) else hevcCsd(cfg) }
+                    .getOrDefault(emptyList())
+                if (csd.isEmpty()) format.setByteBuffer("csd-0", java.nio.ByteBuffer.wrap(cfg))
+                else csd.forEachIndexed { i, nal ->
+                    format.setByteBuffer("csd-$i", java.nio.ByteBuffer.wrap(nal))
+                }
+
                 codec = MediaCodec.createDecoderByType(mime)
                 codec.configure(format, surface, null, 0)
                 codec.start()
                 videoCodec = codec
                 videoConfigured = true
                 codecLabel = "${codec.name} ${w}x$h"
-                Log.i(TAG, "video decoder ready: $codecLabel")
+                Log.i(TAG, "video decoder ready: $codecLabel, csd=${csd.size} nals")
                 post(if (isAvc) "H.264 解码已启动 ${w}×$h" else "H.265 解码已启动 ${w}×$h")
                 return
             } catch (e: Exception) {
@@ -237,6 +249,63 @@ class FlvLivePlayer(private val surface: Surface) {
             codecFailed = true
             listener?.onError("CODEC_FAIL")
         }
+    }
+
+    // ─────────── csd 拆分：hvcC/avcC → 独立 NAL ───────────
+
+    /** 从 hvcC 取出 VPS(32)/SPS(33)/PPS(34)，按顺序作为 csd-0/1/2。 */
+    private fun hevcCsd(hvcC: ByteArray): List<ByteArray> {
+        val out = ArrayList<ByteArray>(3)
+        if (hvcC.size < 23) return out
+        var p = 22
+        val numArrays = hvcC[p].toInt() and 0xFF
+        p++
+        for (a in 0 until numArrays) {
+            if (p + 3 > hvcC.size) break
+            val nalType = hvcC[p].toInt() and 0x3F
+            val num = ((hvcC[p + 1].toInt() and 0xFF) shl 8) or (hvcC[p + 2].toInt() and 0xFF)
+            p += 3
+            for (n in 0 until num) {
+                if (p + 2 > hvcC.size) return out
+                val len = ((hvcC[p].toInt() and 0xFF) shl 8) or (hvcC[p + 1].toInt() and 0xFF)
+                p += 2
+                if (len <= 0 || p + len > hvcC.size) return out
+                if (nalType == 32 || nalType == 33 || nalType == 34) {
+                    out.add(hvcC.copyOfRange(p, p + len))
+                }
+                p += len
+            }
+        }
+        return out
+    }
+
+    /** 从 avcC 取出 SPS/PPS，按顺序作为 csd-0/1。 */
+    private fun avcCsd(avcC: ByteArray): List<ByteArray> {
+        val out = ArrayList<ByteArray>(2)
+        if (avcC.size < 8) return out
+        var p = 5
+        var count = avcC[p].toInt() and 0x1F
+        p++
+        repeat(count) {
+            if (p + 2 > avcC.size) return out
+            val len = ((avcC[p].toInt() and 0xFF) shl 8) or (avcC[p + 1].toInt() and 0xFF)
+            p += 2
+            if (len <= 0 || p + len > avcC.size) return out
+            out.add(avcC.copyOfRange(p, p + len))
+            p += len
+        }
+        if (p >= avcC.size) return out
+        count = avcC[p].toInt() and 0xFF
+        p++
+        repeat(count) {
+            if (p + 2 > avcC.size) return out
+            val len = ((avcC[p].toInt() and 0xFF) shl 8) or (avcC[p + 1].toInt() and 0xFF)
+            p += 2
+            if (len <= 0 || p + len > avcC.size) return out
+            out.add(avcC.copyOfRange(p, p + len))
+            p += len
+        }
+        return out
     }
 
     // ─────────── SPS 解析：拿真实分辨率 ───────────
@@ -442,9 +511,13 @@ class FlvLivePlayer(private val surface: Surface) {
                 ib.clear()
                 ib.put(bytes)
                 codec.queueInputBuffer(idx, 0, bytes.size, ptsUs, 0)
+                queuedFrames++
+                if (queuedFrames == 1 || queuedFrames % 60 == 0)
+                    Log.i(TAG, "video queued=$queuedFrames (${bytes.size}B, key=$isKey)")
             }
             drainVideo(codec, ptsUs)
         } catch (e: Exception) {
+            Log.w(TAG, "decode error", e)
             post("解码错误：${e.message}")
         }
     }
