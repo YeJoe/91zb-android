@@ -8,9 +8,11 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import android.view.MotionEvent
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.view.View
+import android.view.ViewConfiguration
 import android.webkit.JavascriptInterface
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
@@ -19,6 +21,7 @@ import android.webkit.WebViewClient
 import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.TextView
+import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
@@ -30,6 +33,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
+import kotlin.math.abs
 
 /**
  * 播放页。
@@ -40,8 +44,10 @@ import org.json.JSONObject
  * 关键点：源站把视频 NALU tag 做了差分 XOR 混淆（首字节 = codecId+1，I 帧表现为 0x1d），
  * 还原逻辑在 FlvLivePlayer.deobfuscate()。不还原就会黑屏 —— 这正是之前所有解码方案失败的原因。
  *
- * 兜底：万一设备没有 HEVC 解码器（或被 CDN 换了别的封装），自动降级到 WebView + jessibuca(WASM)，
- * 保证"有画面"这条底线不丢。
+ * 兜底：万一设备没有 HEVC 解码器（或被 CDN 换了别的封装），自动降级到 WebView + jessibuca(WASM)。
+ *
+ * 交互：上下滑动切换直播间（切间时整层跟手位移，松手超过阈值就换房间）。
+ * 只有底部聊天区，没有飘屏弹幕；聊天内容经 ChatFilter 过滤掉进房/中奖/下注等营销消息。
  */
 class PlayerActivity : AppCompatActivity() {
 
@@ -52,13 +58,20 @@ class PlayerActivity : AppCompatActivity() {
         /** 原生链路多少毫秒还没出第一帧，就认为这条路走不通。 */
         private const val FIRST_FRAME_TIMEOUT = 8000L
 
-        fun start(ctx: Context, room: Room) {
+        fun start(ctx: Context, rooms: List<Room>, index: Int) {
+            val ids = ArrayList(rooms.map { it.roomId })
+            val names = ArrayList(rooms.map { it.userName })
             ctx.startActivity(
                 Intent(ctx, PlayerActivity::class.java)
-                    .putExtra("roomId", room.roomId)
-                    .putExtra("name", room.userName)
+                    .putStringArrayListExtra("ids", ids)
+                    .putStringArrayListExtra("names", names)
+                    .putExtra("index", index)
+                    .putExtra("roomId", rooms.getOrNull(index)?.roomId ?: "")
+                    .putExtra("name", rooms.getOrNull(index)?.userName ?: "")
             )
         }
+
+        fun start(ctx: Context, room: Room) = start(ctx, listOf(room), 0)
     }
 
     private lateinit var store: TokenStore
@@ -66,14 +79,17 @@ class PlayerActivity : AppCompatActivity() {
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     private val ui = Handler(Looper.getMainLooper())
 
+    private lateinit var page: FrameLayout
     private lateinit var videoBox: FrameLayout
-    private lateinit var danmaku: DanmakuView
     private lateinit var chat: RecyclerView
     private lateinit var status: TextView
     private lateinit var stats: TextView
     private lateinit var resolution: TextView
+    private lateinit var filterCount: TextView
+    private lateinit var swipeHint: TextView
     private lateinit var overlay: View
     private lateinit var btnRetry: Button
+    private lateinit var title: TextView
 
     private val chatItems = ArrayList<ChatMsg>()
     private lateinit var chatAdapter: ChatAdapter
@@ -83,11 +99,18 @@ class PlayerActivity : AppCompatActivity() {
     private var web: WebView? = null
     private var im: ImSocket? = null
 
+    /** 直播间列表（来自首页当前可见列表），用于上下滑动切换。 */
+    private var ids: List<String> = emptyList()
+    private var names: List<String> = emptyList()
+    private var index = 0
+
     private var roomId = ""
     private var roomName = ""
 
     private var urls: List<String> = emptyList()
     private var urlIndex = 0
+    /** 请求序号：切房间后旧请求的回包直接丢弃，避免抢着起播。 */
+    private var reqSeq = 0
 
     private var surfaceReady = false
     private var pendingPlay = false
@@ -97,36 +120,173 @@ class PlayerActivity : AppCompatActivity() {
     private var playStartAt = 0L
     private var pageReady = false
 
+    /** 过滤统计：收到多少帧、真正显示了多少条。 */
+    private var imFrames = 0
+    private var imShown = 0
+    private var lastMsgAt = 0L
+
+    // 手势
+    private var downY = 0f
+    private var downX = 0f
+    private var downAt = 0L
+    private var dragDy = 0f
+    private var dragging = false
+    private var switching = false
+    private val touchSlop by lazy { ViewConfiguration.get(this).scaledTouchSlop }
+    private val switchThreshold by lazy { 76f * resources.displayMetrics.density }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_player)
 
         store = TokenStore(this)
         api = Api(store)
+
+        ids = intent.getStringArrayListExtra("ids") ?: emptyList()
+        names = intent.getStringArrayListExtra("names") ?: emptyList()
         roomId = intent.getStringExtra("roomId") ?: ""
         roomName = intent.getStringExtra("name") ?: ""
+        index = intent.getIntExtra("index", 0).coerceAtLeast(0)
+        // 传进来的 index 和 roomId 对不上（外部直接启动）时，按 roomId 反查
+        if (ids.getOrNull(index) != roomId) {
+            val at = ids.indexOf(roomId)
+            if (at >= 0) index = at
+        }
+        if (index !in names.indices) index = 0
 
+        page = findViewById(R.id.page)
         videoBox = findViewById(R.id.videoBox)
-        danmaku = findViewById(R.id.danmaku)
         chat = findViewById(R.id.chat)
         status = findViewById(R.id.status)
         stats = findViewById(R.id.stats)
         resolution = findViewById(R.id.resolution)
+        filterCount = findViewById(R.id.filterCount)
+        swipeHint = findViewById(R.id.swipeHint)
         overlay = findViewById(R.id.overlay)
         btnRetry = findViewById(R.id.btnRetry)
+        title = findViewById(R.id.title)
 
-        // 底部聊天区：从下往上堆，最多留 60 条
+        // 聊天区：从下往上堆
         chat.layoutManager = LinearLayoutManager(this).apply { stackFromEnd = true }
         chatAdapter = ChatAdapter(chatItems)
+        chat.itemAnimator = androidx.recyclerview.widget.DefaultItemAnimator().apply {
+            addDuration = 120
+        }
         chat.adapter = chatAdapter
 
-        findViewById<TextView>(R.id.title).text = roomName
+        title.text = roomName
 
         btnRetry.setOnClickListener { fetchAndPlay() }
         findViewById<View>(R.id.btnClose).setOnClickListener { finish() }
 
+        page.setOnTouchListener { _, ev -> onPageTouch(ev) }
+
         setupSurface()
         fetchAndPlay()
+    }
+
+    // ─────────── 上下滑动切换直播间 ───────────
+
+    private fun onPageTouch(ev: MotionEvent): Boolean {
+        if (switching) return true
+        when (ev.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                downY = ev.rawY
+                downX = ev.rawX
+                downAt = System.currentTimeMillis()
+                dragDy = 0f
+                dragging = false
+                return true
+            }
+
+            MotionEvent.ACTION_MOVE -> {
+                if (page.height == 0) return true
+                val dy = ev.rawY - downY
+                val dx = ev.rawX - downX
+                if (!dragging && abs(dy) > touchSlop && abs(dy) > abs(dx) * 1.3f) {
+                    dragging = true
+                    swipeHint.visibility = View.GONE
+                }
+                if (dragging) {
+                    dragDy = dy
+                    // 阻尼跟手：只走 55%，边界外再压一半
+                    val edge = (index == 0 && dy > 0) || (index == ids.lastIndex && dy < 0)
+                    page.translationY = dy * if (edge) 0.22f else 0.55f
+                    return true
+                }
+            }
+
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                if (!dragging) return false
+                dragging = false
+                val fast = System.currentTimeMillis() - downAt < 240 && abs(dragDy) > switchThreshold * 0.4f
+                val far = abs(dragDy) > switchThreshold
+                when {
+                    dragDy < 0 && (far || fast) -> switchRoom(1)
+                    dragDy > 0 && (far || fast) -> switchRoom(-1)
+                    else -> page.animate().translationY(0f).setDuration(160).start()
+                }
+                return true
+            }
+        }
+        return false
+    }
+
+    /** @param delta +1 下一个（内容向上滑出），-1 上一个 */
+    private fun switchRoom(delta: Int) {
+        val next = index + delta
+        if (ids.isEmpty() || next !in ids.indices) {
+            page.animate().translationY(0f).setDuration(160).start()
+            Toast.makeText(this, if (delta > 0) "已经是最后一个直播间" else "已经是第一个直播间", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        switching = true
+        index = next
+        roomId = ids[next]
+        roomName = names.getOrElse(next) { "" }
+
+        val h = page.height.coerceAtLeast(1).toFloat()
+        val outY = if (delta > 0) -h * 0.45f else h * 0.45f
+        page.animate()
+            .translationY(outY)
+            .alpha(0.1f)
+            .setDuration(150)
+            .withEndAction {
+                // 新一屏从另一侧滑入
+                page.translationY = -outY
+                resetForRoom()
+                fetchAndPlay()
+                page.animate().translationY(0f).alpha(1f).setDuration(220).start()
+                switching = false
+            }
+            .start()
+    }
+
+    /** 切房间时把上一条流、聊天、IM 全部清干净。 */
+    private fun resetForRoom() {
+        reqSeq++              // 让上一个房间的接口回包失效
+        ui.removeCallbacks(firstFrameWatchdog)
+        stopNative()
+        runCatching { web?.evaluateJavascript("stopStream()", null) }
+
+        playing = false
+        playedSeconds = 0
+        playStartAt = 0
+
+        im?.close()
+        im = null
+        imFrames = 0
+        imShown = 0
+        chatAdapter.clear()
+        renderFilterCount()
+
+        title.text = roomName
+        resolution.text = ""
+        stats.text = ""
+        overlay.visibility = View.VISIBLE
+        btnRetry.visibility = View.GONE
+        onStatus("正在获取播放地址…")
     }
 
     // ─────────── 原生解码：SurfaceView + MediaCodec ───────────
@@ -166,11 +326,12 @@ class PlayerActivity : AppCompatActivity() {
         val p = FlvLivePlayer(sv.holder.surface)
         p.listener = object : FlvLivePlayer.Listener {
             override fun onStatus(msg: String) {
-                ui.post { status.text = msg }
+                ui.post { if (!isFinishing) status.text = msg }
             }
 
             override fun onVideoSize(w: Int, h: Int) {
                 ui.post {
+                    if (isFinishing) return@post
                     fitVideo(w, h)
                     val codec = p.codecLabel.ifBlank { "MediaCodec" }
                     resolution.text = "$w×$h · $codec"
@@ -180,6 +341,7 @@ class PlayerActivity : AppCompatActivity() {
 
             override fun onStats(bytes: Long, seconds: Int, kbps: Int) {
                 ui.post {
+                    if (isFinishing) return@post
                     playedSeconds = seconds
                     stats.text = "已播 ${seconds}s · ${kbps} KB/s"
                 }
@@ -196,12 +358,14 @@ class PlayerActivity : AppCompatActivity() {
 
             override fun onFirstFrame() {
                 ui.post {
+                    if (isFinishing) return@post
                     playing = true
                     playStartAt = System.currentTimeMillis()
                     overlay.visibility = View.GONE
                     btnRetry.visibility = View.GONE
                     status.text = "播放中 · 硬解"
                     ui.removeCallbacks(firstFrameWatchdog)
+                    showSwipeHintOnce()
                 }
             }
         }
@@ -219,6 +383,23 @@ class PlayerActivity : AppCompatActivity() {
             Log.w(TAG, "no frame after ${FIRST_FRAME_TIMEOUT}ms, next")
             playNext()
         }
+    }
+
+    private var hintShown = false
+
+    private fun showSwipeHintOnce() {
+        if (hintShown || ids.size <= 1) return
+        hintShown = true
+        swipeHint.alpha = 0f
+        swipeHint.visibility = View.VISIBLE
+        swipeHint.animate().alpha(1f).setDuration(260).withEndAction {
+            ui.postDelayed({
+                if (isFinishing) return@postDelayed
+                swipeHint.animate().alpha(0f).setDuration(420).withEndAction {
+                    swipeHint.visibility = View.GONE
+                }.start()
+            }, 2200)
+        }.start()
     }
 
     /** 按视频宽高比铺满（不裁切），居中显示。SurfaceView 默认会把画面拉伸。 */
@@ -357,7 +538,7 @@ class PlayerActivity : AppCompatActivity() {
         @JavascriptInterface
         fun onEvent(type: String, msg: String) {
             Log.i(TAG, "js $type $msg")
-            ui.post { handleEvent(type, msg) }
+            ui.post { if (!isFinishing) handleEvent(type, msg) }
         }
     }
 
@@ -372,6 +553,7 @@ class PlayerActivity : AppCompatActivity() {
                 overlay.visibility = View.GONE
                 btnRetry.visibility = View.GONE
                 status.text = "播放中 · 软解"
+                showSwipeHintOnce()
             }
 
             "info" -> {
@@ -408,6 +590,7 @@ class PlayerActivity : AppCompatActivity() {
 
     private fun fetchAndPlay() {
         if (store.token == null) { onStatus("未设置令牌"); return }
+        val my = ++reqSeq
         playing = false
         overlay.visibility = View.VISIBLE
         onStatus("正在获取播放地址…")
@@ -418,6 +601,8 @@ class PlayerActivity : AppCompatActivity() {
             val detail = withContext(Dispatchers.IO) {
                 runCatching { api.call("/app/live/joinRoom", mapOf("liveId" to roomId)) }.getOrNull()
             }
+            if (my != reqSeq || isFinishing) return@launch   // 期间又切了房间
+
             val data = detail?.optJSONObject("data")
             val room = data?.let { Parser.room(it) }
 
@@ -458,10 +643,12 @@ class PlayerActivity : AppCompatActivity() {
             if (!surfaceReady) { pendingPlay = true; return }
             startNative(url)
         }
-        if (im == null) startDanmaku()
+        if (im == null) startIm()
     }
 
-    private fun startDanmaku() {
+    // ─────────── 聊天（IM） ───────────
+
+    private fun startIm() {
         val token = store.token ?: return
         im?.close()
         im = ImSocket(token, store.deviceUid).also { s ->
@@ -483,81 +670,42 @@ class PlayerActivity : AppCompatActivity() {
     }
 
     /**
-     * IM 帧 → 聊天区 + 弹幕。
-     *
-     * 帧是 AES 解出来的 protobuf，业务字段以 JSON 片段嵌在里面（cn 昵称 / txt 正文），
-     * 所以先截取 JSON 段落正经解析，失败再退回正则捞字段。原始帧打日志便于排查格式变化。
+     * IM 帧 → 底部聊天区。
+     * 解析与过滤全在 ChatFilter：只留真正的聊天正文，进房/中奖/下注/引流一律丢弃。
      */
     private fun handleIm(raw: String) {
-        Log.i(TAG, "im << " + raw.replace("\n", " ").take(240))
-        val msg = parseChat(raw) ?: return
+        imFrames++
+        val msg = ChatFilter.parse(raw)
+        if (msg == null) {
+            if (imFrames % 20 == 0) ui.post { if (!isFinishing) renderFilterCount() }
+            Log.d(TAG, "im filtered << " + raw.replace("\n", " ").take(120))
+            return
+        }
+
         ui.post {
-            if (!isFinishing) {
-                chatItems.add(msg)
-                while (chatItems.size > 60) chatItems.removeAt(0)
-                chatAdapter.notifyDataSetChanged()
-                chat.scrollToPosition(chatItems.size - 1)
-                danmaku.submit(if (msg.system || msg.nick.isEmpty()) msg.body else "${msg.nick}: ${msg.body}")
+            if (isFinishing) return@post
+            // 同一个人连续刷同一句话，6 秒内只留一条
+            val now = System.currentTimeMillis()
+            val prev = chatAdapter.last()
+            if (prev != null && prev.nick == msg.nick && prev.body == msg.body && now - lastMsgAt < 6000) {
+                renderFilterCount()
+                return@post
             }
+            lastMsgAt = now
+            imShown++
+            chatAdapter.push(msg)
+            chat.scrollToPosition(chatAdapter.itemCount - 1)
+            renderFilterCount()
         }
     }
 
-    private fun parseChat(raw: String): ChatMsg? {
-        val i = raw.indexOf('{')
-        val j = raw.lastIndexOf('}')
-        if (i in 0 until j) {
-            val js = runCatching { JSONObject(raw.substring(i, j + 1)) }.getOrNull()
-            if (js != null) {
-                val nick = js.optString("cn")
-                    .ifEmpty { js.optString("nickname") }
-                    .ifEmpty { js.optString("un") }
-                val body = js.optString("txt")
-                    .ifEmpty { js.optString("msg") }
-                    .ifEmpty { js.optString("content") }
-                    .ifEmpty { js.optString("txts") }
-                if (body.isNotEmpty()) return ChatMsg(unescape(nick), unescape(body))
-                if (nick.isNotEmpty()) return ChatMsg("", unescape(nick) + " 进入直播间", true)
-            }
-        }
-
-        val nick = Regex("\"cn\"\\s*:\\s*\"([^\"]*)\"").find(raw)?.groupValues?.get(1)
-            ?: Regex("\"nickname\"\\s*:\\s*\"([^\"]*)\"").find(raw)?.groupValues?.get(1)
-        val body = Regex("\"(?:txt|msg|content)\"\\s*:\\s*\"([^\"]*)\"")
-            .find(raw)?.groupValues?.get(1)
-        return when {
-            !body.isNullOrBlank() -> ChatMsg(unescape(nick ?: ""), unescape(body))
-            !nick.isNullOrBlank() -> ChatMsg("", unescape(nick) + " 进入直播间", true)
-            else -> null
-        }
-    }
-
-    /** 处理 JSON 里残留的 \uXXXX、\n 转义。 */
-    private fun unescape(s: String): String {
-        if (!s.contains('\\')) return s
-        val sb = StringBuilder(s.length)
-        var i = 0
-        while (i < s.length) {
-            val c = s[i]
-            if (c == '\\' && i + 1 < s.length) {
-                when (s[i + 1]) {
-                    'u' -> {
-                        val hex = if (i + 6 <= s.length) s.substring(i + 2, i + 6) else ""
-                        val code = hex.toIntOrNull(16)
-                        if (code != null) { sb.append(code.toChar()); i += 6; continue }
-                    }
-                    'n' -> { sb.append('\n'); i += 2; continue }
-                    't' -> { sb.append(' '); i += 2; continue }
-                    '"' -> { sb.append('"'); i += 2; continue }
-                }
-            }
-            sb.append(c)
-            i++
-        }
-        return sb.toString()
+    private fun renderFilterCount() {
+        val hidden = (imFrames - imShown).coerceAtLeast(0)
+        filterCount.text = if (hidden > 0) "已屏蔽 $hidden 条" else ""
     }
 
     private fun onStatus(msg: String) {
-        runOnUiThread { status.text = msg }
+        runOnUiThread { if (!isFinishing) status.text = msg }
     }
 
     override fun onPause() {

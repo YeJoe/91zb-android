@@ -1,91 +1,173 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  播放页：视频铺满 + 底部聊天区（无飘屏弹幕）。
+  page 这一层是“可滑动的内容层”，上下切直播间时整层跟着手指位移。
+-->
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="#000000">
 
-    <!-- TXCloudVideoView 由代码动态创建后加入这里（LiteAV 播放器专用渲染视图） -->
     <FrameLayout
-        android:id="@+id/videoBox"
+        android:id="@+id/page"
         android:layout_width="match_parent"
-        android:layout_height="match_parent" />
+        android:layout_height="match_parent">
 
-    <com.jjlive.app.DanmakuView
-        android:id="@+id/danmaku"
-        android:layout_width="match_parent"
-        android:layout_height="180dp"
-        android:layout_gravity="top" />
+        <FrameLayout
+            android:id="@+id/videoBox"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent" />
 
-    <!-- 底部聊天区：只占左侧，避免挡住画面主体 -->
-    <androidx.recyclerview.widget.RecyclerView
-        android:id="@+id/chat"
-        android:layout_width="250dp"
-        android:layout_height="170dp"
-        android:layout_gravity="bottom|start"
-        android:layout_marginStart="10dp"
-        android:layout_marginBottom="74dp"
-        android:clipToPadding="false"
-        android:scrollbars="none" />
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="140dp"
+            android:layout_gravity="top"
+            android:background="@drawable/scrim_top" />
 
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_gravity="bottom"
-        android:background="#CC0B0E14"
-        android:orientation="vertical"
-        android:paddingBottom="12dp"
-        android:paddingLeft="12dp"
-        android:paddingRight="12dp"
-        android:paddingTop="12dp">
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="420dp"
+            android:layout_gravity="bottom"
+            android:background="@drawable/scrim_bottom" />
 
+        <!-- 顶栏：直播中 + 主播名 + 关闭 -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_gravity="top"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingLeft="14dp"
+            android:paddingTop="12dp"
+            android:paddingRight="14dp"
+            android:paddingBottom="12dp">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:background="@drawable/bg_live"
+                android:paddingLeft="6dp"
+                android:paddingTop="2dp"
+                android:paddingRight="6dp"
+                android:paddingBottom="2dp"
+                android:text="直播中"
+                android:textColor="#FFFFFF"
+                android:textSize="10sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/title"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:layout_weight="1"
+                android:ellipsize="end"
+                android:shadowColor="#99000000"
+                android:shadowDx="0"
+                android:shadowDy="1"
+                android:shadowRadius="3"
+                android:singleLine="true"
+                android:textColor="#F2F5FA"
+                android:textSize="15sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/btnClose"
+                android:layout_width="34dp"
+                android:layout_height="34dp"
+                android:background="@drawable/bg_circle_dark"
+                android:gravity="center"
+                android:text="✕"
+                android:textColor="#E6E9EF"
+                android:textSize="15sp" />
+        </LinearLayout>
+
+        <!-- 聊天区：只保留这一个区域，从底部向上堆叠 -->
+        <androidx.recyclerview.widget.RecyclerView
+            android:id="@+id/chat"
+            android:layout_width="match_parent"
+            android:layout_height="266dp"
+            android:layout_gravity="bottom"
+            android:layout_marginStart="14dp"
+            android:layout_marginEnd="14dp"
+            android:layout_marginBottom="52dp"
+            android:clipToPadding="false"
+            android:overScrollMode="never"
+            android:paddingTop="6dp"
+            android:paddingBottom="2dp"
+            android:scrollbars="none" />
+
+        <!-- 底部信息条 -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_gravity="bottom"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingLeft="14dp"
+            android:paddingTop="6dp"
+            android:paddingRight="14dp"
+            android:paddingBottom="12dp">
+
+            <TextView
+                android:id="@+id/resolution"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:background="@drawable/pill_dark"
+                android:paddingLeft="9dp"
+                android:paddingTop="3dp"
+                android:paddingRight="9dp"
+                android:paddingBottom="3dp"
+                android:textColor="#D6DEEA"
+                android:textSize="10.5sp" />
+
+            <TextView
+                android:id="@+id/stats"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="6dp"
+                android:background="@drawable/pill_dark"
+                android:paddingLeft="9dp"
+                android:paddingTop="3dp"
+                android:paddingRight="9dp"
+                android:paddingBottom="3dp"
+                android:textColor="#7FD1A8"
+                android:textSize="10.5sp" />
+
+            <Space
+                android:layout_width="0dp"
+                android:layout_height="1dp"
+                android:layout_weight="1" />
+
+            <TextView
+                android:id="@+id/filterCount"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:shadowColor="#99000000"
+                android:shadowDx="0"
+                android:shadowDy="1"
+                android:shadowRadius="3"
+                android:textColor="#93A0B4"
+                android:textSize="10.5sp" />
+        </LinearLayout>
+
+        <!-- 上滑切间提示，几秒后自动淡出 -->
         <TextView
-            android:id="@+id/resolution"
+            android:id="@+id/swipeHint"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:textColor="#8B95A7"
-            android:textSize="11sp" />
+            android:layout_gravity="center"
+            android:background="@drawable/pill_dark"
+            android:paddingLeft="16dp"
+            android:paddingTop="8dp"
+            android:paddingRight="16dp"
+            android:paddingBottom="8dp"
+            android:text="↑ 上滑切换直播间"
+            android:textColor="#E8EDF5"
+            android:textSize="12sp" />
+    </FrameLayout>
 
-        <TextView
-            android:id="@+id/stats"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:textColor="#3DDC97"
-            android:textSize="11sp" />
-    </LinearLayout>
-
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_gravity="top"
-        android:background="#99000000"
-        android:gravity="center_vertical"
-        android:orientation="horizontal"
-        android:paddingLeft="12dp"
-        android:paddingRight="12dp"
-        android:paddingTop="8dp"
-        android:paddingBottom="8dp">
-
-        <TextView
-            android:id="@+id/title"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:ellipsize="end"
-            android:singleLine="true"
-            android:textColor="#E6E9EF"
-            android:textSize="15sp"
-            android:textStyle="bold" />
-
-        <TextView
-            android:id="@+id/btnClose"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:padding="8dp"
-            android:text="✕"
-            android:textColor="#E6E9EF"
-            android:textSize="16sp" />
-    </LinearLayout>
-
+    <!-- 加载/错误遮罩 -->
     <LinearLayout
         android:id="@+id/overlay"
         android:layout_width="match_parent"
@@ -100,6 +182,10 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:gravity="center"
+            android:shadowColor="#99000000"
+            android:shadowDx="0"
+            android:shadowDy="1"
+            android:shadowRadius="3"
             android:textColor="#CFD7E6"
             android:textSize="14sp" />
 

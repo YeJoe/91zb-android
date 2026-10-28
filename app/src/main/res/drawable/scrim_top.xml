@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 顶部渐隐：把手内容压暗，标题和关闭按钮在亮画面上也能看清 -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <gradient
+        android:angle="270"
+        android:endColor="#00000000"
+        android:startColor="#B3000000"
+        android:type="linear" />
+</shape>

@@ -9,7 +9,7 @@ import androidx.recyclerview.widget.RecyclerView
 
 class RoomAdapter(
     private val items: List<Room>,
-    private val onClick: (Room) -> Unit
+    private val onClick: (Room, Int) -> Unit
 ) : RecyclerView.Adapter<RoomAdapter.VH>() {
 
     class VH(v: View) : RecyclerView.ViewHolder(v) {
@@ -53,6 +53,9 @@ class RoomAdapter(
                 bmp?.let { h.cover.post { h.cover.setImageBitmap(it) } }
             }.start()
         }
-        h.itemView.setOnClickListener { onClick(r) }
+        h.itemView.setOnClickListener {
+            val at = h.bindingAdapterPosition.takeIf { p -> p != RecyclerView.NO_POSITION } ?: pos
+            onClick(r, at)
+        }
     }
 }

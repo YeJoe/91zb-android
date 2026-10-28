@@ -72,7 +72,8 @@ class MainActivity : AppCompatActivity() {
 
         // 列数按屏幕宽度自适应：手机 2 列，平板/横屏 4~6 列，避免卡片被拉成长条
         rv.layoutManager = GridLayoutManager(this, spanCount())
-        adapter = RoomAdapter(shown) { PlayerActivity.start(this, it) }
+        // 把当前可见列表整份带进播放页，播放页据此支持上下滑动切换直播间
+        adapter = RoomAdapter(shown) { _, pos -> PlayerActivity.start(this, shown.toList(), pos) }
         rv.adapter = adapter
 
         swipe.setOnRefreshListener { load() }
