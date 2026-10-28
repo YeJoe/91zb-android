@@ -159,6 +159,7 @@ class PlayerActivity : AppCompatActivity() {
 
             override fun onVideoSize(w: Int, h: Int) {
                 ui.post {
+                    fitVideo(w, h)
                     val codec = p.codecLabel.ifBlank { "MediaCodec" }
                     resolution.text = "$w×$h · $codec"
                     Log.i(TAG, "video size ${w}x$h $codec")
@@ -206,6 +207,18 @@ class PlayerActivity : AppCompatActivity() {
             Log.w(TAG, "no frame after ${FIRST_FRAME_TIMEOUT}ms, next")
             playNext()
         }
+    }
+
+    /** 按视频宽高比铺满（不裁切），居中显示。SurfaceView 默认会把画面拉伸。 */
+    private fun fitVideo(vw: Int, vh: Int) {
+        val sv = surfaceView ?: return
+        val bw = videoBox.width
+        val bh = videoBox.height
+        if (bw <= 0 || bh <= 0 || vw <= 0 || vh <= 0) return
+        val scale = minOf(bw.toFloat() / vw, bh.toFloat() / vh)
+        val lp = FrameLayout.LayoutParams((vw * scale).toInt(), (vh * scale).toInt())
+        lp.gravity = android.view.Gravity.CENTER
+        sv.layoutParams = lp
     }
 
     private fun stopNative() {
