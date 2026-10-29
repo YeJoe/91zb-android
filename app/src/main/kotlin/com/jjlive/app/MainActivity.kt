@@ -7,6 +7,7 @@ import android.view.View
 import android.view.inputmethod.EditorInfo
 import android.widget.EditText
 import android.widget.TextView
+import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.recyclerview.widget.GridLayoutManager
@@ -14,7 +15,6 @@ import androidx.recyclerview.widget.RecyclerView
 import androidx.swiperefreshlayout.widget.SwipeRefreshLayout
 import com.google.android.material.chip.Chip
 import com.google.android.material.chip.ChipGroup
-import com.google.android.material.floatingactionbutton.FloatingActionButton
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -78,14 +78,15 @@ class MainActivity : AppCompatActivity() {
 
         swipe.setOnRefreshListener { load() }
 
-        findViewById<FloatingActionButton>(R.id.fabToken).setOnClickListener { askToken() }
+        findViewById<View>(R.id.btnSettings).setOnClickListener { showSettings() }
         search.setOnEditorActionListener { _, actionId, _ ->
             if (actionId == EditorInfo.IME_ACTION_SEARCH) { filter(search.text.toString()); true }
             else false
         }
 
         buildChips(emptyList())
-        if (store.token == null) askToken() else load()
+        // 令牌有内置默认值，首次打开直接进列表；要换域名/令牌点右上角齿轮
+        load()
     }
 
     override fun onDestroy() {
@@ -98,28 +99,79 @@ class MainActivity : AppCompatActivity() {
         return (widthDp / 170f).toInt().coerceIn(2, 6)
     }
 
-    private fun askToken() {
-        val input = EditText(this).apply {
-            setText(store.token ?: "")
-            hint = "粘贴 authorization 令牌"
-            setSingleLine()
-        }
-        AlertDialog.Builder(this)
-            .setTitle("令牌（authorization）")
-            .setMessage("从 App / 网页登录后的请求头 authorization 复制。\n令牌失效后在此更新即可。")
-            .setView(input)
-            .setPositiveButton("保存") { _, _ ->
-                val t = input.text.toString().trim()
-                if (t.isEmpty()) return@setPositiveButton
-                store.token = t
-                load()
-            }
+    /**
+     * 设置面板：接口域名 + 令牌（+ 弹幕地址）。
+     *
+     * 令牌失效时不用重装 App —— 原版每次换域名/换令牌都要重新打包，
+     * 这里把三个值落到 SharedPreferences，改完立刻重新拉列表。
+     */
+    private fun showSettings() {
+        val v = layoutInflater.inflate(R.layout.dialog_settings, null)
+        val etHost = v.findViewById<EditText>(R.id.etHost)
+        val etToken = v.findViewById<EditText>(R.id.etToken)
+        val etIm = v.findViewById<EditText>(R.id.etIm)
+        val tvTip = v.findViewById<TextView>(R.id.tvTip)
+
+        etHost.setText(store.host)
+        etToken.setText(store.token)
+        etIm.setText(if (store.imHost == Cfg.IM_WS) "" else store.imHost)
+        tvTip.text = "令牌失效或域名被墙时改这里。弹幕地址一般不用动。"
+
+        val dlg = AlertDialog.Builder(this)
+            .setTitle("设置")
+            .setView(v)
+            .setPositiveButton("保存", null)
+            .setNeutralButton("测试", null)
             .setNegativeButton("取消", null)
-            .show()
+            .create()
+        dlg.show()
+
+        dlg.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+            val host = normalizeHost(etHost.text.toString())
+            if (host == null) {
+                etHost.error = "域名格式不对"
+                return@setOnClickListener
+            }
+            val token = etToken.text.toString().trim()
+            if (token.isEmpty()) {
+                etToken.error = "令牌不能为空"
+                return@setOnClickListener
+            }
+            store.host = host
+            store.token = token
+            store.imHost = etIm.text.toString()
+            dlg.dismiss()
+            Toast.makeText(this, "已保存，正在重新加载", Toast.LENGTH_SHORT).show()
+            load()
+        }
+
+        dlg.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener {
+            val host = normalizeHost(etHost.text.toString())
+            if (host == null) {
+                tvTip.setTextColor(Color.parseColor("#FF7A8A"))
+                tvTip.text = "域名格式不对，示例：https://utp.opuxrcm.com"
+                return@setOnClickListener
+            }
+            tvTip.setTextColor(Color.parseColor("#8B95A7"))
+            tvTip.text = "测试中…"
+            scope.launch {
+                val (ok, msg) = api.checkToken(host, etToken.text.toString().trim())
+                tvTip.setTextColor(Color.parseColor(if (ok) "#7FD1A8" else "#FF7A8A"))
+                tvTip.text = if (ok) "✓ 连接正常，可以保存" else "✗ 失败：$msg"
+            }
+        }
+
+        v.findViewById<TextView>(R.id.btnReset).setOnClickListener {
+            store.resetAll()
+            etHost.setText(store.host)
+            etToken.setText(store.token)
+            etIm.setText("")
+            tvTip.setTextColor(Color.parseColor("#8B95A7"))
+            tvTip.text = "已恢复内置默认值（点保存生效）"
+        }
     }
 
     private fun load() {
-        if (store.token == null) { swipe.isRefreshing = false; return }
         swipe.isRefreshing = true
         scope.launch {
             val cats = withContext(Dispatchers.IO) {
@@ -152,7 +204,7 @@ class MainActivity : AppCompatActivity() {
             filter(query)
             if (all.isEmpty()) {
                 empty.visibility = View.VISIBLE
-                empty.text = "没有获取到房间\n请检查令牌是否有效（右下角按钮更新）"
+                empty.text = "没有获取到房间\n令牌可能已失效，点右上角 ⚙ 更新域名 / 令牌"
             } else empty.visibility = View.GONE
         }
     }

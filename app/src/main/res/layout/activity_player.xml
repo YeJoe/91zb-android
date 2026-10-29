@@ -1,34 +1,49 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  播放页：视频铺满 + 底部聊天区（无飘屏弹幕）。
-  page 这一层是“可滑动的内容层”，上下切直播间时整层跟着手指位移。
+  播放页。
+
+  两种形态（由 PlayerActivity.applyMode 动态切）：
+    半屏 —— 上方约 46% 是画面，下方是深色聊天区，右下角「全屏」按钮或点画面可放大；
+    全屏 —— 画面铺满，聊天区变成浮在底部的半透明层，再点一下回半屏。
+
+  page 是 SwipeLayout（可上下拖动切直播间），overlay 放在 page 内部，
+  切间时整层跟着一起走，避免遮罩"钉"在原地显得动画断裂。
 -->
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="#000000">
+    android:background="#05070B">
 
-    <FrameLayout
+    <!-- 拖动时被拉开的那一半：提示下一间，纯装饰 -->
+    <TextView
+        android:id="@+id/nextHint"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center"
+        android:alpha="0"
+        android:text="松手切换直播间"
+        android:textColor="#8B95A7"
+        android:textSize="13sp" />
+
+    <com.jjlive.app.SwipeLayout
         android:id="@+id/page"
         android:layout_width="match_parent"
         android:layout_height="match_parent">
 
+        <!-- 画面容器：高度在代码里按形态设置 -->
         <FrameLayout
             android:id="@+id/videoBox"
             android:layout_width="match_parent"
-            android:layout_height="match_parent" />
+            android:layout_height="match_parent"
+            android:layout_gravity="top"
+            android:background="#000000" />
 
         <View
+            android:id="@+id/scrimTop"
             android:layout_width="match_parent"
-            android:layout_height="140dp"
+            android:layout_height="128dp"
             android:layout_gravity="top"
             android:background="@drawable/scrim_top" />
-
-        <View
-            android:layout_width="match_parent"
-            android:layout_height="420dp"
-            android:layout_gravity="bottom"
-            android:background="@drawable/scrim_bottom" />
 
         <!-- 顶栏：直播中 + 主播名 + 关闭 -->
         <LinearLayout
@@ -83,33 +98,87 @@
                 android:textSize="15sp" />
         </LinearLayout>
 
-        <!-- 聊天区：只保留这一个区域，从底部向上堆叠 -->
-        <androidx.recyclerview.widget.RecyclerView
-            android:id="@+id/chat"
+        <!-- 聊天区：半屏时是深色面板，全屏时是压画面底部的渐隐层 -->
+        <LinearLayout
+            android:id="@+id/chatPanel"
             android:layout_width="match_parent"
-            android:layout_height="266dp"
+            android:layout_height="260dp"
             android:layout_gravity="bottom"
-            android:layout_marginStart="14dp"
-            android:layout_marginEnd="14dp"
-            android:layout_marginBottom="52dp"
-            android:clipToPadding="false"
-            android:overScrollMode="never"
-            android:paddingTop="6dp"
-            android:paddingBottom="2dp"
-            android:scrollbars="none" />
+            android:orientation="vertical">
 
-        <!-- 底部信息条 -->
+            <LinearLayout
+                android:id="@+id/chatHeader"
+                android:layout_width="match_parent"
+                android:layout_height="36dp"
+                android:gravity="center_vertical"
+                android:orientation="horizontal"
+                android:paddingLeft="16dp"
+                android:paddingRight="12dp">
+
+                <View
+                    android:layout_width="5dp"
+                    android:layout_height="5dp"
+                    android:background="@drawable/bg_dot" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="6dp"
+                    android:text="聊天"
+                    android:textColor="#E6E9EF"
+                    android:textSize="12sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/filterCount"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="8dp"
+                    android:textColor="#6F7C90"
+                    android:textSize="10.5sp" />
+
+                <Space
+                    android:layout_width="0dp"
+                    android:layout_height="1dp"
+                    android:layout_weight="1" />
+
+                <TextView
+                    android:id="@+id/btnMode"
+                    android:layout_width="wrap_content"
+                    android:layout_height="26dp"
+                    android:background="@drawable/pill_dark"
+                    android:gravity="center"
+                    android:paddingLeft="11dp"
+                    android:paddingRight="11dp"
+                    android:text="全屏"
+                    android:textColor="#D6DEEA"
+                    android:textSize="11sp" />
+            </LinearLayout>
+
+            <androidx.recyclerview.widget.RecyclerView
+                android:id="@+id/chat"
+                android:layout_width="match_parent"
+                android:layout_height="0dp"
+                android:layout_weight="1"
+                android:clipToPadding="false"
+                android:overScrollMode="never"
+                android:paddingLeft="16dp"
+                android:paddingTop="2dp"
+                android:paddingRight="16dp"
+                android:paddingBottom="4dp"
+                android:scrollbars="none" />
+        </LinearLayout>
+
+        <!-- 底部信息条：清晰度 / 码率 -->
         <LinearLayout
             android:id="@+id/bottomBar"
             android:layout_width="match_parent"
-            android:layout_height="wrap_content"
+            android:layout_height="40dp"
             android:layout_gravity="bottom"
             android:gravity="center_vertical"
             android:orientation="horizontal"
             android:paddingLeft="14dp"
-            android:paddingTop="6dp"
-            android:paddingRight="14dp"
-            android:paddingBottom="12dp">
+            android:paddingRight="14dp">
 
             <TextView
                 android:id="@+id/resolution"
@@ -135,22 +204,6 @@
                 android:paddingBottom="3dp"
                 android:textColor="#7FD1A8"
                 android:textSize="10.5sp" />
-
-            <Space
-                android:layout_width="0dp"
-                android:layout_height="1dp"
-                android:layout_weight="1" />
-
-            <TextView
-                android:id="@+id/filterCount"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:shadowColor="#99000000"
-                android:shadowDx="0"
-                android:shadowDy="1"
-                android:shadowRadius="3"
-                android:textColor="#93A0B4"
-                android:textSize="10.5sp" />
         </LinearLayout>
 
         <!-- 上滑切间提示，几秒后自动淡出 -->
@@ -158,48 +211,49 @@
             android:id="@+id/swipeHint"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_gravity="center"
+            android:layout_gravity="top|center_horizontal"
+            android:layout_marginTop="200dp"
             android:background="@drawable/pill_dark"
-            android:paddingLeft="16dp"
-            android:paddingTop="8dp"
-            android:paddingRight="16dp"
-            android:paddingBottom="8dp"
+            android:paddingLeft="14dp"
+            android:paddingTop="7dp"
+            android:paddingRight="14dp"
+            android:paddingBottom="7dp"
             android:text="↑ 上滑切换直播间"
             android:textColor="#E8EDF5"
             android:textSize="12sp" />
-    </FrameLayout>
 
-    <!-- 加载/错误遮罩 -->
-    <LinearLayout
-        android:id="@+id/overlay"
-        android:layout_width="match_parent"
-        android:layout_height="match_parent"
-        android:background="#CC000000"
-        android:gravity="center"
-        android:orientation="vertical"
-        android:padding="28dp">
-
-        <TextView
-            android:id="@+id/status"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
+        <!-- 加载/错误遮罩：放在 page 内，切间时跟着一起滑动 -->
+        <LinearLayout
+            android:id="@+id/overlay"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:background="#CC000000"
             android:gravity="center"
-            android:shadowColor="#99000000"
-            android:shadowDx="0"
-            android:shadowDy="1"
-            android:shadowRadius="3"
-            android:textColor="#CFD7E6"
-            android:textSize="14sp" />
+            android:orientation="vertical"
+            android:padding="28dp">
 
-        <Button
-            android:id="@+id/btnRetry"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="14dp"
-            android:backgroundTint="#FF5C8A"
-            android:text="重新连接"
-            android:textColor="#FFFFFF"
-            android:visibility="gone" />
-    </LinearLayout>
+            <TextView
+                android:id="@+id/status"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:gravity="center"
+                android:shadowColor="#99000000"
+                android:shadowDx="0"
+                android:shadowDy="1"
+                android:shadowRadius="3"
+                android:textColor="#CFD7E6"
+                android:textSize="14sp" />
+
+            <Button
+                android:id="@+id/btnRetry"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="14dp"
+                android:backgroundTint="#FF5C8A"
+                android:text="重新连接"
+                android:textColor="#FFFFFF"
+                android:visibility="gone" />
+        </LinearLayout>
+    </com.jjlive.app.SwipeLayout>
 
 </FrameLayout>

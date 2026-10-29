@@ -3,16 +3,18 @@ package com.jjlive.app
 import android.annotation.SuppressLint
 import android.content.Context
 import android.content.Intent
+import android.content.res.Configuration
 import android.graphics.Color
+import android.graphics.Rect
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
-import android.view.MotionEvent
+import android.view.Gravity
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.view.View
-import android.view.ViewConfiguration
+import android.view.animation.DecelerateInterpolator
 import android.webkit.JavascriptInterface
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
@@ -20,6 +22,7 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.Button
 import android.widget.FrameLayout
+import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
@@ -36,6 +39,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import kotlin.math.abs
+import kotlin.math.max
+import kotlin.math.min
 
 /**
  * 播放页。
@@ -44,12 +49,14 @@ import kotlin.math.abs
  * 这与原版 App 的 `hardWareDecode` 路径一致，CPU 占用个位数、延迟 300ms 量级。
  *
  * 关键点：源站把视频 NALU tag 做了差分 XOR 混淆（首字节 = codecId+1，I 帧表现为 0x1d），
- * 还原逻辑在 FlvLivePlayer.deobfuscate()。不还原就会黑屏 —— 这正是之前所有解码方案失败的原因。
+ * 还原逻辑在 FlvLivePlayer.deobfuscate()。不还原就会黑屏。
  *
- * 兜底：万一设备没有 HEVC 解码器（或被 CDN 换了别的封装），自动降级到 WebView + jessibuca(WASM)。
+ * 兜底：设备没有 HEVC 解码器（或被 CDN 换了封装）时自动降级到 WebView + jessibuca(WASM)。
  *
- * 交互：上下滑动切换直播间（切间时整层跟手位移，松手超过阈值就换房间）。
- * 只有底部聊天区，没有飘屏弹幕；聊天内容经 ChatFilter 过滤掉进房/中奖/下注等营销消息。
+ * 交互：
+ *  · 默认「半屏」——上方画面、下方深色聊天区；点画面或「全屏」按钮放大到竖屏全屏，再点回来；
+ *  · 上下滑动切直播间：手势由 SwipeLayout 在父容器层面拦截，落点在聊天区也能切；
+ *  · 只有底部聊天区，没有飘屏弹幕，聊天内容经 ChatFilter 过滤营销消息。
  */
 class PlayerActivity : AppCompatActivity() {
 
@@ -59,6 +66,12 @@ class PlayerActivity : AppCompatActivity() {
 
         /** 原生链路多少毫秒还没出第一帧，就认为这条路走不通。 */
         private const val FIRST_FRAME_TIMEOUT = 8000L
+
+        /** 半屏形态下画面占屏幕高度的比例。 */
+        private const val HALF_RATIO = 0.46f
+
+        /** 切间判定：位移超过屏高的这个比例，或者速度达到 FLING。 */
+        private const val SWITCH_RATIO = 0.14f
 
         fun start(ctx: Context, rooms: List<Room>, index: Int) {
             val ids = ArrayList(rooms.map { it.roomId })
@@ -81,14 +94,19 @@ class PlayerActivity : AppCompatActivity() {
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     private val ui = Handler(Looper.getMainLooper())
 
-    private lateinit var page: FrameLayout
+    private lateinit var page: SwipeLayout
     private lateinit var videoBox: FrameLayout
+    private lateinit var chatPanel: LinearLayout
+    private lateinit var bottomBar: LinearLayout
+    private lateinit var scrimTop: View
     private lateinit var chat: RecyclerView
     private lateinit var status: TextView
     private lateinit var stats: TextView
     private lateinit var resolution: TextView
     private lateinit var filterCount: TextView
+    private lateinit var btnMode: TextView
     private lateinit var swipeHint: TextView
+    private lateinit var nextHint: TextView
     private lateinit var overlay: View
     private lateinit var btnRetry: Button
     private lateinit var title: TextView
@@ -122,23 +140,21 @@ class PlayerActivity : AppCompatActivity() {
     private var playStartAt = 0L
     private var pageReady = false
 
+    /** 是否处于全屏形态。 */
+    private var fullScreen = false
+    private var barHeight = 0
+    private var insetBottom = 0
+    private var lastVw = 0
+    private var lastVh = 0
+    private var fitting = false
+
+    private var switching = false
+    private var fitPosted = false
+
     /** 过滤统计：收到多少帧、真正显示了多少条。 */
     private var imFrames = 0
     private var imShown = 0
     private var lastMsgAt = 0L
-
-    // 手势
-    private var downY = 0f
-    private var downX = 0f
-    private var downAt = 0L
-    private var dragDy = 0f
-    private var dragging = false
-    private var switching = false
-    private var chatTake = false
-    private var chatDownY = 0f
-    private var chatDownX = 0f
-    private val touchSlop by lazy { ViewConfiguration.get(this).scaledTouchSlop }
-    private val switchThreshold by lazy { 76f * resources.displayMetrics.density }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -161,12 +177,17 @@ class PlayerActivity : AppCompatActivity() {
 
         page = findViewById(R.id.page)
         videoBox = findViewById(R.id.videoBox)
+        chatPanel = findViewById(R.id.chatPanel)
+        bottomBar = findViewById(R.id.bottomBar)
+        scrimTop = findViewById(R.id.scrimTop)
         chat = findViewById(R.id.chat)
         status = findViewById(R.id.status)
         stats = findViewById(R.id.stats)
         resolution = findViewById(R.id.resolution)
         filterCount = findViewById(R.id.filterCount)
+        btnMode = findViewById(R.id.btnMode)
         swipeHint = findViewById(R.id.swipeHint)
+        nextHint = findViewById(R.id.nextHint)
         overlay = findViewById(R.id.overlay)
         btnRetry = findViewById(R.id.btnRetry)
         title = findViewById(R.id.title)
@@ -178,171 +199,221 @@ class PlayerActivity : AppCompatActivity() {
             addDuration = 120
         }
         chat.adapter = chatAdapter
-        setupChatGesture()
+
+        setupSwipe()
 
         title.text = roomName
-
         btnRetry.setOnClickListener { fetchAndPlay() }
         findViewById<View>(R.id.btnClose).setOnClickListener { finish() }
-
-        page.setOnTouchListener { _, ev -> onPageTouch(ev) }
+        btnMode.setOnClickListener { toggleMode() }
 
         applyInsets()
+        page.post { applyMode() }
         setupSurface()
         fetchAndPlay()
     }
 
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        // 打了 configChanges，旋转不会重建页面，得自己重排一次
+        page.post { applyMode() }
+    }
+
+    private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
+
     /** 沉浸式下避开状态栏 / 导航栏，避免标题和关闭按钮被系统图标压住。 */
     private fun applyInsets() {
         val topBar = findViewById<View>(R.id.topBar)
-        val bottomBar = findViewById<View>(R.id.bottomBar)
         ViewCompat.setOnApplyWindowInsetsListener(page) { _, insets ->
             val sys = insets.getInsets(WindowInsetsCompat.Type.systemBars())
+            insetBottom = sys.bottom
             topBar.setPadding(dp(14), sys.top + dp(8), dp(14), dp(10))
-            bottomBar.setPadding(dp(14), dp(6), dp(14), sys.bottom + dp(10))
-            (chat.layoutParams as FrameLayout.LayoutParams).bottomMargin = dp(52) + sys.bottom
-            chat.requestLayout()
+            barHeight = dp(40) + sys.bottom
+            bottomBar.layoutParams = bottomBar.layoutParams.apply { height = barHeight }
+            bottomBar.setPadding(dp(14), 0, dp(14), sys.bottom)
+            applyMode()
             insets
         }
         ViewCompat.requestApplyInsets(page)
     }
 
-    private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
+    // ─────────── 半屏 / 全屏 ───────────
+
+    /**
+     * 半屏：画面占上半屏，聊天区是深色面板铺在下面（面板上沿有圆角，扣在画面上）。
+     * 全屏：画面铺满，聊天区变成压底的渐隐层。
+     */
+    private fun applyMode() {
+        val h = page.height
+        if (h <= 0) {
+            if (!fitPosted) {
+                fitPosted = true
+                page.post { fitPosted = false; applyMode() }
+            }
+            return
+        }
+        swipeHint.visibility = View.GONE
+
+        val lp = videoBox.layoutParams as FrameLayout.LayoutParams
+        val cp = chatPanel.layoutParams as FrameLayout.LayoutParams
+        val barH = if (barHeight > 0) barHeight else dp(40)
+
+        if (fullScreen) {
+            lp.height = FrameLayout.LayoutParams.MATCH_PARENT
+            cp.gravity = Gravity.BOTTOM
+            cp.topMargin = 0
+            cp.height = dp(248) + insetBottom
+            cp.bottomMargin = barH
+            chatPanel.setBackgroundResource(R.drawable.bg_chat_full)
+            chat.setPadding(dp(16), dp(2), dp(16), dp(6))
+            btnMode.text = "半屏"
+            scrimTop.alpha = 1f
+        } else {
+            val vh = (h * HALF_RATIO).toInt()
+            lp.height = vh
+            cp.gravity = Gravity.TOP
+            cp.topMargin = vh - dp(10)                 // 压住画面 10dp，圆角像卡片扣上去
+            cp.bottomMargin = 0
+            cp.height = (h - vh + dp(10) - barH).coerceAtLeast(dp(140))
+            chatPanel.setBackgroundResource(R.drawable.bg_chat_half)
+            chat.setPadding(dp(16), dp(4), dp(16), dp(8))
+            btnMode.text = "全屏"
+            scrimTop.alpha = 0.9f
+        }
+        videoBox.layoutParams = lp
+        chatPanel.layoutParams = cp
+
+        // 切间提示摆在画面正中间
+        val sp = swipeHint.layoutParams as FrameLayout.LayoutParams
+        sp.gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
+        sp.topMargin = (if (fullScreen) h / 2 else (h * HALF_RATIO).toInt() / 2) - dp(18)
+        swipeHint.layoutParams = sp
+
+        videoBox.post { fitVideo(lastVw, lastVh) }
+    }
+
+    private fun toggleMode() {
+        fullScreen = !fullScreen
+        applyMode()
+        // 只淡化聊天面板：SurfaceView 做 alpha 动画在部分机型会闪一帧黑
+        chatPanel.alpha = 0.55f
+        chatPanel.animate().alpha(1f).setDuration(180).start()
+    }
 
     // ─────────── 上下滑动切换直播间 ───────────
 
-    private fun onPageTouch(ev: MotionEvent): Boolean {
-        if (switching) return true
-        when (ev.actionMasked) {
-            MotionEvent.ACTION_DOWN -> {
-                downY = ev.rawY
-                downX = ev.rawX
-                downAt = System.currentTimeMillis()
-                dragDy = 0f
-                dragging = false
-                return true
-            }
-
-            MotionEvent.ACTION_MOVE -> {
-                if (page.height == 0) return true
-                val dy = ev.rawY - downY
-                val dx = ev.rawX - downX
-                if (!dragging && abs(dy) > touchSlop && abs(dy) > abs(dx) * 1.3f) {
-                    dragging = true
-                    swipeHint.visibility = View.GONE
-                }
-                if (dragging) {
-                    dragDy = dy
-                    // 阻尼跟手：只走 55%，边界外再压一半
-                    val edge = (index == 0 && dy > 0) || (index == ids.lastIndex && dy < 0)
-                    page.translationY = dy * if (edge) 0.22f else 0.55f
-                    return true
-                }
-            }
-
-            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                if (!dragging) return false
-                dragging = false
-                finishDrag()
-                return true
-            }
+    private fun setupSwipe() {
+        val r = Rect()
+        page.extent = { page.height.coerceAtLeast(1).toFloat() }
+        page.inScrollableArea = { x, y ->
+            chatPanel.getHitRect(r)
+            r.contains(x.toInt(), y.toInt())
         }
-        return false
+        // 聊天列表还能往这个方向滚，就把手势让给它
+        page.childCanScroll = { dy ->
+            if (dy < 0) chat.canScrollVertically(1) else chat.canScrollVertically(-1)
+        }
+        page.onDragStart = {
+            swipeHint.animate().alpha(0f).setDuration(120).start()
+        }
+        page.onDrag = { dy, _ -> onDrag(dy) }
+        page.onDragEnd = { dy, vy -> finishDrag(dy, vy) }
+        page.onTap = { _, _ -> toggleMode() }
     }
 
-    /** 松手：位移够远或速度够快就切间，否则回弹。 */
-    private fun finishDrag() {
-        val fast = System.currentTimeMillis() - downAt < 240 && abs(dragDy) > switchThreshold * 0.4f
-        val far = abs(dragDy) > switchThreshold
-        when {
-            dragDy < 0 && (far || fast) -> switchRoom(1)
-            dragDy > 0 && (far || fast) -> switchRoom(-1)
-            else -> page.animate().translationY(0f).setDuration(160).start()
-        }
+    private fun onDrag(dy: Float) {
+        val h = page.height.coerceAtLeast(1)
+        val atEdge = (index == 0 && dy > 0) || (index == ids.lastIndex && dy < 0)
+        // 1:1 跟手（阻尼会让人觉得"滑不动"，这也是之前成功率低的原因之一），
+        // 只有到边界时才加阻力，明确告诉用户没有下一间了
+        val ty = (if (atEdge) dy * 0.2f else dy).coerceIn(-h * 1.1f, h * 1.1f)
+        page.translationY = ty
+
+        val p = (abs(ty) / h).coerceIn(0f, 1f)
+        nextHint.translationY = (if (ty < 0) 1 else -1) * (h - abs(ty)) / 2f
+        nextHint.alpha = if (atEdge) 0f else (p * 1.6f).coerceAtMost(1f)
+        nextHint.text = if (ty < 0) "↓  松手进入下一个直播间" else "↑  松手返回上一个直播间"
     }
 
-    /**
-     * 聊天区也能上下切间：列表还能继续滚时让 RecyclerView 自己滚，
-     * 已经滚到头了才把手势交给页面（这也是抖音一类直播间的做法）。
-     */
-    private fun setupChatGesture() {
-        chat.addOnItemTouchListener(object : RecyclerView.SimpleOnItemTouchListener() {
-            override fun onInterceptTouchEvent(rv: RecyclerView, e: MotionEvent): Boolean {
-                if (switching) return true
-                when (e.actionMasked) {
-                    MotionEvent.ACTION_DOWN -> {
-                        chatTake = false
-                        chatDownY = e.rawY
-                        chatDownX = e.rawX
-                        downY = e.rawY
-                        downX = e.rawX
-                        downAt = System.currentTimeMillis()
-                        dragDy = 0f
-                        return false
-                    }
+    private fun finishDrag(dy: Float, vy: Int) {
+        if (switching) return
+        val h = page.height.coerceAtLeast(1)
+        val far = abs(dy) > h * SWITCH_RATIO
+        val fast = abs(vy) > SwipeLayout.FLING && abs(dy) > dp(20)
+        if (!far && !fast) {
+            bounceBack()
+            return
+        }
+        val delta = if (dy < 0) 1 else -1
+        val next = index + delta
+        if (ids.isEmpty() || next !in ids.indices) {
+            bounceBack()
+            Toast.makeText(
+                this,
+                if (delta > 0) "已经是最后一个直播间" else "已经是第一个直播间",
+                Toast.LENGTH_SHORT
+            ).show()
+            return
+        }
+        switchRoom(delta)
+    }
 
-                    MotionEvent.ACTION_MOVE -> {
-                        val dy = e.rawY - chatDownY
-                        val dx = e.rawX - chatDownX
-                        if (!chatTake && abs(dy) > touchSlop && abs(dy) > abs(dx) * 1.3f) {
-                            val canStillScroll =
-                                if (dy < 0) rv.canScrollVertically(1) else rv.canScrollVertically(-1)
-                            if (!canStillScroll) {
-                                chatTake = true
-                                swipeHint.visibility = View.GONE
-                            }
-                        }
-                        if (chatTake) {
-                            dragDy = dy
-                            page.translationY = dy * 0.55f
-                            return true
-                        }
-                        return false
-                    }
-
-                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                        if (chatTake) {
-                            chatTake = false
-                            finishDrag()
-                            return true
-                        }
-                    }
-                }
-                return false
-            }
-        })
+    private fun bounceBack() {
+        nextHint.animate().alpha(0f).setDuration(120).start()
+        page.animate()
+            .translationY(0f)
+            .setDuration(190)
+            .setInterpolator(DecelerateInterpolator(1.6f))
+            .start()
     }
 
     /** @param delta +1 下一个（内容向上滑出），-1 上一个 */
     private fun switchRoom(delta: Int) {
-        val next = index + delta
-        if (ids.isEmpty() || next !in ids.indices) {
-            page.animate().translationY(0f).setDuration(160).start()
-            Toast.makeText(this, if (delta > 0) "已经是最后一个直播间" else "已经是第一个直播间", Toast.LENGTH_SHORT).show()
-            return
-        }
-
+        if (switching) return
         switching = true
-        index = next
-        roomId = ids[next]
-        roomName = names.getOrElse(next) { "" }
+        page.cancelDrag()
+        page.dragEnabled = false
+
+        index += delta
+        roomId = ids[index]
+        roomName = names.getOrElse(index) { "" }
 
         val h = page.height.coerceAtLeast(1).toFloat()
-        val outY = if (delta > 0) -h * 0.45f else h * 0.45f
+        val outY = if (delta > 0) -h else h
         page.animate()
             .translationY(outY)
-            .alpha(0.1f)
             .setDuration(150)
+            .setInterpolator(DecelerateInterpolator(1.8f))
             .withEndAction {
-                // 新一屏从另一侧滑入
-                page.translationY = -outY
+                // 新一屏从对面小幅落位（不是整屏推入），响应更干脆
+                page.translationY = -outY * 0.16f
                 resetForRoom()
                 fetchAndPlay()
-                page.animate().translationY(0f).alpha(1f).setDuration(220).start()
+                nextHint.alpha = 0f
+                // 用 post 起第二段：在同一个 ViewPropertyAnimator 的 end 回调里
+                // 直接再 animate() 会跟它自己的状态机打架
+                page.post {
+                    page.animate()
+                        .translationY(0f)
+                        .setDuration(210)
+                        .setInterpolator(DecelerateInterpolator(2.2f))
+                        .withEndAction {
+                            switching = false
+                            page.dragEnabled = true
+                        }
+                        .start()
+                }
             }
             .start()
-        // 动画被打断时也要解锁手势，别让页面卡在“切换中”
-        ui.postDelayed({ switching = false }, 480)
+
+        // 动画被系统打断（退后台、内存吃紧）时的兜底，别把页面锁在"切换中"
+        ui.postDelayed({
+            if (switching) {
+                switching = false
+                page.dragEnabled = true
+                page.translationY = 0f
+            }
+        }, 900)
     }
 
     /** 切房间时把上一条流、聊天、IM 全部清干净。 */
@@ -476,8 +547,8 @@ class PlayerActivity : AppCompatActivity() {
     private fun showSwipeHintOnce() {
         if (hintShown || ids.size <= 1) return
         hintShown = true
-        swipeHint.alpha = 0f
         swipeHint.visibility = View.VISIBLE
+        swipeHint.alpha = 0f
         swipeHint.animate().alpha(1f).setDuration(260).withEndAction {
             ui.postDelayed({
                 if (isFinishing) return@postDelayed
@@ -488,16 +559,48 @@ class PlayerActivity : AppCompatActivity() {
         }.start()
     }
 
-    /** 按视频宽高比铺满（不裁切），居中显示。SurfaceView 默认会把画面拉伸。 */
+    /**
+     * 按视频宽高比适配画面。
+     *
+     * 全屏用 contain（完整画面，留黑边）；半屏用 cover（填满画面框，像视频卡片），
+     * 但裁切过多时退回 contain，免得把画面裁得只剩一条。
+     */
     private fun fitVideo(vw: Int, vh: Int) {
+        if (vw > 0 && vh > 0) {
+            lastVw = vw
+            lastVh = vh
+        }
+        val w0 = lastVw
+        val h0 = lastVh
         val sv = surfaceView ?: return
+        if (w0 <= 0 || h0 <= 0) return
+
         val bw = videoBox.width
         val bh = videoBox.height
-        if (bw <= 0 || bh <= 0 || vw <= 0 || vh <= 0) return
-        val scale = minOf(bw.toFloat() / vw, bh.toFloat() / vh)
-        val lp = FrameLayout.LayoutParams((vw * scale).toInt(), (vh * scale).toInt())
-        lp.gravity = android.view.Gravity.CENTER
-        sv.layoutParams = lp
+        if (bw <= 0 || bh <= 0) {
+            if (!fitting) {
+                fitting = true
+                videoBox.post {
+                    fitting = false
+                    fitVideo(0, 0)
+                }
+            }
+            return
+        }
+
+        val sx = bw.toFloat() / w0
+        val sy = bh.toFloat() / h0
+        var scale = if (fullScreen) min(sx, sy) else max(sx, sy)
+        if (!fullScreen) {
+            // 裁切后还剩多少可见面积，低于 45% 就别硬裁了
+            val visible = min(1f, bw / (w0 * scale)) * min(1f, bh / (h0 * scale))
+            if (visible < 0.45f) scale = min(sx, sy)
+        }
+        val lp = FrameLayout.LayoutParams((w0 * scale).toInt(), (h0 * scale).toInt())
+        lp.gravity = Gravity.CENTER
+        if (sv.layoutParams.width != lp.width || sv.layoutParams.height != lp.height) {
+            sv.layoutParams = lp
+        }
     }
 
     private fun stopNative() {
@@ -675,7 +778,6 @@ class PlayerActivity : AppCompatActivity() {
     // ─────────── 取流地址 ───────────
 
     private fun fetchAndPlay() {
-        if (store.token == null) { onStatus("未设置令牌"); return }
         val my = ++reqSeq
         playing = false
         overlay.visibility = View.VISIBLE
@@ -738,9 +840,8 @@ class PlayerActivity : AppCompatActivity() {
     // ─────────── 聊天（IM） ───────────
 
     private fun startIm() {
-        val token = store.token ?: return
         im?.close()
-        im = ImSocket(token, store.deviceUid).also { s ->
+        im = ImSocket(store.token, store.deviceUid, host = store.imHost).also { s ->
             s.listener = object : ImSocket.Listener {
                 override fun onOpen() {
                     Log.i(TAG, "im open")

@@ -35,7 +35,7 @@ class ImSocket(
     private val token: String,
     private val deviceUid: String,
     private val version: String = Cfg.VERSION,
-    private val host: String = "wss://yzj.opuxrcm.com/live"
+    private val host: String = Cfg.IM_WS
 ) {
 
     interface Listener {

@@ -20,6 +20,11 @@ import java.util.concurrent.TimeUnit
 object Cfg {
     const val HOST = "https://utp.opuxrcm.com"
     const val SPARE_HOST = "https://ytt.jvjzmc.com"
+    /** 弹幕（IM）长连接，和接口域名不是同一个子域，所以单独配置。 */
+    const val IM_WS = "wss://yzj.opuxrcm.com/live"
+    /** 首次安装用的默认令牌；失效后在「设置」里换一个即可，不用重装。 */
+    const val DEFAULT_TOKEN =
+        "24e9ab5c9f37247821f4edf5061946e5429de983e86d43b374533b997073ddf5fb69457b759d4da294a290addfa2f6fe"
     const val SALT = "oknzoiwe@23"
     const val AK = "jyzb"
     const val TERMINAL = "3"
@@ -78,17 +83,42 @@ fun makeSign(path: String, token: String, ts: String, params: Map<String, String
 
 // ─────────────────────────── 令牌与设备号 ───────────────────────────
 
+/** 补全协议头、去掉末尾斜杠；填不出合法地址就返回 null（调用方回落默认）。 */
+fun normalizeHost(raw: String?): String? {
+    var s = raw?.trim().orEmpty()
+    if (s.isEmpty()) return null
+    if (!s.startsWith("http://") && !s.startsWith("https://")) s = "https://$s"
+    s = s.trimEnd('/')
+    return if (s.length > "https://".length + 2) s else null
+}
+
 class TokenStore(context: Context) {
     private val sp = context.getSharedPreferences("jjlive", Context.MODE_PRIVATE)
 
-    var token: String?
-        get() = sp.getString("token", null)?.takeIf { it.isNotBlank() }
-        set(v) = sp.edit().putString("token", v).apply()
+    /** 接口域名，默认 Cfg.HOST；用户可在「设置」里改成备用域名。 */
+    var host: String
+        get() = normalizeHost(sp.getString("host", null)) ?: Cfg.HOST
+        set(v) = sp.edit().putString("host", normalizeHost(v) ?: "").apply()
+
+    /** 弹幕 WS，留空回落 Cfg.IM_WS。 */
+    var imHost: String
+        get() = sp.getString("imHost", null)?.trim()?.takeIf { it.isNotBlank() } ?: Cfg.IM_WS
+        set(v) = sp.edit().putString("imHost", v.trim()).apply()
+
+    /** 令牌永远有值（默认令牌兜底），失效后到「设置」里换。 */
+    var token: String
+        get() = sp.getString("token", null)?.trim()?.takeIf { it.isNotBlank() } ?: Cfg.DEFAULT_TOKEN
+        set(v) = sp.edit().putString("token", v.trim()).apply()
 
     val deviceUid: String
         get() = sp.getString("uid", null) ?: randomHex(32).also {
             sp.edit().putString("uid", it).apply()
         }
+
+    /** 全部改成内置默认值。 */
+    fun resetAll() {
+        sp.edit().remove("host").remove("imHost").remove("token").apply()
+    }
 }
 
 // ─────────────────────────── 网络 ───────────────────────────
@@ -104,10 +134,10 @@ class Api(private val store: TokenStore) {
 
     suspend fun call(path: String, params: Map<String, String> = emptyMap()): JSONObject? =
         withContext(Dispatchers.IO) {
-            val token = store.token ?: return@withContext null
+            val token = store.token
             val ts = System.currentTimeMillis().toString()
             val sign = makeSign(path, token, ts, params)
-            val url = Cfg.HOST + encodePath(path, randomHex(3))
+            val url = store.host + encodePath(path, randomHex(3))
 
             // 紧凑 JSON，与 Python separators=(",",":") 一致。
             // 整数值按数字输出，长 ID（超出 Int 范围）按字符串输出，
@@ -148,38 +178,45 @@ class Api(private val store: TokenStore) {
             }
         }
 
-    /** 校验令牌是否有效（用最轻的接口）。 */
-    suspend fun checkToken(token: String): Pair<Boolean, String> = withContext(Dispatchers.IO) {
-        val ts = System.currentTimeMillis().toString()
-        val sign = makeSign("/param/list", token, ts, emptyMap())
-        val url = Cfg.HOST + encodePath("/param/list", randomHex(3))
-        val req = Request.Builder()
-            .url(url)
-            .header("ak", Cfg.AK)
-            .header("authorization", token)
-            .header("channel", Cfg.CHANNEL)
-            .header("terminal", Cfg.TERMINAL)
-            .header("version", Cfg.VERSION)
-            .header("deviceuid", store.deviceUid)
-            .header("content-language", Cfg.LANG)
-            .header("x-auth-timestamp", ts)
-            .header("x-auth-sign", sign)
-            .header("content-type", "application/json")
-            .post(xorCode("{}").toByteArray(Charsets.UTF_8)
-                .toRequestBody("application/json".toMediaType()))
-            .build()
-        try {
-            client.newCall(req).execute().use { resp ->
-                val raw = resp.body?.string().orEmpty()
-                val plain = if (raw.isNotEmpty() && raw[0].code > 0x1400) xorCode(raw) else raw
-                val j = runCatching { JSONObject(plain) }.getOrNull()
-                val ok = j != null && j.optInt("code", -1) == 0
-                ok to (j?.optString("msg") ?: "HTTP ${resp.code}")
+    /**
+     * 校验「域名 + 令牌」是否可用（用最轻的接口，不落任何副作用）。
+     * 设置页点「测试」时传入输入框里的值，不必先保存。
+     */
+    suspend fun checkToken(host: String, token: String): Pair<Boolean, String> =
+        withContext(Dispatchers.IO) {
+            val base = normalizeHost(host) ?: return@withContext false to "域名格式不对"
+            if (token.isBlank()) return@withContext false to "令牌为空"
+            val ts = System.currentTimeMillis().toString()
+            val sign = makeSign("/param/list", token, ts, emptyMap())
+            val url = base + encodePath("/param/list", randomHex(3))
+            val req = Request.Builder()
+                .url(url)
+                .header("ak", Cfg.AK)
+                .header("authorization", token)
+                .header("channel", Cfg.CHANNEL)
+                .header("terminal", Cfg.TERMINAL)
+                .header("version", Cfg.VERSION)
+                .header("deviceuid", store.deviceUid)
+                .header("content-language", Cfg.LANG)
+                .header("x-auth-timestamp", ts)
+                .header("x-auth-sign", sign)
+                .header("content-type", "application/json")
+                .post(xorCode("{}").toByteArray(Charsets.UTF_8)
+                    .toRequestBody("application/json".toMediaType()))
+                .build()
+            try {
+                client.newCall(req).execute().use { resp ->
+                    val raw = resp.body?.string().orEmpty()
+                    val plain = if (raw.isNotEmpty() && raw[0].code > 0x1400) xorCode(raw) else raw
+                    val j = runCatching { JSONObject(plain) }.getOrNull()
+                    val ok = j != null && j.optInt("code", -1) == 0
+                    if (ok) true to "连接正常"
+                    else false to (j?.optString("msg").orEmpty().ifEmpty { "HTTP ${resp.code}" })
+                }
+            } catch (e: Exception) {
+                false to "${e.javaClass.simpleName}: ${e.message}"
             }
-        } catch (e: Exception) {
-            false to "${e.javaClass.simpleName}: ${e.message}"
         }
-    }
 }
 
 // ─────────────────────────── 模型与解析 ───────────────────────────
