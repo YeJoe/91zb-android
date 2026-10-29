@@ -242,6 +242,57 @@ object KiwiSdk {
     }
 
     /**
+     * 启动/重启全部隧道 listener。
+     *
+     * **这一步不能省**：`Init` 只完成和云端的握手（appKey 校验 + 拿到节点列表），
+     * 真正的 `TcpProxy`（本地 listener）是在 `RestartAllServer` 里才起来的。
+     * 只 Init 不 Restart 时 `ServerToLocal` 会返回 -5 —— 因为组表还是空的，
+     * 内部 `KiwiCore::Dns(group)` 查不到任何节点。源 App 也是 init 完之后再调这个。
+     */
+    fun restartAllServer(ctx: Context): Boolean {
+        if (!ensureLoaded(ctx)) return false
+        val k = kiwi ?: return false
+        return try {
+            k.getMethod("RestartAllServer").invoke(null)
+            stage = "已请求重启隧道"
+            true
+        } catch (t: Throwable) {
+            val cause = (t as? java.lang.reflect.InvocationTargetException)?.targetException ?: t
+            lastError = "RestartAllServer 抛异常：${cause.javaClass.simpleName} ${cause.message}"
+            false
+        }
+    }
+
+    /** 强制重启某个端口的 listener（`ForceRestartServer(port)`），0 或端口号都可 */
+    fun forceRestartServer(ctx: Context, port: Int): Int {
+        if (!ensureLoaded(ctx)) return Int.MIN_VALUE
+        val k = kiwi ?: return Int.MIN_VALUE
+        return try {
+            val m = k.getMethod("ForceRestartServer", Int::class.javaPrimitiveType)
+            (m.invoke(null, port) as? Int) ?: Int.MIN_VALUE
+        } catch (t: Throwable) {
+            Int.MIN_VALUE
+        }
+    }
+
+    /**
+     * 覆盖 SDK 的 `init_appname`。
+     *
+     * SDK 的 `Init` 内部会按"本进程的 Application label##包名"拼出 appname 再传给 native，
+     * 云端可能按 appname 下发节点。我们不是源 App，包名对不上，必要时用源 App 的覆盖一下。
+     */
+    fun applyAppName(ctx: Context, name: String): Int {
+        if (!ensureLoaded(ctx)) return Int.MIN_VALUE
+        val k = kiwi ?: return Int.MIN_VALUE
+        return try {
+            val m = k.getMethod("init_appname", String::class.java)
+            (m.invoke(null, name) as? Int) ?: Int.MIN_VALUE
+        } catch (t: Throwable) {
+            Int.MIN_VALUE
+        }
+    }
+
+    /**
      * 问 SDK 要某个 vhost 的本地端口。
      *
      * @param group `kiwi_live` / `kiwi_hd` / `kiwi_im` …

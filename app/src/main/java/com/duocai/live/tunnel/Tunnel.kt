@@ -44,6 +44,10 @@ class Tunnel(private val context: Context, private val prefs: Prefs) {
     var host by mutableStateOf("")
         private set
 
+    /** 最近一次启动的探测明细（每个 group 的返回码），失败时贴给设置页看 */
+    var diag by mutableStateOf("")
+        private set
+
     val ready: Boolean get() = state == State.READY && port > 0
 
     /** 同一时刻只允许一趟 start（用户连点按钮时不能起两条握手） */
@@ -83,15 +87,33 @@ class Tunnel(private val context: Context, private val prefs: Prefs) {
                     return@withContext false
                 }
 
-                // 握手刚结束时 ServerToLocal 有时还拿不到端口，重试几次
-                var c = Int.MIN_VALUE
-                for (i in 0 until 4) {
-                    c = KiwiSdk.serverToLocal(context, GROUP)
-                    if (c == 0 && KiwiSdk.port > 0) break
-                    if (i < 3) delay(700)
+                // Init 只做完握手（appKey 校验 + 节点下发），本地 listener 要
+                // RestartAllServer 才会真正起起来；少了这步 ServerToLocal 必返 -5。
+                message = "启动隧道 listener…"
+                KiwiSdk.restartAllServer(context)
+                delay(1500)
+
+                // 一次把所有候选 group 都问一遍，结果留在 [diag] 里给设置页看。
+                // group 名是 vhost，源 App 用的是 kiwi_live（http://kiwi_live/tunnel/…），
+                // 其余的按命名习惯排出，谁通一眼就能看出来。
+                val tries = StringBuilder("init=$code")
+                var got = false
+                for (g in GROUPS) {
+                    var c = Int.MIN_VALUE
+                    for (i in 0 until 2) {
+                        c = KiwiSdk.serverToLocal(context, g)
+                        if (c == 0 && KiwiSdk.port > 0) break
+                        if (i == 0) delay(600)
+                    }
+                    tries.append(" | ").append(g).append('=').append(c)
+                    if (c == 0 && KiwiSdk.port > 0) {
+                        got = true
+                        break
+                    }
                 }
-                if (c != 0 || KiwiSdk.port <= 0) {
-                    fail("ServerToLocal 返回 $c，没拿到端口")
+                diag = tries.toString()
+                if (!got) {
+                    fail("ServerToLocal 没拿到端口：$tries")
                     return@withContext false
                 }
 
@@ -99,7 +121,7 @@ class Tunnel(private val context: Context, private val prefs: Prefs) {
                 port = KiwiSdk.port
                 prefs.tunnelPort = port
                 state = State.READY
-                message = "隧道就绪 $host:$port"
+                message = "隧道就绪 $host:$port（$diag）"
                 true
             }
         } catch (t: Throwable) {
@@ -161,6 +183,18 @@ class Tunnel(private val context: Context, private val prefs: Prefs) {
     private companion object {
         /** 房间列表挂在 `kiwi_live` 这个 vhost 上（`http://kiwi_live/tunnel/…`） */
         const val GROUP = "kiwi_live"
+
+        /**
+         * 逐个试的 vhost 名。
+         *
+         * `kiwi_live` 是确定值（源 App 的 Dart 常量里有 `http://kiwi_live/tunnel/a033b072?z=1&nobase64=1`），
+         * 后面几个是按同一命名习惯排的：SDK 会给每个 vhost 开一个独立 listener，
+         * 源 App 进程里同时开着十几个本地端口，说明组不止一个。
+         */
+        val GROUPS = listOf(
+            "kiwi_live", "kiwi_hd", "kiwi_im", "kiwi_api", "kiwi_room",
+            "kiwi", "kiwi_default", "default"
+        )
 
         /**
          * 候选 appKey，按可能性排序。

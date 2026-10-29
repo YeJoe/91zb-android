@@ -191,7 +191,81 @@ case "getProxyTcpByDomain":    // arguments = {token, group_name, ddomain, dport
    （`豆彩直播##com.duocai.live`）。如果云端按 appKey+包名 校验，会返回非 0。
    这是唯一可能"代码全对但跑不通"的点。
 
-## 7. 复现命令
+
+## 7. 从「能编译」到「能运行」：两次真实闪退
+
+### 7.1 加载顺序：绝不能先 `System.load`
+
+第一版是「先 `System.load(解压路径)`，再 `DexClassLoader` 加载类」。装到机器上**打开即闪退**：
+
+```
+JNI DETECTED ERROR IN APPLICATION: JNI NewGlobalRef called with pending exception
+  java.lang.ClassNotFoundException: Didn't find class "com.kiwi.sdk.Kiwi"
+  on path: DexPathList[[zip file ".../base.apk"], ...]
+    at Runtime.nativeLoad(String, ClassLoader, Class)
+    at System.load(String)
+    at KiwiSdk.ensureLoaded(KiwiSdk.kt:107)
+```
+
+`System.load(path)` 内部是 `Runtime.load0(null, path)` —— 传 `null` 意味着
+`JNI_OnLoad` 拿到的是**系统 ClassLoader**，它只看得到 `base.apk`。
+而 `libkiwi.so` 的 `JNI_OnLoad` 里会 `FindClass("com.kiwi.sdk.Kiwi")` 做动态注册，
+找不到就抛异常；它没清 pending exception 就接着调 `NewGlobalRef`，ART 直接
+`abort()` 掉整个进程。
+
+**这类崩溃 `try/catch` 拦不住**，因为它是 native 层 `SIGABRT`。
+
+正确做法：不要自己加载 so，让 `Kiwi` 的 `<clinit>` 去 `System.loadLibrary("kiwi")`。
+`Kiwi.<clinit>` 反汇编出来只有三条指令：
+
+```
+const-string v0, "kiwi"
+invoke-static {v0}, Ljava/lang/System;->loadLibrary(Ljava/lang/String;)V
+return-void
+```
+
+此时 `nativeLoad` 收到的 ClassLoader 就是我们传入的 `DexClassLoader`，
+`JNI_OnLoad` 的 `FindClass` 才找得到类。
+
+**代价**：`DexClassLoader` 的 `librarySearchPath` 必须指到 so 所在目录，否则
+`loadLibrary` 找不到库。现在用 `applicationInfo.nativeLibraryDir`。
+
+### 7.2 ABI：进程不是 arm64，so 永远加载不了
+
+第二版修好顺序后不崩了，但隧道起不来。`dumpsys package` 一看：
+
+```
+primaryCpuAbi=x86_64
+```
+
+原因：APK 里同时有 `x86_64` 和 `arm64-v8a` 的库（`librtmp-jni.so` 等），
+`PackageManager` 按设备首选 ABI（`x86_64` 排第一）把整个进程定成 x86_64。
+x86_64 的 linker 打不开 arm64 的 ELF，`libkiwi.so` 也不会被释放到 `lib/x86_64`。
+
+解决办法：`abiFilters` 只留 `arm64-v8a`。这样 `primaryCpuAbi` 变成 arm64-v8a，
+进程以 arm64 拉起。
+
+**关键前提**：这台模拟器其实支持 ARM 转译，之前判断错了：
+
+```
+ro.product.cpu.abilist      = x86_64,arm64-v8a,x86
+ro.dalvik.vm.native.bridge  = libnb.so
+```
+
+源 App 装的就是 arm64 包，一直以 arm64 进程在跑。所以「x86 模拟器跑不了 arm64 so」
+这个结论是错的 —— **能跑，前提是整个进程被定成 arm64**。
+
+代价：本 App 在 x86 模拟器上也会整体走转译（和源 App 一样），性能略有损耗；
+纯 x86 且没有转译层的设备则装不上。真机 arm64 无影响。
+
+### 7.3 其它两条硬约束
+
+- **targetSdk 34+ 不许从可写文件加载代码**：`DexClassLoader` 吃 `filesDir` 下的 jar
+  会抛 `SecurityException`，解包后必须 `setReadOnly()`。
+- **`bindContext` 要提前到触发 `<clinit>` 之前**：加固库的 `JNI_OnLoad` 里也可能取
+  Context，那时还没有 Java 层入口可以补救。
+
+## 8. 复现命令
 
 ```bash
 # 1. 拿符号（需要 root）
@@ -208,7 +282,7 @@ python tools/dex_xref.py meth com.kiwi.sdk.Kiwi Init
 python - <<'PY'
 import zipfile
 z = zipfile.ZipFile('assets/channel.apk')
-open('app/src/main/assets/libkiwi-arm64.so','wb').write(z.read('lib/arm64-v8a/libkiwi.so'))
+open('app/src/main/jniLibs/arm64-v8a/libkiwi.so','wb').write(z.read('lib/arm64-v8a/libkiwi.so'))
 with zipfile.ZipFile('app/src/main/assets/kiwi-sdk.jar','w',zipfile.ZIP_DEFLATED) as out:
     out.writestr('classes.dex', z.read('classes3.dex'))
 PY
