@@ -56,18 +56,17 @@ import java.io.File
  *
  * ## 其它已知坑
  *
- * 1. **只有 arm64 版 so**。x86/x86_64 设备（绝大多数模拟器）加载不了，
- *    必须在 `dlopen` 之前就用 [abiSupported] 挡掉，否则一样是 abort。
- * 2. **targetSdk 34+ 不许从可写文件加载代码**。解压出来的 jar/so 必须置只读，
- *    否则 `DexClassLoader` / `dlopen` 直接抛 `SecurityException`。
+ * 1. **只有 arm64 版 so**。所以它放在 `jniLibs/arm64-v8a`，让系统按 ABI 把进程
+ *    直接拉成 arm64 —— 有 ARM 转译层的 x86 模拟器（`ro.dalvik.vm.native.bridge`）
+ *    也能跑，源 App 就是这么跑的。真不给 arm64 的环境，[abiSupported] 提前挡掉。
+ * 2. **targetSdk 34+ 不许从可写文件加载代码**。解压出来的 jar 必须置只读，
+ *    否则 `DexClassLoader` 直接抛 `SecurityException`。
  * 3. `Init` 是**同步**的，会做网络握手，必须放 IO 线程，主线程调用会 ANR。
  */
 object KiwiSdk {
 
     private const val ASSET_JAR = "kiwi-sdk.jar"
-    private const val ASSET_SO = "libkiwi-arm64.so"
     private const val LIB_NAME = "kiwi"
-    private const val LIB_DIR = "kiwi-lib"
 
     /** 当前阶段，给设置页显示用 */
     @Volatile var stage: String = "未加载"
@@ -104,7 +103,13 @@ object KiwiSdk {
 
     val usable: Boolean get() = initCode == 0 && port > 0
 
-    /** 本机能不能跑 arm64 的 `libkiwi.so`（模拟器基本都不能） */
+    /**
+     * 本机能不能跑 arm64 的 `libkiwi.so`。
+     *
+     * 注意判据是 `SUPPORTED_ABIS` 里有没有 arm64-v8a，而不是当前进程的 ABI ——
+     * x86 机器只要带 ARM 转译层（模拟器 `ro.dalvik.vm.native.bridge`），
+     * 装一个含 arm64 native 库的 APK 之后，系统就会把进程直接拉成 arm64。
+     */
     fun abiSupported(): Boolean {
         val abis = Build.SUPPORTED_ABIS ?: return false
         return abis.contains("arm64-v8a") && Process.is64Bit()
@@ -112,9 +117,8 @@ object KiwiSdk {
 
     /** 给设置页用的一句话解释，说明为什么用不了 */
     fun abiReason(): String =
-        "libkiwi.so 只有 arm64 版，本机 ABI 是 " +
-            (Build.SUPPORTED_ABIS?.joinToString("/") ?: "?") +
-            "，内置隧道不可用"
+        "本机 ABI 是 " + (Build.SUPPORTED_ABIS?.joinToString("/") ?: "?") +
+            "，没有 arm64-v8a 也没有 ARM 转译层，加载不了 libkiwi.so"
 
     /**
      * 加载 so + dex，并把 Context 注入 SDK。
@@ -136,17 +140,7 @@ object KiwiSdk {
             return false
         }
 
-        // ---- 1. 解包（必须置只读，见类注释「已知坑 2」）----
-        stage = "解包 libkiwi.so"
-        val soFile = try {
-            prepareLib(ctx)
-        } catch (t: Throwable) {
-            stage = "so 解包失败"
-            lastError = "解包 libkiwi.so 失败：${t.javaClass.simpleName} ${t.message}"
-            hardFailed = true
-            return false
-        }
-
+        // ---- 1. 解包 jar（必须置只读，见类注释「已知坑 2」）----
         stage = "解包 kiwi-sdk.jar"
         val jar = try {
             prepareJar(ctx)
@@ -157,7 +151,21 @@ object KiwiSdk {
             return false
         }
 
-        // ---- 2. 先建 ClassLoader，别自己 load so ----
+        // ---- 2. so 必须在 nativeLibraryDir 里 ----
+        // `libkiwi.so` 现在放在 jniLibs/arm64-v8a，由系统按 ABI 释放到 nativeLibraryDir。
+        // 这一步同时是最后一道保险：如果进程被分成了 x86_64（nativeLibraryDir 指向
+        // lib/x86_64），这里会直接看不到 so，从而在 dlopen 之前就退出，
+        // 不会走到那个会 abort 整个进程的 JNI_OnLoad。
+        val libDir = ctx.applicationInfo.nativeLibraryDir ?: ""
+        if (libDir.isBlank() || !File(libDir, "lib$LIB_NAME.so").exists()) {
+            stage = "缺少 libkiwi.so"
+            lastError = "nativeLibraryDir 里没有 libkiwi.so（$libDir）；" +
+                "本机很可能没跑在 arm64 上，内置隧道不可用"
+            hardFailed = true
+            return false
+        }
+
+        // ---- 3. 先建 ClassLoader，别自己 load so ----
         stage = "建 DexClassLoader"
         val opt = File(ctx.codeCacheDir, "kiwi-opt").apply { mkdirs() }
         val l = DexClassLoader(
@@ -165,15 +173,15 @@ object KiwiSdk {
             opt.absolutePath,
             // librarySearchPath：Kiwi 的 <clinit> 里那句 System.loadLibrary("kiwi")
             // 就靠这个目录找 libkiwi.so
-            soFile.parentFile?.absolutePath,
+            libDir,
             javaClass.classLoader
         )
         loader = l
 
-        // ---- 3. 先把 Context 塞进去，再触发 so 加载 ----
+        // ---- 4. 先把 Context 塞进去，再触发 so 加载 ----
         bindContext(ctx)
 
-        // ---- 4. 触发 <clinit>：它会 loadLibrary("kiwi")，JNI_OnLoad 此时能 FindClass ----
+        // ---- 5. 触发 <clinit>：它会 loadLibrary("kiwi")，JNI_OnLoad 此时能 FindClass ----
         stage = "加载 com.kiwi.sdk"
         return try {
             kiwi = Class.forName("com.kiwi.sdk.Kiwi", true, l)
@@ -292,36 +300,6 @@ object KiwiSdk {
     }.getOrDefault("?")
 
     // ------------------------------------------------------------------ 内部
-    /**
-     * 把 `assets/libkiwi-arm64.so` 释放到 `filesDir/kiwi-lib/libkiwi.so`。
-     *
-     * 为什么不放 `jniLibs`：放 jniLibs 会让 APK 声明自己只有 arm64-v8a，
-     * 于是 x86_64 的模拟器连装都装不上（`INSTALL_FAILED_NO_MATCHING_ABIS`）。
-     * 放 assets + 运行时解压，APK 就没有 native 代码标记，任何设备都能装；
-     * arm64 设备解压后可用，x86 设备在 [ensureLoaded] 的架构门禁就被挡掉。
-     */
-    private fun prepareLib(ctx: Context): File {
-        val dir = File(ctx.filesDir, LIB_DIR).apply { mkdirs() }
-        val so = File(dir, "lib$LIB_NAME.so")
-        val stamp = File(dir, ".stamp")
-        val code = versionStamp(ctx)
-        val fresh = so.exists() && so.length() > 0L && stamp.exists() &&
-            stamp.readText().trim() == code
-        if (!fresh) {
-            // 上一版可能已经被设成只读，覆盖前先放开
-            so.setWritable(true, true)
-            ctx.assets.open(ASSET_SO).use { input ->
-                so.outputStream().use { out -> input.copyTo(out, 64 * 1024) }
-            }
-            stamp.writeText(code)
-        }
-        so.setReadable(true, false)
-        so.setExecutable(true, false)
-        // targetSdk 34+：可写位置的代码文件不许加载，必须只读
-        so.setWritable(false, false)
-        return so
-    }
-
     private fun prepareJar(ctx: Context): File {
         val jar = File(ctx.filesDir, ASSET_JAR)
         val stamp = File(ctx.filesDir, "$ASSET_JAR.stamp")
@@ -340,20 +318,14 @@ object KiwiSdk {
     }
 
     /**
-     * 版本戳：包版本变了就重新解包。
+     * 版本戳：安装/更新过就重新解包 jar。
      *
-     * 只认 versionCode 不够 —— 调试时同版本会反复覆盖 assets，所以把 assets 的
-     * 字节数也拼进去，改一下 so/dex 体积就会自然失效。
+     * 用 `lastUpdateTime` 而不是 versionCode：调试时同版本会反复覆盖 assets，
+     * 只有 lastUpdateTime 每次装包都会变，改了 jar 就一定会重新释放。
      */
-    private fun versionStamp(ctx: Context): String {
-        // 不用 longVersionCode：那是 API 28 才有的，minSdk 是 24
-        val vc = runCatching {
-            @Suppress("DEPRECATION")
-            ctx.packageManager.getPackageInfo(ctx.packageName, 0).versionCode.toLong()
-        }.getOrDefault(0L)
-        val soLen = runCatching {
-            ctx.assets.openFd(ASSET_SO).use { it.length }
-        }.getOrDefault(0L)
-        return "$vc-$soLen"
-    }
+    private fun versionStamp(ctx: Context): String = runCatching {
+        @Suppress("DEPRECATION")
+        val info = ctx.packageManager.getPackageInfo(ctx.packageName, 0)
+        "${info.versionCode}-${info.lastUpdateTime}"
+    }.getOrDefault("0")
 }
