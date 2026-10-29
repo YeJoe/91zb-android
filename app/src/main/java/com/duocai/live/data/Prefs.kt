@@ -64,9 +64,39 @@ class Prefs(context: Context) {
         set(v) = sp.edit().putInt(K_TUNNEL_PORT, v).apply()
 
     /** 自动刷新间隔（秒），0 = 关闭 */
+    /**
+     * 自动刷新间隔（秒）。**默认 0 = 不自动刷新**。
+     *
+     * 之前默认 20s：一轮要打 8 个分片、每片 250 个 id，等于每隔 20 秒就把整张
+     * 列表重拉一遍，既费流量也和"用户其实只想按需刷新"对不上。改成默认关，
+     * 想定时刷再在设置里挑（最短 1 分钟，最长可自定义到小时级）。
+     */
     var refreshSec: Int
-        get() = sp.getInt(K_REFRESH_SEC, 20)
+        get() = sp.getInt(K_REFRESH_SEC, 0)
         set(v) = sp.edit().putInt(K_REFRESH_SEC, v).apply()
+
+    /**
+     * 允不允许去"借"**源 App 后台跑着的隧道**（扫 /proc/net/tcp 找它的 listener）。
+     *
+     * 默认关。内置隧道（[com.duocai.live.tunnel.Tunnel]）通了之后完全不需要它；
+     * 留着这个后门只是为了 appKey 失效时还能临时顶一下，所以做成显式开关，
+     * 免得 App 一启动就去蹭别的进程的端口，行为不可预期。
+     */
+    var sourceTunnel: Boolean
+        get() = sp.getBoolean(K_SOURCE_TUNNEL, false)
+        set(v) = sp.edit().putBoolean(K_SOURCE_TUNNEL, v).apply()
+
+    /**
+     * 封面图床的 HTTP 代理，`host:port`，空 = 直连。
+     *
+     * 为什么需要：图床是 CloudFront（`drdue73ptt7o.cloudfront.net`），
+     * 国内网络对它是整段不通的 —— 实测设备上 TCP 能连上、发请求却零响应，
+     * 同一个 URL 在开了代理的电脑上 200。所以给一个"图片走代理"的口子，
+     * 有代理（Clash / v2ray 之类）的场景填上就能出图。
+     */
+    var imgProxy: String
+        get() = sp.getString(K_IMG_PROXY, "") ?: ""
+        set(v) = sp.edit().putString(K_IMG_PROXY, v.trim()).apply()
 
     // ---- 播放 ----
     var rtmpDomain: String
@@ -197,6 +227,8 @@ class Prefs(context: Context) {
         const val K_FOLLOW = "follow_json"
         const val K_KIWI_KEY = "kiwi_app_key"
         const val K_KIWI_AUTO = "kiwi_auto"
+        const val K_SOURCE_TUNNEL = "source_tunnel"
+        const val K_IMG_PROXY = "img_proxy"
         const val K_SAW_SWIPE = "saw_swipe_hint"
         const val K_SAW_PLAYER_SWIPE = "saw_player_swipe_hint"
     }

@@ -120,7 +120,10 @@ class LiveRepo(private val context: Context, private val prefs: Prefs) {
             // 内置隧道指定的端口排第一：它一定挂业务 vhost，命中即用
             if (preferPort > 0) add(preferPort)
             if (preferred > 0) add(preferred)
-            addAll(listenPorts())
+            // 扫 /proc/net/tcp 去"借"别的进程的 listener 是**兜底的后门**，
+            // 默认关掉：内置隧道通了就不该再蹭源 App 的端口（而且源 App 一退就失效）。
+            // 只有设置页显式打开「使用源 App 后台隧道」才走这条路。
+            if (prefs.sourceTunnel) addAll(listenPorts())
         }.distinct()
 
         for (p in candidates) {
@@ -135,7 +138,7 @@ class LiveRepo(private val context: Context, private val prefs: Prefs) {
                 return p
             }
         }
-        throw IOException("隧道端口不可用：源 App 没在后台跑，或 token/JWE 失效（已试 ${candidates.size} 个端口）")
+        throw IOException("隧道端口不可用：内置隧道没起来，或没开「源 App 后台隧道」兜底（已试 ${candidates.size} 个端口）")
     }
 
     // ------------------------------------------------------------------ HTTP
@@ -246,11 +249,15 @@ class LiveRepo(private val context: Context, private val prefs: Prefs) {
      *
      * 分片并发（每片 [batchSize] 个 id），只保留 `on_air=1`，按在线人数降序。
      * 全部失败会强制重新探测一次端口再试 —— 源 App 重启后端口号一定变。
+     *
+     * @param limit 只拉 id 池的前 N 个。首屏用（池子近 2000 个，全量要 2~4 秒），
+     *              先拉 500 个让画面立刻出来，剩下的交给后台那一趟补全。
      */
-    suspend fun fetch(): Result<SourceData> = withContext(Dispatchers.IO) {
+    suspend fun fetch(limit: Int = Int.MAX_VALUE): Result<SourceData> = withContext(Dispatchers.IO) {
         runCatching {
-            val ids = idPool()
-            if (ids.isEmpty()) throw IOException("房间号池是空的（assets/room_ids.txt 没打包进来？）")
+            val all = idPool()
+            if (all.isEmpty()) throw IOException("房间号池是空的（assets/room_ids.txt 没打包进来？）")
+            val ids = if (all.size > limit) all.take(limit) else all
 
             var port = probePort(sample = ids.firstOrNull())
 
@@ -279,7 +286,8 @@ class LiveRepo(private val context: Context, private val prefs: Prefs) {
                     fromCache = false
                 )
             )
-            writeCache(sorted)
+            // 只拉了前 N 个（首屏快速批）就别覆盖缓存，否则冷启动能铺屏的房间会越刷越少
+            if (ids.size == all.size) writeCache(sorted)
             data
         }
     }

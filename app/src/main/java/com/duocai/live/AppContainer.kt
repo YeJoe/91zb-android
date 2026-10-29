@@ -199,6 +199,28 @@ class AppContainer(context: Context) {
             prefs.nearbyCity = v
         }
 
+    /** 允不允许去"借"源 App 后台跑着的隧道（默认关，见 [Prefs.sourceTunnel]） */
+    private var sourceTunnelState by mutableStateOf(prefs.sourceTunnel)
+    var sourceTunnel: Boolean
+        get() = sourceTunnelState
+        set(v) {
+            sourceTunnelState = v
+            prefs.sourceTunnel = v
+        }
+
+    /** 封面图的 HTTP 代理（host:port，空 = 直连） */
+    private var imgProxyState by mutableStateOf(prefs.imgProxy)
+    var imgProxy: String
+        get() = imgProxyState
+        set(v) {
+            imgProxyState = v
+            prefs.imgProxy = v
+            // 立刻重建 Coil 的 loader，改完不用重启
+            runCatching {
+                (context.applicationContext as? com.duocai.live.App)?.reloadImageLoader()
+            }
+        }
+
     /** 实时模式开关也放到容器里，避免和设置页的局部 state 打架 */
     private var liveModeState by mutableStateOf(prefs.liveMode)
     var liveMode: Boolean
@@ -311,13 +333,28 @@ class AppContainer(context: Context) {
 
             // 内置隧道就绪时优先用它给的端口，否则 LiveRepo 还是自己去扫监听端口
             live.preferPort = tunnel.port
-            val result = if (liveMode) live.fetch() else repo.fetch()
+
+            // 首屏（手里一个房间都没有）先只拉前 [QUICK_ROOMS] 个：整池近 2000 个 id、
+            // 分 8 片并发也要 2~4 秒，一次性等完再出画面就是"点了没反应"的观感。
+            // 先给 500 个把列表铺出来，剩下的在后台再补一趟。
+            val quick = liveMode && rooms.isEmpty()
+            val result = if (liveMode) {
+                live.fetch(limit = if (quick) QUICK_ROOMS else Int.MAX_VALUE)
+            } else repo.fetch()
 
             loading = false
             result.onSuccess {
                 applyData(it, fromCache = false)
                 tunnelOk = true
                 tunnelPort = live.lastPort
+                if (quick) {
+                    scope.launch {
+                        // 补全失败不算错：首屏那批已经在屏幕上了
+                        live.fetch().onSuccess { full ->
+                            if (full.rooms.size > rooms.size) applyData(full, fromCache = false)
+                        }
+                    }
+                }
             }.onFailure { e ->
                 tunnelOk = false
                 tunnelPort = 0
@@ -362,5 +399,10 @@ class AppContainer(context: Context) {
             serverFollowIds = live.followIds
             serverFollowNames = live.followNames
         }
+    }
+
+    private companion object {
+        /** 首屏只拉这么多房间：2 片 × 250，约 0.6~1 秒出画面 */
+        const val QUICK_ROOMS = 500
     }
 }

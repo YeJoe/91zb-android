@@ -87,6 +87,7 @@ fun SettingsScreen(c: AppContainer) {
     var url by remember { mutableStateOf(prefs.roomsUrl) }
     var domain by remember { mutableStateOf(prefs.rtmpDomain) }
     var img by remember { mutableStateOf(prefs.imgBase) }
+    var imgProxy by remember { mutableStateOf(prefs.imgProxy) }
     var gateway by remember { mutableStateOf(prefs.hlsGateway) }
     var ws by remember { mutableStateOf(prefs.dmWs) }
     var token by remember { mutableStateOf(prefs.dmToken) }
@@ -230,7 +231,7 @@ fun SettingsScreen(c: AppContainer) {
         }
 
         // ---------- 直播源 ----------
-        Section("直播源（内置隧道不可用时的兜底：源 App 必须同机后台运行）") {
+        Section("直播源（实时房间数据）") {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Box(
                     Modifier
@@ -247,6 +248,22 @@ fun SettingsScreen(c: AppContainer) {
                     color = MaterialTheme.colorScheme.onBackground
                 )
             }
+            Spacer(Modifier.height(4.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "使用源 App 后台隧道（兜底）",
+                    fontSize = 13.sp,
+                    modifier = Modifier.weight(1f)
+                )
+                Switch(
+                    checked = c.sourceTunnel,
+                    onCheckedChange = { c.sourceTunnel = it }
+                )
+            }
+            InfoLine(
+                "默认关。内置隧道通了就完全不需要它；打开后才会去扫本机监听端口、借源 App 起好的隧道用" +
+                    "（源 App 一退出就失效，所以只当应急）。"
+            )
             Spacer(Modifier.height(4.dp))
             InfoLine(
                 "房间 ${c.rooms.size} 个" +
@@ -297,14 +314,47 @@ fun SettingsScreen(c: AppContainer) {
             )
             InfoLine("端口每次源 App 启动都会变（实测 38103 → 12987 → 41305），所以留空让它自己找最省事")
             Spacer(Modifier.height(6.dp))
+            // 默认关：一轮就是整池重拉，定时刷属于"按需才会想开"的功能
+            val presetSecs = listOf(0, 60, 300, 1800)
+            val isCustom = c.refreshSec !in presetSecs
+            var customMin by remember {
+                mutableStateOf(
+                    if (isCustom && c.refreshSec > 0) (c.refreshSec / 60).toString() else ""
+                )
+            }
             ChipLine(
                 label = "自动刷新",
-                options = listOf("关", "10s", "20s", "30s"),
-                selected = listOf(0, 10, 20, 30).indexOf(c.refreshSec)
-                    .let { if (it < 0) 2 else it },
-                onSelect = { c.refreshSec = listOf(0, 10, 20, 30)[it] }
+                options = listOf("关", "1分钟", "5分钟", "30分钟", "自定义"),
+                selected = if (isCustom) 4 else presetSecs.indexOf(c.refreshSec).coerceAtLeast(0),
+                onSelect = { i ->
+                    when (i) {
+                        0 -> c.refreshSec = 0
+                        1 -> c.refreshSec = 60
+                        2 -> c.refreshSec = 300
+                        3 -> c.refreshSec = 1800
+                        else -> c.refreshSec = (customMin.toIntOrNull() ?: 5) * 60
+                    }
+                }
             )
-            InfoLine("定时重拉在播状态与人数；0 关闭（只手动刷新）")
+            if (isCustom) {
+                OutlinedTextField(
+                    value = customMin,
+                    onValueChange = { raw ->
+                        customMin = raw.filter { it.isDigit() }.take(4)
+                        val m = customMin.toIntOrNull() ?: return@OutlinedTextField
+                        if (m > 0) c.refreshSec = m * 60
+                    },
+                    label = { Text("自定义间隔（分钟）") },
+                    placeholder = { Text("比如 30") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    shape = RoundedCornerShape(12.dp),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+                )
+            }
+            InfoLine(
+                "默认关闭，只在你点刷新/下拉时才拉。开着的话每 ${if (c.refreshSec > 0) "${c.refreshSec / 60} 分钟" else "（未定）"}重拉一遍在播状态与人数。"
+            )
             Spacer(Modifier.height(8.dp))
             TextButton(onClick = { importOpen = true }) { Text("导入配置（从导出工具粘贴）") }
             InfoLine("把电脑上 token_export.py 的整段输出粘进来，JWE 一键填入")
@@ -394,6 +444,22 @@ fun SettingsScreen(c: AppContainer) {
             InfoLine(
                 "封面 = 图床 + 接口里的 attachment_url（去掉 /static/upload 前缀）。" +
                     "改完回首页下拉一次才生效（房间对象里存的是拼好的完整 URL）"
+            )
+            Spacer(Modifier.height(8.dp))
+            OutlinedTextField(
+                value = imgProxy,
+                onValueChange = { imgProxy = it; c.imgProxy = it },
+                label = { Text("图片代理（可选，host:port）") },
+                placeholder = { Text("例如 127.0.0.1:7890") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                shape = RoundedCornerShape(12.dp),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri)
+            )
+            InfoLine(
+                "图床是 CloudFront（drdue73ptt7o.cloudfront.net），国内网络多数整段不通 —— " +
+                    "实测设备上 TCP 连得上、请求却零响应，同一个 URL 在挂了代理的电脑上 200。" +
+                    "有代理就填这里，图片会走它；留空直连。"
             )
             Spacer(Modifier.height(8.dp))
             ChipLine(
