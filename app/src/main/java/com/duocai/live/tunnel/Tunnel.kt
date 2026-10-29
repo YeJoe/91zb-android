@@ -111,33 +111,64 @@ class Tunnel(private val context: Context, private val prefs: Prefs) {
                 KiwiSdk.restartAllServer(context)
 
                 // listener 是被 native 线程异步拉起来的，给它们一点时间 bind。
-                // 太短会看到"组存在但端口还没开"，太长相册等待；1.5s 是实测够用的值。
-                delay(1500)
+                // 太短会看到"组存在但端口还没开"，太长白等；2s 是实测的起步值，
+                // 真正的兜底是下面那三轮重探。
+                delay(2000)
 
                 // 一次把所有 vhost 都问一遍：ServerToLocal 只负责"这个组有没有 listener"，
                 // 有 listener 也不代表它就是房间接口那个组，所以拿到端口后再真打一次
                 // /room/get_list_by_ids 才算数。结果全部留在 [diag] 里。
+                //
+                // **为什么要重试**：2026-10-29 实测，listener 刚 bind 完的那一两秒里
+                // 转发链路还没接通，`kiwi_go` 会先回连接超时（-1）、其它组回 404，
+                // 过几秒同一个端口就正常回 200 了。只探一轮会把"其实能用"误判成失败
+                // （表现就是隧道面板红着，但直播源自己扫端口反而能拿到数据）。
                 val tries = StringBuilder("init=$code")
                 var got = false
-                for (g in GROUPS) {
-                    val c = KiwiSdk.serverToLocal(context, g)
-                    tries.append(" | ").append(g).append('=')
-                    if (c != 0 || KiwiSdk.port <= 0) {
-                        tries.append(c)
-                        continue
+                // 兜底：探测没命中但确实有组给出了端口，就先记下来 ——
+                // 直播源自己还会再验证一次，比在这里判死强
+                var fallback: Triple<String, Int, String>? = null
+                rounds@ for (round in 0 until 3) {
+                    for (g in GROUPS) {
+                        val c = KiwiSdk.serverToLocal(context, g)
+                        tries.append(" | ").append(g).append('=')
+                        if (c != 0 || KiwiSdk.port <= 0) {
+                            tries.append(c)
+                            continue
+                        }
+                        val p = KiwiSdk.port
+                        if (fallback == null) fallback = Triple(KiwiSdk.host, p, g)
+                        val rc = probeRoom(p)
+                        tries.append(p).append(':').append(rc).append(if (rc == 200) "✓" else "?")
+                        if (rc == 200) {
+                            host = KiwiSdk.host
+                            port = p
+                            group = g
+                            got = true
+                            break@rounds
+                        }
                     }
-                    val p = KiwiSdk.port
-                    val rc = probeRoom(p)
-                    tries.append(p).append(':').append(rc).append(if (rc == 200) "✓" else "?")
-                    if (rc == 200) {
-                        host = KiwiSdk.host
-                        port = p
-                        group = g
-                        got = true
-                        break
+                    if (!got) {
+                        tries.append(" | (第${round + 1}轮无命中)")
+                        delay(1500)
                     }
                 }
                 diag = tries.toString()
+                if (!got) {
+                    val fb = fallback
+                    if (fb == null) {
+                        fail("所有组都没给出端口：$tries")
+                        return@withContext false
+                    }
+                    // 有端口但没探通：照样交出去，让直播源去用（它会自己验证真假）
+                    host = fb.first
+                    port = fb.second
+                    group = fb.third
+                    prefs.tunnelPort = port
+                    state = State.READY
+                    message = "隧道已起 ${host}:$port（${group}，未验证）"
+                    return@withContext true
+                }
                 if (!got) {
                     fail("没有组挂 /room 前缀：$tries")
                     return@withContext false
