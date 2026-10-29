@@ -3,10 +3,9 @@
 对「天美」直播 App 8.5.3（包名 `com.l95c2450d7.f68bb4e2d5`，渠道 `ecy`）的完整分析产出：
 **绕开加固与域名下发，直连本地隧道明文通道，独立复现房间列表、分类、视频播放与弹幕。**
 
-> **命名说明**：包名 `com.l95c2450d7.f68bb4e2d5` 对应的真实应用名是**天美**。
-> 早期分析一度误称其为「多彩」，项目目录已于 2026-10-29 由 `duocai-out_dir` 更名为 `tianmei-out_dir`，
-> 父目录 `duocai原` 暂时保留原名（内部还有 blutter 产物 `tianmei/outdir`，改名会连带影响引用）。
-> 文档正文与代码中的路径均已同步，个别旧笔记里的 `duocaiAPK` 路径是当时机器上的真实路径，保留原样。
+> **命名说明**：包名 `com.l95c2450d7.f68bb4e2d5` 对应的真实应用名是**天美**。早期分析一度误称其为「多彩」，
+> 所以仓库与父目录里仍残留 `duocai` 字样。本文用「项目根」统称仓库根目录，不依赖具体文件夹名；
+> 文档与脚本内部一律用相对路径，改名不影响运行。
 
 不依赖 App 运行、不需要中间人证书、不需要破解加固 so。
 
@@ -23,44 +22,101 @@
 
 ## 目录
 
+只有四个顶层目录，分工互不重叠：**跑起来的（site/tools）、看的（docs）、留证据的（assets）**。
+
 ```
-tianmei-out_dir/
-├── docs/                          # 全部文档（索引见 docs/README.md）
-│   ├── README.md                  # ★ 文档索引 + 结论演进表
-│   ├── 成功总结.md                 # ★ 成果、方法论、已知边界
-│   ├── 攻坚全记录.md               # ★ 7 小时完整过程与失败路径
-│   ├── 弹幕分类与过滤.md           # ★ 弹幕类型码全表 + 广告判定规则
-│   ├── 直播接口清单.md             # 接口 + 字段 + 推送协议
-│   ├── 明文长连接通道.md           # /tunnel/open 协议、libkiwi.so 分析
-│   ├── 明文接口突破.md             # 绕开路径加密拿 token
-│   ├── 视频流拉取方案.md           # RTMP 零鉴权拉流
-│   ├── 真人直播间筛选.md           # 分类判据（含被推翻的拉流方案）
-│   ├── 加密方式分析.md             # RabbitCipher 变体（历史分析）
-│   ├── BASE与TOKEN获取方案.md      # 四条获取路线
-│   ├── 实机运行报告.md             # MuMu 实机取证
-│   ├── MuMu抓包指南.md             # 采集步骤
-│   ├── 功能模块分析文档.md / 安全分析报告.md / 直播流地址.md
-│   └── 修改教程/                   # 7 篇二进制修改实战
-├── site/                          # 网页版（双击可用）
-│   ├── index.html                 # 分类 + 搜索 + 列表 + 播放器 + 弹幕
-│   ├── dm_filter.js               # 弹幕分类/广告过滤（与 Python 端同规则）
-│   ├── data.js                    # 房间数据（tools/build_site3.py 生成）
-│   ├── dm_samples.js              # 弹幕样本（tools/build_danmaku.py 生成）
-│   └── vendor/hls.min.js          # 本地 hls.js（Chrome/Edge 不支持原生 HLS）
-├── tools/                         # 客户端脚本
-│   ├── gateway.py                 # ★ RTMP→HLS 网关（同时托管页面）
-│   ├── build_site3.py             # ★ 刷新房间数据（13 秒）
-│   ├── danmaku_probe.py           # ★ 采集弹幕样本 -> data/dm.jsonl
-│   ├── danmaku_filter.py          # ★ 弹幕分类 + 广告过滤（唯一规则源）
-│   ├── build_danmaku.py           # ★ 样本 -> site/dm_samples.js
-│   ├── live_ws.py                 # ★ 直播间实时通道客户端
-│   ├── tunnel_map.py / ws_probe.py / tunnel_api.py   # 隧道底层
-│   ├── pcap_streams.py / wsframe.py / wsdump.py / rtmp_sniff.py  # pcap 解析
-│   ├── json_api.py / room_api.py / live_client.py    # 业务客户端
-│   └── rabbit.py / dun_replay.py / dun_keys.txt / idalib_kiwi.py  # 加密与 so 分析
-├── archive/                       # 少量长期素材（pp.txt 反汇编文本、join2.pcap 等）
-└── channel.apk                    # 原始安装包（唯一不可再生素材）
+项目根/
+├── README.md                      本文
+├── site/                          ★ 网页版，纯静态可发布（544K）
+├── tools/                         ★ 客户端脚本，20 个（210K）
+├── docs/                          ★ 文档 16 篇 + 修改教程 8 篇（460K）
+└── assets/                        ☆ 保留素材，全部不入库（约 97M）
 ```
+
+### site/ — 网页版
+
+| 文件 | 体积 | 作用 |
+|---|---|---|
+| `index.html` | 35K | 分类 + 搜索 + 排序 + 列表 + 播放器 + 弹幕区；桌面/手机两套布局 |
+| `data.js` | 72K | 300 个真实房间 + 34 个分类 + RTMP 域名，由 `build_site3.py` 生成 |
+| `dm_samples.js` | 14K | 弹幕演示样本 + 全量分类统计（`window.DM_STATS`），由 `build_danmaku.py` 生成 |
+| `dm_filter.js` | 6.6K | 前端弹幕分类/过滤规则，与 `tools/danmaku_filter.py` 同源 |
+| `vendor/hls.min.js` | 404K | 本地 hls.js——Chrome/Edge 没有原生 HLS，必须靠它 |
+
+> `data.js` 和 `dm_samples.js` 都是**生成物**，不要手改；改数据请改生成脚本。
+
+### tools/ — 客户端脚本
+
+| 分组 | 文件 | 说明 |
+|---|---|---|
+| **运行链路** | `gateway.py` | RTMP→HLS 网关，同时托管 `site/`；打印手机可用的局域网地址 |
+| | `build_site3.py` | 拉 7 个真人分类的房间，13 秒刷新 `site/data.js` |
+| | `live_ws.py` | 实时通道：`join` 进房 / `hist` 历史弹幕 / `watch` 持续监听 / `leave` |
+| **弹幕** | `danmaku_probe.py` | 采样：`history_msg` + 实时推送 → `assets/data/dm.jsonl`（断点续采） |
+| | `danmaku_filter.py` | 类型码分类 + 广告过滤，**唯一规则源** |
+| | `build_danmaku.py` | 样本 → `site/dm_samples.js`，附全量统计 |
+| **隧道底层** | `tunnel_map.py` | adb 端口映射、vhost 探测（`/websock/*` 回 405 的那台才是业务口） |
+| | `ws_probe.py` | WebSocket 握手与帧读写 |
+| | `tunnel_api.py` | 把 `/tunnel/open` 上的明文 HTTP 封装成普通请求 |
+| | `wsframe.py` / `wsdump.py` | 帧编解码、抓包复放 |
+| **业务客户端** | `json_api.py` | JSON 接口 + token 获取 |
+| | `room_api.py` | 房间列表 / 详情（`/room/list`、`/room/get_list_by_ids`） |
+| | `live_client.py` | 拉流探测（已废弃：测的是推流状态，不是身份） |
+| **抓包解析**（历史） | `pcap_streams.py` | 从 pcap 还原 TCP 流 |
+| | `rtmp_sniff.py` | 从 pcap 提取 RTMP 消息 |
+| **加密 / so**（历史） | `rabbit.py` | RabbitCipher 变体复现 |
+| | `dun_replay.py` / `dun_keys.txt` | 握手重放与抓到的密钥 |
+| | `idalib_kiwi.py` | 在 IDA 里调 libkiwi.so 做解密 |
+
+### docs/ — 文档
+
+| 文件 | 内容 |
+|---|---|
+| `README.md` | ★ 索引 + 7 条「结论演进表」（哪条结论被什么推翻） |
+| `成功总结.md` / `攻坚全记录.md` | ★ 成果与边界 / 7 小时完整过程含失败路径 |
+| `直播接口清单.md` | 全部接口 + 字段表 + 推送协议（第 11 节最新） |
+| `明文长连接通道.md` | `/tunnel/open` 协议、libkiwi.so 分析 |
+| `明文接口突破.md` | 绕开路径加密拿 token |
+| `弹幕分类与过滤.md` | 消息类型码全表、实测占比、误杀边界 |
+| `真人直播间筛选.md` | 分类判据（含被推翻的「拉流当身份」方案） |
+| `视频流拉取方案.md` | RTMP 零鉴权拉流 |
+| `加密方式分析.md` | RabbitCipher 变体（历史，当前目标已不需要） |
+| `BASE与TOKEN获取方案.md` | 四条获取路线 |
+| `实机运行报告.md` / `MuMu抓包指南.md` | MuMu 取证记录 / 采集步骤 |
+| `功能模块分析文档.md` / `安全分析报告.md` / `直播流地址.md` | 早期模块与安全分析 |
+| `修改教程/` | 8 篇二进制修改实战 |
+| `preview.png` / `preview-mobile.png` | 桌面 / 手机效果截图 |
+
+### assets/ — 保留素材（不入库）
+
+**只有要留证据、又要占空间的东西才放这里**，运行完全不需要它们。
+
+| 路径 | 体积 | 用途 | 能否再生 |
+|---|---|---|---|
+| `channel.apk` | 89M | 8.5.3 渠道包原包 | ❌ 唯一不可再生，**别删** |
+| `archive/pp.txt` | 7.2M | blutter 反汇编文本 | ⚠️ 需版本匹配的 blutter，重跑有失败概率 |
+| `archive/join2.pcap` | 340K | 进房抓包，`/websock/join` 的原始证据 | ⚠️ 需重新进房抓包 |
+| `archive/lobby_menu.json` | 4.3K | 34 个分类的原始响应 | ✅ 接口还通就能重拉 |
+| `archive/login_init.json` | 48K | 登录初始化（域名 / token 下发） | ⚠️ 需 App 在线 |
+| `archive/version_info.json` | 662B | 版本与渠道 | ✅ |
+| `archive/kiwi_report.txt` | 26K | libkiwi.so 分析记录 | ⚠️ 需重新分析 |
+| `archive/AndroidManifest.xml` | 15K | 清单文件 | ✅ 从 apk 解 |
+| `data/dm.jsonl` | 176K | 弹幕原始采样：31 房 / 462 条 | ⚠️ 需 App + 隧道在线，token 现已过期 |
+| `ida_decomp/*.c` | 105K | libkiwi.so 的 RabbitCipher 反编译 | ⚠️ 需 IDA 重新反编译 |
+
+**判断标准**：删除前先问「重新生成它要什么条件」。要 App 在线、要 IDA、要 blutter 的，都留着——
+它们加起来才 97M 里的零头，真正的大头只有 `channel.apk` 一个。
+
+### 隐藏文件
+
+| 路径 | 说明 |
+|---|---|
+| `.jwe.txt` / `.apptoken.txt` / `.session.json` | 运行期凭证，`gateway.py` / `live_ws.py` / `build_site3.py` 依赖；token 随 App 重启失效 |
+| `.rtmp_domain.txt` | 当前生效的 RTMP 域名（网关拼播放地址用） |
+| `.api_port` / `.stream_url.txt` | 上次抓到的隧道端口与流地址 |
+| `.gitignore` | 挡住上面全部凭证 + 整个 `assets/` |
+| `.workbuddy/` | 项目记忆（每日工作日志），不入库 |
+| `.vscode/` | 编辑器配置，不入库 |
 
 ---
 
@@ -185,8 +241,10 @@ python tools/gateway.py
 
 - 根目录下的 `.jwe.txt`、`.apptoken.txt`、`.rtmp_domain.txt`、`.session.json` 是**运行时凭证**，
   `gateway.py` / `build_site3.py` / `live_ws.py` 都依赖它们；token 会随 App 重启失效，届时需重新抓。
-- 凭证、APK、pcap、`data/` 采集结果、IDA 产物全部由 `.gitignore` 挡住；文档里出现过的 token / JWE
+- 凭证、APK、pcap、`assets/` 采集与反编译产物全部由 `.gitignore` 挡住；文档里出现过的 token / JWE
   已替换为 `<APP_TOKEN>` / `<JWE>` 占位符，脚本里也不再硬编码。
-- `channel.apk` 是全部派生文件的唯一来源（blutter 反汇编、libapp.so、libkiwi.so 均可从中再生），
-  其余逆向中间产物已清理。
+- `assets/channel.apk` 是全部派生文件的唯一来源（blutter 反汇编、libapp.so、libkiwi.so 均可从中再生），
+  其余逆向中间产物已清理。**整个 `assets/` 删掉也不影响运行**，只是以后要复查抓包证据就没原料了。
+- 移动 `assets/` 里的东西要注意：`danmaku_probe.py` / `build_danmaku.py` 的默认路径写死在
+  `assets/data/dm.jsonl`，换位置得同步改或传 `--in` / `--out`。
 - 本项目仅用于协议学习与流量分析，不提供任何博彩/直播内容的分发能力，请遵守当地法律。

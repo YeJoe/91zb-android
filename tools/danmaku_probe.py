@@ -9,7 +9,7 @@ danmaku_probe.py — 采集弹幕原始样本（用于分类与过滤规则推�
 落盘保留服务端原始 content_type / optcode / content，不做任何过滤。
 
 用法:
-  python tools/danmaku_probe.py --rooms 40 --seconds 5 --out data/dm.jsonl
+  python tools/danmaku_probe.py --rooms 40 --seconds 5 --out assets/data/dm.jsonl
   python tools/danmaku_probe.py --ids 55143589,1006656015 --seconds 20
 """
 import argparse
@@ -139,7 +139,7 @@ def main():
     ap.add_argument('--rooms', type=int, default=20, help='从 site/data.js 取前 N 个真人房')
     ap.add_argument('--ids', default='', help='逗号分隔的房间号')
     ap.add_argument('--seconds', type=int, default=8, help='每房实时监听秒数')
-    ap.add_argument('--out', default=os.path.join(HERE, 'data', 'dm.jsonl'))
+    ap.add_argument('--out', default=os.path.join(HERE, 'assets', 'data', 'dm.jsonl'))
     a = ap.parse_args()
     ids = [int(x) for x in a.ids.split(',') if x.strip()] if a.ids else rooms_from_site(a.rooms)
     if not ids:

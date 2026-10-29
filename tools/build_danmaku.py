@@ -3,14 +3,14 @@
 """
 build_danmaku.py — 把采集到的弹幕样本压成网页可用的 site/dm_samples.js
 
-输入 data/dm.jsonl（tools/danmaku_probe.py 的产物），输出：
+输入 assets/data/dm.jsonl（tools/danmaku_probe.py 的产物），输出：
   window.DANMAKU   页面聊天区的样本池（聊天占多数，另掺少量各类系统消息供"全部"模式对照）
   window.DM_STATS  分类统计，页头那行"样本 N 条 / 已过滤 M 条"就是它
   window.DM_AT     采样时间
 
 用法:
   python tools/build_danmaku.py
-  python tools/build_danmaku.py --in data/dm.jsonl --chat 140 --each 6
+  python tools/build_danmaku.py --in assets/data/dm.jsonl --chat 140 --each 6
 """
 import argparse
 import json
@@ -52,7 +52,8 @@ def readable(kind, r):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--in', dest='inp', default=os.path.join(HERE, 'data', 'dm.jsonl'))
+    ap.add_argument('--in', dest='inp',
+                    default=os.path.join(HERE, 'assets', 'data', 'dm.jsonl'))
     ap.add_argument('--out', default=os.path.join(SITE, 'dm_samples.js'))
     ap.add_argument('--chat', type=int, default=140, help='最多取多少条聊天')
     ap.add_argument('--each', type=int, default=6, help='每个非聊天类别取几条')

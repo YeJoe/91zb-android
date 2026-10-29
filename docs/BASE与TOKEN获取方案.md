@@ -16,7 +16,7 @@
 | 拿域名的方式：logcat / 证书反查 | 都不成立（7001 端口是加密隧道，非 TLS）。有效方式是**抓 loopback**（`tcpdump -i lo`）后 `adb forward` 复用该端口 |
 | token 是明文 JWT | 是 **JWE 原样**进 `Authorization: Bearer`，不解密、不重签 |
 | 路径编码 `base64Url` 去填充 | 必须 **urlsafe + 保留 `=`**；且服务端要求路径 ≥ 11 字符（载荷 ≥ 24 字节） |
-| 路径混淆算法通用 | **8.5.3 已改**，8.1.7 的 `reverse(xor(...))` 反推无解 → 需对 `channel.apk` 重跑 blutter |
+| 路径混淆算法通用 | **8.5.3 已改**，8.1.7 的 `reverse(xor(...))` 反推无解 → 需对 `assets/channel.apk` 重跑 blutter |
 
 §4（TOKEN 四个真相）与 §5（闪退定位）仍然有效。
 

@@ -7,17 +7,15 @@
 .rtmp_domain.txt
 .stream_url.txt
 
-# ---- 原始安装包与逆向中间产物（体积大、可从 APK 再生）----
+# ---- assets/：保留的原始素材与逆向产物（体积大，不入库）----
+assets/channel.apk
 *.apk
-channel.apk
-archive/
-ida_decomp/
+assets/archive/
+assets/ida_decomp/
+assets/data/
 libapp.so*
 *.i64
 *.pcap
-
-# ---- 采集结果（含真实用户昵称，按需本地重采）----
-data/
 
 # ---- 工具与编辑器噪音 ----
 __pycache__/

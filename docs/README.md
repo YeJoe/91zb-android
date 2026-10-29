@@ -101,13 +101,16 @@
 |---|---|
 | `site/` | 网页（`index.html` + `data.js` + `dm_samples.js` + `dm_filter.js` + `vendor/hls.min.js`） |
 | `tools/danmaku_filter.py` | 弹幕分类 + 广告过滤（唯一规则源） |
-| `tools/danmaku_probe.py` | 弹幕样本采集（history_msg + 实时推送） |
+| `tools/danmaku_probe.py` | 弹幕样本采集（history_msg + 实时推送）-> `assets/data/dm.jsonl` |
 | `tools/build_danmaku.py` | 样本 -> `site/dm_samples.js` |
 | `tools/gateway.py` | RTMP→HLS 网关 + 静态托管 |
 | `tools/build_site3.py` | 刷新房间数据 |
 | `tools/live_ws.py` | 直播间实时通道客户端 |
 | `tools/tunnel_map.py` / `ws_probe.py` | 隧道端口枚举 / WS 握手底层 |
 | `tools/pcap_streams.py` / `wsframe.py` / `rtmp_sniff.py` | pcap 解析三件套 |
+| `assets/` | 保留素材，**不入库、运行也不需要**：`channel.apk`、`archive/`（pcap 与接口原始响应）、`data/`（弹幕采样）、`ida_decomp/`（libkiwi.so 反编译） |
+
+> 完整目录说明（每个文件的体积、用途、能否再生）见仓库根 `README.md` 的「目录」一节。
 
 ---
 
