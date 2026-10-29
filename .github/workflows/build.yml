@@ -1,4 +1,9 @@
-name: Build APK
+# 这个工作流只属于「91直播」原生客户端（app 包名 com.jjlive.app，代码在 main 分支）。
+# 同一个仓库里还有 duocai 分支的 build-apk 工作流，那是另一套东西（TM Live，com.duocai.live），
+# 与本工程没有共同提交历史，互不影响。为了一眼分清，这里的 run 名和产物名都带 main 与版本号。
+name: 91直播 Build APK
+
+run-name: 91直播 · ${{ github.ref_name }} · #${{ github.run_number }}
 
 on:
   push:
@@ -60,10 +65,31 @@ jobs:
           done
           exit 0
 
+      # 把 app-debug.apk 改成带分支/版本/短 sha 的名字：下载下来光看文件名就知道是谁的产物，
+      # 也顺带在 run 首页写一行摘要，避免和同仓库 duocai 分支的包混淆。
+      - name: Tag APK with version
+        id: apk
+        run: |
+          VN=$(sed -n 's/.*versionName *= *"\([^"]*\)".*/\1/p' app/build.gradle.kts | head -1)
+          VC=$(sed -n 's/.*versionCode *= *\([0-9]*\).*/\1/p' app/build.gradle.kts | head -1)
+          BR=$(echo "${{ github.ref_name }}" | tr '/' '-')
+          SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+          OLD=$(ls app/build/outputs/apk/debug/*.apk | head -1)
+          NEW="jjlive-${BR}-v${VN}-${VC}-${SHA}.apk"
+          mv "$OLD" "app/build/outputs/apk/debug/$NEW"
+          echo "file=$NEW" >> "$GITHUB_OUTPUT"
+          {
+            echo "### 91直播 · ${BR} · v${VN}（${VC}）· ${SHA}"
+            echo ""
+            echo "产物：\`${NEW}\`"
+            echo "安装后应用名「91直播」，包名 \`com.jjlive.app\`。"
+          } >> "$GITHUB_STEP_SUMMARY"
+          ls -lh app/build/outputs/apk/debug/
+
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: jjlive-debug-apk
+          name: ${{ steps.apk.outputs.file }}
           path: app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
 
@@ -73,6 +99,6 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: latest
-          name: latest build
+          name: 91直播 latest build
           prerelease: true
           files: app/build/outputs/apk/debug/*.apk

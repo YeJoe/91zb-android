@@ -129,9 +129,13 @@ UP    → 位移 > 屏高 14% 或速度 > 780px/s 即切间，否则回弹
 
 ### Android
 
-推送到 GitHub 后，Actions 会自动执行 `./gradlew assembleDebug`，并把 APK 发布到 `releases/tag/latest`。
+推送到 `main` 后，Actions 里的 **`91直播 Build APK`** 工作流（`.github/workflows/build.yml`）会自动执行 `./gradlew assembleDebug`，并把 APK 发布到 `releases/tag/latest`。
 
-CI 流程：checkout → JDK 17 → Android SDK → 生成 wrapper → 构建 → 上传 artifact 与 Release。
+产物命名带分支、版本与短 sha，例如 `jjlive-main-v1.10-tabs-11-c104bcd.apk`；安装后应用名「91直播」，包名 `com.jjlive.app`。
+
+> 同一仓库里还有一个 `duocai` 分支，跑的是 `build-apk` 工作流（`.github/workflows/android.yml`），那是另一套独立的客户端（TM Live，包名 `com.duocai.live`），与本工程**没有共同提交历史**，也在别的 release tag 上发布，两者互不影响。看 Actions 列表认「91直播 Build APK」这个名字即可。
+
+CI 流程：checkout → JDK 17 → Android SDK → 生成 wrapper → 构建 → 改名 → 上传 artifact 与 Release。
 
 本地用 Android Studio 直接打开根目录即可（需自备 `local.properties`）。
 
