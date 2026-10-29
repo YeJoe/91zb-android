@@ -1,8 +1,12 @@
 package com.duocai.live.ui
 
+import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
 import android.content.Intent
 import android.net.Uri
 import android.view.LayoutInflater
+import android.view.WindowManager
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
@@ -156,6 +160,14 @@ fun PlayerScreen(c: AppContainer, startIndex: Int, onClose: () -> Unit) {
             holder.pause()
             c.danmaku.stop()
         }
+    }
+
+    // 看直播也别让屏幕自己灭 —— 只在这一页生效，退出立刻还回去
+    val activity = remember(context) { context.findActivity() }
+    DisposableEffect(activity) {
+        val window = activity?.window
+        window?.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        onDispose { window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) }
     }
 
     val enterAlpha by animateFloatAsState(if (entered) 1f else 0f, tween(220), label = "enter")
@@ -660,6 +672,16 @@ private fun textShadow() = Shadow(
     offset = Offset(0f, 1f),
     blurRadius = 5f
 )
+
+/** Compose 里的 LocalContext 常常是 ContextThemeWrapper，往上扒到 Activity 才能拿 window */
+private fun Context.findActivity(): Activity? {
+    var c: Context = this
+    while (c is ContextWrapper) {
+        if (c is Activity) return c
+        c = c.baseContext
+    }
+    return null
+}
 
 @Composable
 private fun ErrorOverlay(
