@@ -31,7 +31,19 @@ data class Room(
     val ad: Boolean,
     val coins: Int,
     /** 服务端分类 id（对应 lobby_menu 表）：101 星秀 / 102 女神 / 103 颜值 / 104 交友 / 105 音乐 / 108 舞蹈 */
-    val menuId: Int = 0
+    val menuId: Int = 0,
+    /**
+     * 封面图完整 URL（头像放大用）。
+     *
+     * 接口给的是相对路径 `/static/upload/u/…/head/xxx.jpg`，真正的图床是 CloudFront；
+     * 抓包里 116 次图片请求全是 `GET /images/256<相对路径去掉 /static/upload>`，
+     * 实测把尺寸改成 480 也能出图（61365 字节，是原图上限）。所以拼接规则是：
+     *
+     *     https://<图床>/images/480 + attachment_url.removePrefix("/static/upload")
+     *
+     * 空串 = 没有图，UI 退回渐变卡 + 名字首字。
+     */
+    val avatar: String = ""
 ) {
     /**
      * 拉流地址候选列表（按优先级）。
@@ -129,7 +141,9 @@ object SourceParser {
                     online = r.optInt("online", 0),
                     city = r.optString("city").let { if (it == "火星") "" else it },
                     ad = r.optInt("ad", 0) == 1,
-                    coins = r.optInt("coins", 0)
+                    coins = r.optInt("coins", 0),
+                    // JSON 数据源没有图床配置可拼，只认完整 URL
+                    avatar = r.optString("avatar").takeIf { it.startsWith("http") } ?: ""
                 )
             )
         }

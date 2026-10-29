@@ -108,6 +108,10 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-core")
 
+    // 封面图：Coil 只做"URL → Bitmap + LruCache + 生命周期取消"，不引 OkHttp，
+    // 自带 HttpURLConnection 引擎。列表里几百个头像全靠它去重与复用。
+    implementation("io.coil-kt:coil-compose:2.7.0")
+
     // 播放：ExoPlayer + RTMP 扩展 + HLS（网关降级用）
     implementation("androidx.media3:media3-exoplayer:1.5.1")
     implementation("androidx.media3:media3-exoplayer-hls:1.5.1")

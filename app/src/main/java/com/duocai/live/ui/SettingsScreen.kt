@@ -3,6 +3,7 @@ package com.duocai.live.ui
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
@@ -11,9 +12,11 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
@@ -35,6 +38,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
@@ -81,15 +85,17 @@ fun SettingsScreen(c: AppContainer) {
 
     var url by remember { mutableStateOf(prefs.roomsUrl) }
     var domain by remember { mutableStateOf(prefs.rtmpDomain) }
+    var img by remember { mutableStateOf(prefs.imgBase) }
     var gateway by remember { mutableStateOf(prefs.hlsGateway) }
     var ws by remember { mutableStateOf(prefs.dmWs) }
     var token by remember { mutableStateOf(prefs.dmToken) }
     var pasteOpen by remember { mutableStateOf(false) }
     var importOpen by remember { mutableStateOf(false) }
     var toast by remember { mutableStateOf<String?>(null) }
+    /** 「备用数据源」默认收起：实时源正常时这组根本不用碰 */
+    var advancedOpen by remember { mutableStateOf(false) }
 
-    // 实时直播源（直连源 App 隧道端口）
-    var appToken by remember { mutableStateOf(prefs.appToken) }
+    // 直播源（直连源 App 隧道端口）
     var jwe by remember { mutableStateOf(prefs.jwe) }
     var port by remember { mutableStateOf(if (prefs.tunnelPort > 0) prefs.tunnelPort.toString() else "") }
 
@@ -108,84 +114,58 @@ fun SettingsScreen(c: AppContainer) {
             modifier = Modifier.padding(start = 20.dp, top = 14.dp, bottom = 4.dp)
         )
 
-        // ---------- 数据源 ----------
-        Section("数据源") {
-            OutlinedTextField(
-                value = url,
-                onValueChange = { url = it; prefs.roomsUrl = it },
-                label = { Text("房间数据 URL") },
-                placeholder = { Text("https://…/rooms.json") },
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = false,
-                maxLines = 3,
-                shape = RoundedCornerShape(12.dp),
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri)
-            )
-            Spacer(Modifier.height(8.dp))
+        // ---------- 直播源 ----------
+        Section("直播源（源 App 必须同机后台运行）") {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Button(
-                    onClick = {
-                        scope.launch {
-                            c.reload()
-                            toast = c.error ?: "已更新 ${c.rooms.size} 个房间"
-                        }
-                    },
-                    shape = RoundedCornerShape(12.dp)
-                ) { Text(if (c.loading) "拉取中…" else "立即拉取") }
-                Spacer(Modifier.width(8.dp))
-                TextButton(onClick = { pasteOpen = true }) { Text("粘贴 JSON") }
-            }
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                TextButton(onClick = {
-                    url = Prefs.Defaults.ROOMS_URL
-                    prefs.roomsUrl = url
-                    toast = "已换成 jsDelivr 镜像"
-                }) { Text("jsDelivr 镜像", fontSize = 12.sp) }
-                TextButton(onClick = {
-                    url = Prefs.Defaults.ROOMS_URL_RAW
-                    prefs.roomsUrl = url
-                    toast = "已换成 GitHub raw（国内可能连不上）"
-                }) { Text("GitHub raw", fontSize = 12.sp) }
+                Box(
+                    Modifier
+                        .size(7.dp)
+                        .clip(CircleShape)
+                        .background(if (c.tunnelOk) Color(0xFF35D07F) else Color(0xFFFF5C7A))
+                )
+                Spacer(Modifier.width(7.dp))
+                Text(
+                    if (c.tunnelOk) "隧道在线 · 127.0.0.1:${c.tunnelPort}"
+                    else "未连接 · 源 App 没在后台跑",
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = MaterialTheme.colorScheme.onBackground
+                )
             }
             Spacer(Modifier.height(4.dp))
-            InfoLine("房间 ${c.rooms.size} 个" + if (c.meta.fromCache) " · 本地缓存" else "")
-            if (c.meta.buildAt.isNotBlank()) InfoLine("快照时间 ${c.meta.buildAt}")
-            if (c.error != null) InfoLine("上次错误：${c.error}")
-        }
-
-        // ---------- 实时直播源 ----------
-        Section("实时直播源（需源 App 同设备后台运行）") {
-            SwitchLine(
-                label = "实时模式",
-                desc = "直连源 App 隧道端口，拿到实时在播列表；关闭则拉远程 JSON 快照",
-                checked = c.liveMode,
-                onChange = {
-                    c.liveMode = it
-                    scope.launch { c.reload() }
-                }
+            InfoLine(
+                "房间 ${c.rooms.size} 个" +
+                    if (c.meta.fromCache) " · 本地缓存" else "" +
+                    if (c.error != null) " · 上次错误：${c.error}" else ""
             )
             Spacer(Modifier.height(8.dp))
-            OutlinedTextField(
-                value = appToken,
-                onValueChange = { appToken = it; prefs.appToken = it },
-                label = { Text("会话 Token（32 位 hex）") },
-                placeholder = { Text("quick-login 换来的，拼在 ?token=") },
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true,
+            Button(
+                onClick = {
+                    scope.launch {
+                        c.reload(force = true)
+                        toast = when {
+                            c.tunnelOk -> "隧道在线，已更新 ${c.rooms.size} 个直播间"
+                            else -> c.error ?: "连不上隧道端口"
+                        }
+                    }
+                },
                 shape = RoundedCornerShape(12.dp)
-            )
-            InfoLine("填了就优先走实时；留空则一直走 JSON（实时模式会报错提示）")
+            ) { Text(if (c.loading) "连接中…" else "测试连接并刷新") }
             Spacer(Modifier.height(6.dp))
+
             OutlinedTextField(
                 value = jwe,
                 onValueChange = { jwe = it; prefs.jwe = it },
-                label = { Text("JWE（Authorization: Bearer）") },
-                placeholder = { Text("源 App prefs 里 MAINUSER_DATA.token 那串") },
+                label = { Text("JWE（只有「关注」用得到）") },
+                placeholder = { Text("源 App prefs 里 MAINUSER_DATA.token 那串，330 字符") },
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
                 shape = RoundedCornerShape(12.dp)
             )
-            InfoLine("从源 App 的 SharedPreferences 里原样复制，用 Keystore 加密存本机")
+            InfoLine(
+                "实测：拉直播间列表**完全不需要凭证**；只有 /user_follow/my_follow 要这个 JWE。" +
+                    "填一次长期有效，源 App 重启也不用重填（账号别登出就行）。"
+            )
             Spacer(Modifier.height(6.dp))
             OutlinedTextField(
                 value = port,
@@ -200,7 +180,7 @@ fun SettingsScreen(c: AppContainer) {
                 shape = RoundedCornerShape(12.dp),
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
             )
-            InfoLine("留空让 App 自动从监听端口里挑能用的；填了就优先用它")
+            InfoLine("端口每次源 App 启动都会变（实测 38103 → 12987 → 41305），所以留空让它自己找最省事")
             Spacer(Modifier.height(6.dp))
             ChipLine(
                 label = "自动刷新",
@@ -209,10 +189,67 @@ fun SettingsScreen(c: AppContainer) {
                     .let { if (it < 0) 2 else it },
                 onSelect = { c.refreshSec = listOf(0, 10, 20, 30)[it] }
             )
-            InfoLine("实时模式下定时重拉列表；0 关闭（只手动下拉刷新）")
+            InfoLine("定时重拉在播状态与人数；0 关闭（只手动刷新）")
             Spacer(Modifier.height(8.dp))
             TextButton(onClick = { importOpen = true }) { Text("导入配置（从导出工具粘贴）") }
-            InfoLine("把电脑上 token_export.py 导出的整段文本/JSON 粘进来，一键填入上面三栏")
+            InfoLine("把电脑上 token_export.py 的整段输出粘进来，JWE 一键填入")
+        }
+
+        // ---------- 备用数据源 ----------
+        Section("备用数据源（正常情况下用不到）") {
+            Text(
+                if (advancedOpen) "收起 ▲" else "展开 ▼",
+                fontSize = 13.sp,
+                color = MaterialTheme.colorScheme.primary,
+                fontWeight = FontWeight.Medium,
+                modifier = Modifier.clickable { advancedOpen = !advancedOpen }
+            )
+            InfoLine(
+                "现在是实时模式：直连源 App 隧道，拿服务端当前在播列表。" +
+                    "隧道连不上时先用本地缓存；缓存也没有，才轮到这里的远程 JSON。"
+            )
+            if (advancedOpen) {
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = url,
+                    onValueChange = { url = it; prefs.roomsUrl = it },
+                    label = { Text("房间数据 URL") },
+                    placeholder = { Text("https://…/rooms.json") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = false,
+                    maxLines = 3,
+                    shape = RoundedCornerShape(12.dp),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri)
+                )
+                Spacer(Modifier.height(8.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Button(
+                        onClick = {
+                            scope.launch {
+                                c.reload(force = true)
+                                toast = c.error ?: "已更新 ${c.rooms.size} 个房间"
+                            }
+                        },
+                        shape = RoundedCornerShape(12.dp)
+                    ) { Text("立即拉取") }
+                    Spacer(Modifier.width(8.dp))
+                    TextButton(onClick = { pasteOpen = true }) { Text("粘贴 JSON") }
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    TextButton(onClick = {
+                        url = Prefs.Defaults.ROOMS_URL
+                        prefs.roomsUrl = url
+                        toast = "已换成 jsDelivr 镜像"
+                    }) { Text("jsDelivr 镜像", fontSize = 12.sp) }
+                    TextButton(onClick = {
+                        url = Prefs.Defaults.ROOMS_URL_RAW
+                        prefs.roomsUrl = url
+                        toast = "已换成 GitHub raw（国内可能连不上）"
+                    }) { Text("GitHub raw", fontSize = 12.sp) }
+                }
+                InfoLine("仓库里那份 rooms.json 是 10-29 的快照，主播在播状态早就变了，只当应急用")
+            }
+            if (c.meta.buildAt.isNotBlank()) InfoLine("快照时间 ${c.meta.buildAt}")
         }
 
         // ---------- 播放 ----------
@@ -228,6 +265,21 @@ fun SettingsScreen(c: AppContainer) {
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri)
             )
             InfoLine("播放地址 = http://<域名>/live/<房间号>.flv，不需要 token")
+            Spacer(Modifier.height(8.dp))
+            OutlinedTextField(
+                value = img,
+                onValueChange = { img = it; prefs.imgBase = it },
+                label = { Text("封面图床") },
+                placeholder = { Text("https://…/images/480") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                shape = RoundedCornerShape(12.dp),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri)
+            )
+            InfoLine(
+                "封面 = 图床 + 接口里的 attachment_url（去掉 /static/upload 前缀）。" +
+                    "改完回首页下拉一次才生效（房间对象里存的是拼好的完整 URL）"
+            )
             Spacer(Modifier.height(8.dp))
             ChipLine(
                 label = "播放通道",
@@ -360,7 +412,7 @@ fun SettingsScreen(c: AppContainer) {
         Section("关于") {
             InfoLine("DC Live ${c.versionName}")
             InfoLine("包名 com.duocai.live · 直播流直连，不经过任何中间服务器")
-            InfoLine("实时模式直连源 App 隧道端口拿在播列表；关闭则为 JSON 快照")
+            InfoLine("直播列表直连源 App 隧道端口，数据是服务端实时值；拉列表不需要任何凭证")
             InfoLine("播放地址来自第三方 CDN，仅供协议学习研究")
         }
 
@@ -419,7 +471,8 @@ fun SettingsScreen(c: AppContainer) {
             text = {
                 Column {
                     Text(
-                        "把导出工具给的整段文本（含【会话 Token】标记）或 JSON 粘进来，自动填入三个框。",
+                        "把导出工具给的整段文本或 JSON 粘进来。只有 JWE 有用，Token 现在用不到" +
+                            "（拉直播间列表实测零凭证），带了也会存下来但不上屏。",
                         fontSize = 12.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -444,11 +497,11 @@ fun SettingsScreen(c: AppContainer) {
                         err = "没解析出 appToken / jwe，确认粘的是导出工具的完整输出"
                         return@TextButton
                     }
-                    cfg.appToken?.let { v -> appToken = v; prefs.appToken = v }
+                    cfg.appToken?.let { v -> prefs.appToken = v }
                     cfg.jwe?.let { v -> jwe = v; prefs.jwe = v }
                     port = cfg.tunnelPort?.toString() ?: ""
                     prefs.tunnelPort = cfg.tunnelPort ?: 0
-                    toast = "已导入实时源配置，点「立即拉取」验证"
+                    toast = "已导入，点「测试连接并刷新」验证"
                     importOpen = false
                 }) { Text("导入") }
             },

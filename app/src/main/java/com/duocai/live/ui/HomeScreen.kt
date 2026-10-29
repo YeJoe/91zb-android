@@ -39,6 +39,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -48,12 +49,16 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import coil.compose.AsyncImage
+import coil.request.ImageRequest
 import com.duocai.live.AppContainer
 import com.duocai.live.Feed
 import com.duocai.live.Tab
@@ -72,6 +77,14 @@ fun HomeScreen(c: AppContainer) {
     /** 附近页选中的城市；空 = 用容器里记住的，再空 = 取房间最多的那个 */
     var city by remember { mutableStateOf(c.nearbyCity) }
     val keyboard = LocalSoftwareKeyboardController.current
+    val ctx = LocalContext.current
+
+    // 刷新结果提示：容器把结果写进 toast，这里弹一次再清掉
+    LaunchedEffect(c.toast) {
+        val msg = c.toast ?: return@LaunchedEffect
+        android.widget.Toast.makeText(ctx, msg, android.widget.Toast.LENGTH_SHORT).show()
+        c.toast = null
+    }
 
     val all = c.rooms
 
@@ -155,7 +168,7 @@ fun HomeScreen(c: AppContainer) {
                     tint = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
-            IconButton(onClick = { if (!c.loading) scope.launch { c.reload() } }) {
+            IconButton(onClick = { if (!c.loading) scope.launch { c.refreshManually() } }) {
                 if (c.loading) {
                     CircularProgressIndicator(
                         strokeWidth = 2.dp,
@@ -484,25 +497,39 @@ private fun RoomCard(c: AppContainer, room: Room, followed: Boolean, onClick: ()
             .fillMaxWidth()
             .aspectRatio(ratio)
             .clip(RoundedCornerShape(16.dp))
+            // 兜底底色：图片没加载出来时先是一片渐变，不会闪白
             .background(avBrush(room.id))
             .clickable(onClick = onClick)
     ) {
-        Text(
-            initialOf(room.name),
-            modifier = Modifier.align(Alignment.Center),
-            fontSize = 46.sp,
-            fontWeight = FontWeight.Black,
-            color = Color.White.copy(alpha = 0.9f)
-        )
+        if (room.avatar.isNotEmpty()) {
+            AsyncImage(
+                model = ImageRequest.Builder(LocalContext.current)
+                    .data(room.avatar)
+                    .crossfade(180)
+                    .build(),
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize()
+            )
+        } else {
+            Text(
+                initialOf(room.name),
+                modifier = Modifier.align(Alignment.Center),
+                fontSize = 46.sp,
+                fontWeight = FontWeight.Black,
+                color = Color.White.copy(alpha = 0.9f)
+            )
+        }
 
-        // 底部压暗，保证文字在亮色渐变上也读得清
+        // 底部压暗，保证文字在亮色封面/渐变上都读得清
         Box(
             Modifier
                 .fillMaxSize()
                 .background(
                     Brush.verticalGradient(
+                        0f to Color.Black.copy(alpha = 0.22f),
                         0.35f to Color.Transparent,
-                        1f to Color.Black.copy(alpha = 0.78f)
+                        1f to Color.Black.copy(alpha = 0.82f)
                     )
                 )
         )
@@ -564,6 +591,9 @@ private fun RoomCard(c: AppContainer, room: Room, followed: Boolean, onClick: ()
                 .align(Alignment.TopEnd)
                 .padding(2.dp)
                 .size(34.dp)
+                // 头像底上有深有浅，给星标垫一层半透明黑，否则浅色封面时看不见
+                .clip(CircleShape)
+                .background(Color.Black.copy(alpha = 0.26f))
         ) {
             Icon(
                 Icons.Filled.Star,

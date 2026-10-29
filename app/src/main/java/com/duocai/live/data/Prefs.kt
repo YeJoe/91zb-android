@@ -47,6 +47,17 @@ class Prefs(context: Context) {
         get() = Secure.get(sp, K_JWE)
         set(v) = Secure.put(sp, K_JWE, v.trim())
 
+    /**
+     * 封面图床基址（含尺寸档）。
+     *
+     * 实测：`drdue73ptt7o.cloudfront.net` 上 `/images/256/…` `/480/…` `/640/…` `/1024/…`
+     * 都能取到，其中 480 之后返回的都是同一张原图（61365 字节），所以取 480 最省流量。
+     * 这个域名是 CloudFront 分发，跟隧道无关，直连即可，不需要任何凭证。
+     */
+    var imgBase: String
+        get() = sp.getString(K_IMG_BASE, Defaults.IMG_BASE) ?: Defaults.IMG_BASE
+        set(v) = sp.edit().putString(K_IMG_BASE, v.trim()).apply()
+
     /** 上次探测成功的隧道端口，0 = 未探测 */
     var tunnelPort: Int
         get() = sp.getInt(K_TUNNEL_PORT, 0)
@@ -153,6 +164,7 @@ class Prefs(context: Context) {
         const val K_LIVE_MODE = "live_mode"
         const val K_APP_TOKEN = "app_token"
         const val K_JWE = "jwe"
+        const val K_IMG_BASE = "img_base"
         const val K_TUNNEL_PORT = "tunnel_port"
         const val K_REFRESH_SEC = "refresh_sec"
         const val K_RTMP_DOMAIN = "rtmp_domain"
@@ -191,6 +203,12 @@ class Prefs(context: Context) {
          * 但会随服务端调度变化，所以设置页可改。
          */
         const val RTMP_DOMAIN = "1dtluv36amaiuckq.7kv5kqq7k77g.hebeisaixin.com"
+
+        /**
+         * 封面图床。抓包实测：源 App 拉头像是 `GET drdue73ptt7o.cloudfront.net/images/256/…`，
+         * 与隧道、token 都无关，公网直连 200。
+         */
+        const val IMG_BASE = "https://drdue73ptt7o.cloudfront.net/images/480"
     }
 }
 

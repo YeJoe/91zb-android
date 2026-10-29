@@ -18,6 +18,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 enum class Tab(val label: String) {
     HOME("首页"), FOLLOW("关注"), SETTINGS("设置")
@@ -60,6 +62,8 @@ class AppContainer(context: Context) {
     /** 进程级作用域，承载自动刷新循环（App 活着就一直在） */
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     @Volatile private var refreshStarted = false
+    /** 同一时刻只允许一轮刷新在跑：手动刷新排队，后台轮询看 [loading] 跳过 */
+    private val reloadLock = Mutex()
 
     val versionName: String = runCatching {
         this.context.packageManager
@@ -72,6 +76,12 @@ class AppContainer(context: Context) {
     var loading by mutableStateOf(false)
     var error by mutableStateOf<String?>(null)
     var loadedOnce by mutableStateOf(false)
+    /** 上一次刷新是否真的连上了隧道端口（源 App 活着 = true） */
+    var tunnelOk by mutableStateOf(false)
+    /** 连上时用的端口，0 = 没连上。设置页显示「隧道在线 :12345」 */
+    var tunnelPort by mutableStateOf(0)
+    /** 手动刷新的结果提示，UI 消费一次后清掉 */
+    var toast by mutableStateOf<String?>(null)
 
     // ---- 导航 ----
     var tab by mutableStateOf(Tab.HOME)
@@ -248,17 +258,31 @@ class AppContainer(context: Context) {
         }
     }
 
-    suspend fun reload() {
-        if (loading) return
-        loading = true
-        error = null
+    /**
+     * 刷新。
+     *
+     * 以前这里是 `if (loading) return` —— 自动刷新每 20 秒一轮、一轮要 2~6 秒，
+     * 用户点刷新时正好撞上进行中的那一轮，点击就被**静默丢掉**了，看起来就是「点了没反应」。
+     * 现在：
+     *  - 后台轮询（force=false）继续「忙就跳过」，避免请求堆积；
+     *  - 用户手动点（force=true）会**等当前这轮结束再跑一轮**，一定拿到最新数据，也一定给反馈。
+     */
+    suspend fun reload(force: Boolean = false) {
+        if (!force && loading) return
+        reloadLock.withLock {
+            loading = true
+            error = null
 
-        // 实时模式：直连隧道端口（拿得到就是最新，拿不到再降级到 JSON）
-        val result = if (liveMode) live.fetch() else repo.fetch()
+            val result = if (liveMode) live.fetch() else repo.fetch()
 
-        loading = false
-        result.onSuccess { applyData(it, fromCache = false) }
-            .onFailure { e ->
+            loading = false
+            result.onSuccess {
+                applyData(it, fromCache = false)
+                tunnelOk = true
+                tunnelPort = live.lastPort
+            }.onFailure { e ->
+                tunnelOk = false
+                tunnelPort = 0
                 // 实时失败 → 只有手里没数据时才退回远程 JSON，否则别拿旧快照盖掉实时列表
                 if (liveMode && rooms.isEmpty()) {
                     val fallback = repo.fetch()
@@ -273,6 +297,17 @@ class AppContainer(context: Context) {
                     (live.loadCache() ?: repo.loadCache())?.let { applyData(it, fromCache = true) }
                 }
             }
+        }
+    }
+
+    /** 手动刷新：给 UI 用，结束后把结果写进 [toast] */
+    suspend fun refreshManually() {
+        reload(force = true)
+        toast = when {
+            tunnelOk -> "已更新 ${rooms.size} 个直播间"
+            error != null -> error
+            else -> "已更新 ${rooms.size} 个直播间"
+        }
     }
 
     fun applyPasted(text: String): String? {

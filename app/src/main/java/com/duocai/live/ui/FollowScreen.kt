@@ -20,25 +20,33 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Star
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import coil.compose.AsyncImage
+import coil.request.ImageRequest
 import com.duocai.live.AppContainer
 import com.duocai.live.data.Room
 import com.duocai.live.ui.theme.Gold
+import kotlinx.coroutines.launch
 
 /**
  * 关注页的关键不是"列人"，而是"谁现在在播"。
@@ -48,10 +56,19 @@ import com.duocai.live.ui.theme.Gold
 @Composable
 fun FollowScreen(c: AppContainer) {
 
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    val ctx = LocalContext.current
+
     // 本地收藏 ∪ 源 App 账号在服务端关注的人（podcast_id 就是房间号）
     val followIds = remember(c.followedIds, c.serverFollowIds) { c.followedIds + c.serverFollowIds }
     val localById = remember(c.followedIds) { c.follows.all().associateBy { it.id } }
     val byId = remember(c.rooms) { c.rooms.associateBy { it.id } }
+
+    LaunchedEffect(c.toast) {
+        val msg = c.toast ?: return@LaunchedEffect
+        android.widget.Toast.makeText(ctx, msg, android.widget.Toast.LENGTH_SHORT).show()
+        c.toast = null
+    }
 
     val live = ArrayList<Room>()
     val offline = ArrayList<Room>()
@@ -98,6 +115,31 @@ fun FollowScreen(c: AppContainer) {
                 "${followIds.size} 位",
                 fontSize = 12.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            IconButton(onClick = { if (!c.loading) scope.launch { c.refreshManually() } }) {
+                if (c.loading) {
+                    CircularProgressIndicator(
+                        strokeWidth = 2.dp,
+                        modifier = Modifier.size(18.dp),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                } else {
+                    Icon(
+                        Icons.Filled.Refresh,
+                        contentDescription = "刷新",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
+
+        // 在播状态靠刷新才对得上，这里把「为什么可能是旧数据」说清楚
+        if (!c.tunnelOk && c.rooms.isNotEmpty()) {
+            Text(
+                "源 App 没在后台运行，下面是上次拿到的在播状态（点右上角重试）",
+                fontSize = 11.sp,
+                color = MaterialTheme.colorScheme.error,
+                modifier = Modifier.padding(start = 18.dp, end = 18.dp, bottom = 6.dp)
             )
         }
 
@@ -202,12 +244,24 @@ private fun FollowRow(
                 .alpha(if (live) 1f else 0.6f),
             contentAlignment = Alignment.Center
         ) {
-            Text(
-                initialOf(room.name),
-                fontSize = 18.sp,
-                fontWeight = FontWeight.Bold,
-                color = if (live) Color.White else MaterialTheme.colorScheme.onSurfaceVariant
-            )
+            if (room.avatar.isNotEmpty()) {
+                AsyncImage(
+                    model = ImageRequest.Builder(LocalContext.current)
+                        .data(room.avatar)
+                        .crossfade(150)
+                        .build(),
+                    contentDescription = null,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize()
+                )
+            } else {
+                Text(
+                    initialOf(room.name),
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = if (live) Color.White else MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
         }
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {

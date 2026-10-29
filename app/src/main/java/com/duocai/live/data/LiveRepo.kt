@@ -50,6 +50,10 @@ class LiveRepo(private val context: Context, private val prefs: Prefs) {
     @Volatile private var cachedPort: Int = 0
     @Volatile private var portCheckedAt: Long = 0L
 
+    /** 最近一次成功使用的端口（0 = 还没连通过）。设置页拿它显示连接状态。 */
+    @Volatile var lastPort: Int = 0
+        private set
+
     /**
      * 源 App 账号关注的房间（`podcast_id` == 房间号）与昵称。
      * 由 [fetch] 每次刷新时更新，供「关注」页直接读。
@@ -111,6 +115,7 @@ class LiveRepo(private val context: Context, private val prefs: Prefs) {
             if (obj.has("rooms")) {
                 cachedPort = p
                 portCheckedAt = now
+                lastPort = p
                 if (prefs.tunnelPort != p) prefs.tunnelPort = p
                 return p
             }
@@ -119,10 +124,23 @@ class LiveRepo(private val context: Context, private val prefs: Prefs) {
     }
 
     // ------------------------------------------------------------------ HTTP
+    /**
+     * 发一个隧道请求。
+     *
+     * **大量实测（2026-10-29 22:00，源 App 重启后换端口复测）**：
+     *
+     * | 接口 | `?token=` | `authorization: Bearer JWE` |
+     * |---|---|---|
+     * | `/room/get_list_by_ids` | 不需要（传空/传垃圾都回 200 + rooms） | 不需要 |
+     * | `/user_follow/my_follow` | 不需要 | **必需**（没有就回 `{"code":…,"msg":…}`） |
+     *
+     * 所以这里不再对 token 做非空校验 —— 之前那句「没填 Token 就报错」把最容易用的
+     * 一条链路（看直播）挡住了，而它其实一个凭证都不需要。
+     */
     private fun post(port: Int, path: String, body: String, timeout: Int = 8000): JSONObject {
-        val t = prefs.appToken
-        if (t.isBlank()) throw IOException("还没填会话 Token（设置 → 实时直播源）")
-        val conn = (URL("http://127.0.0.1:$port$path?token=$t").openConnection() as HttpURLConnection)
+        val t = prefs.appToken.trim()
+        val query = if (t.isEmpty()) "" else "?token=$t"
+        val conn = (URL("http://127.0.0.1:$port$path$query").openConnection() as HttpURLConnection)
         try {
             conn.requestMethod = "POST"
             conn.connectTimeout = timeout
@@ -132,8 +150,8 @@ class LiveRepo(private val context: Context, private val prefs: Prefs) {
             conn.setRequestProperty("content-type", "application/json")
             conn.setRequestProperty("accept-encoding", "gzip")
             conn.setRequestProperty("user-agent", "Dart/3.10 (dart:io)")
-            val jwe = prefs.jwe
-            if (jwe.isNotBlank()) conn.setRequestProperty("authorization", "Bearer $jwe")
+            val jwe = prefs.jwe.trim()
+            if (jwe.isNotEmpty()) conn.setRequestProperty("authorization", "Bearer $jwe")
 
             conn.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
 
@@ -325,8 +343,32 @@ class LiveRepo(private val context: Context, private val prefs: Prefs) {
             // chess_id != 3 的基本是棋牌/游戏/推广房，默认过滤掉
             ad = r.optInt("chess_id", 0) != 3,
             coins = r.optInt("live_fee", 0),
-            menuId = menuId
+            menuId = menuId,
+            // 缓存文件里直接存完整 URL（键名 avatar）；接口响应里是相对路径
+            avatar = r.optString("avatar").ifBlank {
+                imageUrl(
+                    r.optString("attachment_url")
+                        .ifBlank { r.optString("attachment_db_url") }
+                )
+            }
         )
+    }
+
+    /**
+     * 相对路径 → 图床 URL。
+     *
+     * `attachment_url` 长这样：`/static/upload/u/8200/9833/9/head/xxx.jpg`
+     * 源 App 实际请求的是：`<图床>/images/256/u/8200/9833/9/head/xxx.jpg`
+     * 也就是把 `/static/upload` 整段换成 `/images/<尺寸>`。
+     */
+    private fun imageUrl(path: String): String {
+        val p = path.trim()
+        if (p.isEmpty()) return ""
+        if (p.startsWith("http://") || p.startsWith("https://")) return p
+        val base = prefs.imgBase.trim().trimEnd('/')
+        if (base.isEmpty()) return ""
+        val rest = p.removePrefix("/static/upload")
+        return base + if (rest.startsWith("/")) rest else "/$rest"
     }
 
     /** 缓存原始精简 JSON，冷启动先铺屏 */
@@ -343,6 +385,7 @@ class LiveRepo(private val context: Context, private val prefs: Prefs) {
                         .put("city_show", r.city)
                         .put("chess_id", if (r.ad) 0 else 3)
                         .put("live_fee", r.coins)
+                        .put("avatar", r.avatar)
                         .put("on_air", 1)
                 )
             }
