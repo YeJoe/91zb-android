@@ -81,13 +81,17 @@ class RoomAdapter(
         val extra = if (r.cats.isEmpty()) "" else " · " + r.cats.take(2).joinToString("/")
         h.meta.text = if (live) "🔥 ${r.hot}$extra" else "未开播"
 
-        h.cover.setImageDrawable(null)
         val url = r.coverUrl()
-        if (url.isNotEmpty()) {
-            Thread {
-                val bmp = Images.load(url)
-                bmp?.let { h.cover.post { h.cover.setImageBitmap(it) } }
-            }.start()
+        h.cover.tag = url
+        val cached = Images.cached(url)
+        if (cached != null) {
+            h.cover.setImageBitmap(cached)
+        } else {
+            h.cover.setImageDrawable(null)
+            Images.loadAsync(url) { bmp ->
+                // 复用后 tag 已变说明这张卡被别的房间占用了，别再设置，避免串图
+                if (bmp != null && h.cover.tag == url) h.cover.setImageBitmap(bmp)
+            }
         }
         h.itemView.setOnClickListener {
             val at = h.bindingAdapterPosition.takeIf { p -> p != RecyclerView.NO_POSITION } ?: pos

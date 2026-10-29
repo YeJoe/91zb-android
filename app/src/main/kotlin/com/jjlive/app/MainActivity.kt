@@ -23,7 +23,10 @@ import com.google.android.material.chip.ChipGroup
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -79,6 +82,8 @@ class MainActivity : AppCompatActivity() {
         store = TokenStore(this)
         api = Api(store)
         lastToken = store.token
+        // 初始化封面磁盘缓存目录（cacheDir/img_cache）
+        Images.init(applicationContext)
 
         pages = findViewById(R.id.pages)
         navBar = findViewById(R.id.navBar)
@@ -104,6 +109,14 @@ class MainActivity : AppCompatActivity() {
 
         selectTab(TAB_HOME, animate = false)
         applyNavInsets()
+
+        // 冷启动：先用上次的快照把界面秒填满，再后台请求最新数据覆盖。
+        // 首次安装缓存为空，直接走网络加载。
+        val cached = RoomCache.load(this)
+        if (cached.isNotEmpty()) {
+            all.addAll(cached)
+            filter(query)
+        }
         load(refreshAll = true)
     }
 
@@ -275,43 +288,94 @@ class MainActivity : AppCompatActivity() {
                 if (c.isNotEmpty()) cats = c
                 buildChips(cats)
             }
-            val rooms = withContext(Dispatchers.IO) {
-                val out = LinkedHashMap<String, Room>()
-                for (c in cats) {
-                    for (p in 1..40) {
-                        val r = runCatching {
-                            api.call(
-                                "/home/default/cls/query",
-                                mapOf(
-                                    "type" to c.fixedType.toString(),
-                                    "pageNo" to p.toString(),
-                                    "pageSize" to "20"
-                                )
-                            )
-                        }.getOrNull() ?: break
-                        val list = Parser.rooms(r)
-                        if (list.isEmpty()) break
-                        for (room in list) {
-                            val old = out[room.roomId]
-                            out[room.roomId] = if (old == null) room.copy(cats = listOf(c.name))
-                            else old.copy(cats = old.cats + c.name)
-                        }
-                        if (list.size < 20) break
-                    }
-                }
-                out.values.toList()
+
+            val catList = cats
+            if (catList.isEmpty()) {
+                swipe.isRefreshing = false
+                showEmptyIfNeeded()
+                return@launch
             }
+
+            // ① 所有分类的第一页并发拉取：拿到就渲染，首屏不再等几十个串行请求
+            val first = fetchPage(catList, 1)
             swipe.isRefreshing = false
-            all.clear()
-            all.addAll(rooms)
-            filter(query)
+            if (first.isNotEmpty()) {
+                all.clear()
+                all.addAll(first)
+                filter(query)
+                withContext(Dispatchers.IO) { RoomCache.save(this@MainActivity, first) }
+            }
+
+            // ② 首屏已出，后台继续补后面的页（最多第 6 页 / 400 个房间），
+            //    边拉边增量刷新：不阻塞首屏，也不打断用户当前滚动位置
+            val merged = LinkedHashMap<String, Room>()
+            first.forEach { merged[it.roomId] = it }
+            var page = 2
+            var stagnant = 0
+            while (page <= 6 && merged.size < 400) {
+                val more = fetchPage(catList, page)
+                if (more.isEmpty()) break
+                var added = 0
+                for (room in more) if (merged.put(room.roomId, room) == null) added++
+                if (added == 0) {
+                    if (++stagnant >= 2) break
+                } else stagnant = 0
+                all.clear()
+                all.addAll(merged.values)
+                filter(query, resetScroll = false)
+                page++
+            }
+            if (merged.size > first.size) {
+                withContext(Dispatchers.IO) { RoomCache.save(this@MainActivity, merged.values.toList()) }
+            }
+
             if (category == FOLLOW) loadFollow()
-            if (all.isEmpty()) {
-                empty.visibility = View.VISIBLE
-                empty.text = "没有获取到房间\n令牌可能已失效，去「设置」更新域名 / 令牌"
-            } else empty.visibility = View.GONE
+            showEmptyIfNeeded()
         }
     }
+
+    private fun showEmptyIfNeeded() {
+        if (all.isEmpty()) {
+            empty.visibility = View.VISIBLE
+            empty.text = "没有获取到房间\n令牌可能已失效，去「设置」更新域名 / 令牌"
+        } else empty.visibility = View.GONE
+    }
+
+    /**
+     * 并发拉取所有分类的同一页，合并去重。
+     * 每批最多 6 个并发，避免一下子开几十条 TLS 连接拖慢速度或被服务端限流。
+     */
+    private suspend fun fetchPage(catList: List<Category>, page: Int): List<Room> =
+        withContext(Dispatchers.IO) {
+            val out = LinkedHashMap<String, Room>()
+            for (chunk in catList.chunked(6)) {
+                val lists = coroutineScope {
+                    chunk.map { c ->
+                        async {
+                            val js = runCatching {
+                                api.call(
+                                    "/home/default/cls/query",
+                                    mapOf(
+                                        "type" to c.fixedType.toString(),
+                                        "pageNo" to page.toString(),
+                                        "pageSize" to "20"
+                                    )
+                                )
+                            }.getOrNull() ?: return@async emptyList<Room>()
+                            Parser.rooms(js).map { it.copy(cats = listOf(c.name)) }
+                        }
+                    }.awaitAll()
+                }
+                for (list in lists) {
+                    for (room in list) {
+                        val old = out[room.roomId]
+                        out[room.roomId] = if (old == null) room
+                        else old.copy(cats = (old.cats + room.cats).distinct())
+                    }
+                }
+            }
+            out.values.toList()
+        }
 
     // ─────────── 分类标签 ───────────
 
@@ -372,7 +436,7 @@ class MainActivity : AppCompatActivity() {
         filter(query)
     }
 
-    private fun filter(q: String) {
+    private fun filter(q: String, resetScroll: Boolean = true) {
         query = q
         val key = q.trim().lowercase()
 
@@ -397,7 +461,7 @@ class MainActivity : AppCompatActivity() {
                 )
             )
             adapter.notifyDataSetChanged()
-            rv.scrollToPosition(0)
+            if (resetScroll) rv.scrollToPosition(0)
             if (shown.isEmpty()) {
                 empty.visibility = View.VISIBLE
                 empty.text = if (followRooms.isEmpty()) "正在读取关注列表…\n或你还没有关注任何人"
@@ -417,7 +481,7 @@ class MainActivity : AppCompatActivity() {
             }.sortedByDescending { it.hot }
         )
         adapter.notifyDataSetChanged()
-        rv.scrollToPosition(0)
+        if (resetScroll) rv.scrollToPosition(0)
 
         if (shown.isEmpty()) {
             empty.visibility = View.VISIBLE

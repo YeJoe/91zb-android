@@ -329,6 +329,61 @@
             </LinearLayout>
         </LinearLayout>
 
+        <!-- ───── 存储 ───── -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:background="@drawable/bg_card"
+            android:orientation="vertical"
+            android:padding="14dp">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="存储"
+                android:textColor="@color/text_primary"
+                android:textSize="14sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:text="封面图片和房间列表会缓存在本机，下次打开更快、也更省流量。"
+                android:textColor="@color/text_secondary"
+                android:textSize="11sp" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+
+                <TextView
+                    android:id="@+id/tvCacheSize"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="缓存占用：计算中…"
+                    android:textColor="@color/text_secondary"
+                    android:textSize="12sp" />
+
+                <TextView
+                    android:id="@+id/btnClearCache"
+                    android:layout_width="wrap_content"
+                    android:layout_height="36dp"
+                    android:background="@drawable/bg_btn_ghost"
+                    android:gravity="center"
+                    android:paddingLeft="16dp"
+                    android:paddingRight="16dp"
+                    android:text="清理缓存"
+                    android:textColor="@color/text_primary"
+                    android:textSize="12.5sp" />
+            </LinearLayout>
+        </LinearLayout>
+
         <!-- ───── 关于 ───── -->
         <LinearLayout
             android:layout_width="match_parent"

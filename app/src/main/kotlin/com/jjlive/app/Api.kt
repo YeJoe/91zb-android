@@ -2,6 +2,7 @@ package com.jjlive.app
 
 import android.content.Context
 import android.util.Base64
+import android.util.LruCache
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
@@ -9,7 +10,9 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
+import java.io.File
 import java.security.MessageDigest
+import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
 /**
@@ -531,31 +534,148 @@ object Parser {
 
 object Images {
 
+    /** 磁盘缓存上限：超过 120MB 按最久未用裁剪到 80MB 以下。 */
+    private const val MAX_DISK = 120L * 1024 * 1024
+    private const val TARGET_DISK = 80L * 1024 * 1024
+
     private val client = OkHttpClient.Builder()
         .connectTimeout(10, TimeUnit.SECONDS)
         .readTimeout(15, TimeUnit.SECONDS)
         .build()
 
+    /** 封面内存缓存：滚动回来直接复用，不再重复下载 + 解码。 */
+    private val cache = object : LruCache<String, android.graphics.Bitmap>(
+        (Runtime.getRuntime().maxMemory() / 8).toInt().coerceAtLeast(8 * 1024 * 1024)
+    ) {
+        override fun sizeOf(key: String, value: android.graphics.Bitmap) = value.byteCount
+    }
+
+    /** 固定线程池：避免每张封面都 new Thread，快速滚动时线程爆炸。 */
+    private val pool = Executors.newFixedThreadPool(4)
+
+    private val main = android.os.Handler(android.os.Looper.getMainLooper())
+
+    /** 图片磁盘缓存目录（cacheDir/img_cache），需要在启动时用 Context 初始化一次。 */
+    @Volatile
+    private var diskDir: File? = null
+    private var writeCount = 0
+
+    fun init(ctx: Context) {
+        if (diskDir == null) {
+            diskDir = File(ctx.cacheDir, "img_cache").apply { runCatching { mkdirs() } }
+        }
+    }
+
+    private fun diskFile(url: String): File? {
+        val dir = diskDir ?: return null
+        return File(dir, md5(url))
+    }
+
+    /** 当前磁盘缓存占用（字节），设置页展示用。 */
+    fun diskSize(): Long {
+        val dir = diskDir ?: return 0L
+        return runCatching {
+            dir.listFiles()?.sumOf { if (it.isFile) it.length() else 0L } ?: 0L
+        }.getOrDefault(0L)
+    }
+
+    /** 清空内存 + 磁盘缓存。 */
+    fun clearAll() {
+        cache.evictAll()
+        diskDir?.let { dir ->
+            runCatching { dir.listFiles()?.forEach { it.delete() } }
+        }
+    }
+
+    fun cached(url: String): android.graphics.Bitmap? =
+        if (url.isEmpty()) null else cache.get(url)
+
+    /** 异步加载，结果回主线程；命中缓存则直接回调。 */
+    fun loadAsync(url: String, onLoaded: (android.graphics.Bitmap?) -> Unit) {
+        if (url.isEmpty()) {
+            main.post { onLoaded(null) }
+            return
+        }
+        cache.get(url)?.let {
+            main.post { onLoaded(it) }
+            return
+        }
+        pool.execute {
+            val bmp = load(url)
+            main.post { onLoaded(bmp) }
+        }
+    }
+
     /**
-     * 拉取封面并解码。
+     * 拉取封面并解码：内存 → 磁盘 → 网络，逐级回退。
+     *
      * 注意：图片域名返回的 JPEG 前会多一个非魔术字节（实测 0x31），
      * 直接按标准头判断会失败，所以这里扫描真正的魔术位置再解码。
      */
     fun load(url: String): android.graphics.Bitmap? {
         if (url.isEmpty()) return null
+        cache.get(url)?.let { return it }
+
+        // ① 磁盘命中：直接读文件解码，不再发网络请求
+        val f = diskFile(url)
+        if (f != null && f.exists() && f.length() > 0) {
+            val bytes = runCatching { f.readBytes() }.getOrNull()
+            if (bytes != null) {
+                stripAndDecode(bytes)?.let {
+                    cache.put(url, it)
+                    return it
+                }
+            }
+            runCatching { f.delete() } // 文件损坏，删掉走网络重下
+        }
+
+        // ② 网络加载，成功后写回磁盘
         return try {
             val req = Request.Builder().url(url)
                 .header("User-Agent", "Mozilla/5.0")
                 .build()
             client.newCall(req).execute().use { r ->
                 val bytes = r.body?.bytes() ?: return null
-                stripAndDecode(bytes)
+                stripAndDecode(bytes)?.also {
+                    cache.put(url, it)
+                    writeDisk(f, bytes)
+                }
             }
         } catch (_: Exception) {
             null
         }
     }
 
+    /** 原子写盘（先写 .tmp 再改名），每 25 次写做一次容量裁剪。 */
+    private fun writeDisk(f: File?, bytes: ByteArray) {
+        if (f == null) return
+        runCatching {
+            val tmp = File(f.parentFile, f.name + ".tmp")
+            tmp.writeBytes(bytes)
+            if (!tmp.renameTo(f)) {
+                f.writeBytes(bytes)
+                tmp.delete()
+            }
+            if (++writeCount % 25 == 0) trimDisk()
+        }
+    }
+
+    /** 超过上限时按最后修改时间删到目标大小以内。 */
+    private fun trimDisk() {
+        val dir = diskDir ?: return
+        runCatching {
+            val files = dir.listFiles()?.filter { it.isFile } ?: return
+            var total = files.sumOf { it.length() }
+            if (total <= MAX_DISK) return
+            for (f in files.sortedBy { it.lastModified() }) {
+                if (total <= TARGET_DISK) break
+                val len = f.length()
+                if (f.delete()) total -= len
+            }
+        }
+    }
+
+    /** 扫描真正的 JPEG/PNG 魔术字节，并按最长边 720px 降采样（省内存、解码更快）。 */
     private fun stripAndDecode(b: ByteArray): android.graphics.Bitmap? {
         if (b.size < 16) return null
         val jpeg = byteArrayOf(0xFF.toByte(), 0xD8.toByte(), 0xFF.toByte())
@@ -567,7 +687,16 @@ object Images {
             pi >= 0 -> pi
             else -> 0
         }
-        return android.graphics.BitmapFactory.decodeByteArray(b, start, b.size - start)
+        val length = b.size - start
+
+        val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        android.graphics.BitmapFactory.decodeByteArray(b, start, length, bounds)
+        var sample = 1
+        val maxSide = maxOf(bounds.outWidth, bounds.outHeight)
+        while (maxSide / sample > 720) sample *= 2
+
+        val opts = android.graphics.BitmapFactory.Options().apply { inSampleSize = sample }
+        return android.graphics.BitmapFactory.decodeByteArray(b, start, length, opts)
     }
 
     private fun indexOf(hay: ByteArray, needle: ByteArray): Int {

@@ -8,7 +8,9 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import com.google.android.material.materialswitch.MaterialSwitch
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * 设置页（底部第三栏）。
@@ -36,6 +38,8 @@ class SettingsPage(
     private val btnSave: TextView = root.findViewById(R.id.btnSave)
     private val btnReset: TextView = root.findViewById(R.id.btnReset)
     private val btnWebLogin: TextView = root.findViewById(R.id.btnWebLogin)
+    private val btnClearCache: TextView = root.findViewById(R.id.btnClearCache)
+    private val tvCacheSize: TextView = root.findViewById(R.id.tvCacheSize)
     private val swFilter: MaterialSwitch = root.findViewById(R.id.swFilter)
     private val qAuto: TextView = root.findViewById(R.id.qAuto)
     private val q720: TextView = root.findViewById(R.id.q720)
@@ -49,6 +53,7 @@ class SettingsPage(
         btnTest.setOnClickListener { test() }
         btnReset.setOnClickListener { reset() }
         btnWebLogin.setOnClickListener { onWebLogin() }
+        btnClearCache.setOnClickListener { clearCache() }
 
         qAuto.setOnClickListener { pickQuality(0) }
         q720.setOnClickListener { pickQuality(1) }
@@ -60,6 +65,7 @@ class SettingsPage(
     fun onShown() {
         if (!filled) fill()
         renderQuality()
+        refreshCacheSize()
     }
 
     /** 别处（首页过滤按钮）改了偏好后回填开关状态。 */
@@ -78,6 +84,38 @@ class SettingsPage(
             etToken.setText(saved)
             tip("令牌已更新（网页登录已生效）", R.color.good)
         }
+    }
+
+    /** 刷新「缓存占用」文案（图片磁盘缓存 + 房间列表快照）。 */
+    private fun refreshCacheSize() {
+        tvCacheSize.text = "缓存占用：计算中…"
+        scope.launch {
+            val bytes = withContext(Dispatchers.IO) {
+                Images.diskSize() + RoomCache.size(act)
+            }
+            tvCacheSize.text = "缓存占用：${formatSize(bytes)}"
+        }
+    }
+
+    /** 清空图片与房间列表缓存（不影响令牌、域名等设置）。 */
+    private fun clearCache() {
+        tvCacheSize.text = "缓存占用：清理中…"
+        scope.launch {
+            withContext(Dispatchers.IO) {
+                Images.clearAll()
+                RoomCache.clear(act)
+            }
+            tvCacheSize.text = "缓存占用：0 B"
+            tip("已清理图片与列表缓存", R.color.good)
+            Toast.makeText(act, "缓存已清理", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun formatSize(b: Long): String = when {
+        b >= 1024L * 1024 * 1024 -> "%.1f GB".format(b / 1024.0 / 1024 / 1024)
+        b >= 1024L * 1024 -> "%.1f MB".format(b / 1024.0 / 1024)
+        b >= 1024 -> "%.0f KB".format(b / 1024.0)
+        else -> "$b B"
     }
 
     private fun fill() {
