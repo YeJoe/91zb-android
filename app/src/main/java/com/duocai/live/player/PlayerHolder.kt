@@ -74,7 +74,7 @@ class PlayerHolder(private val context: Context) {
                 // 还有备选通道就换一个接着试（FLV 不行再试 RTMP）
                 if (candIndex + 1 < candidates.size) {
                     candIndex++
-                    startUrl(candidates[candIndex], p.playWhenReady)
+                    startUrl(candidates[candIndex], exo?.playWhenReady ?: true)
                     return
                 }
                 error = describe(e)
