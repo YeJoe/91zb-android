@@ -132,9 +132,14 @@
 
 ### 用它
 
-1. 打开仓库的 **Actions** → `build-apk` → 最新一次运行 → 下载 `tm-live-apk-<run>` 里的 APK
-2. 装机后 → **设置** → 确认「房间数据 URL」指向 `https://raw.githubusercontent.com/YeJoe/91zb-android/duocai/app-data/rooms.json`
+1. 打开仓库的 **Actions** → `build-apk` → 最新一次运行 → 下载 `build-<run>` 里的 APK
+   （真机装 `app-arm64-v8a-debug.apk`，模拟器或不挑装 `app-universal-debug.apk`）
+2. 装机后 → **设置** → 数据源默认已填好 jsDelivr 镜像：
+   `https://cdn.jsdelivr.net/gh/YeJoe/91zb-android@duocai/app-data/rooms.json`
 3. 点「立即拉取」→ 回首页即可看到 216 个真人直播间（84 个推广位默认过滤）
+
+> 为什么默认不用 raw.githubusercontent.com：国内大概率连不上，App 首启就会一片空白。
+> jsDelivr 有 CDN 缓存（几小时），刚刷新完数据想立刻看到，就在设置页点「GitHub raw」临时切换。
 
 > 首次构建没有 keystore secret 时自动出 **debug 签名**的包（能直接装，但不能上架、不能覆盖升级）。
 > 想要稳定升级：把 keystore base64 放进 `KEYSTORE_BASE64`，再配 `KEYSTORE_PASSWORD` / `KEY_ALIAS` / `KEY_PASSWORD`。

@@ -386,7 +386,7 @@ on:
 |---|---|
 | App 名称 | **TM Live** |
 | 包名 | **`com.duocai.live`**（debug 包 `com.duocai.live.debug`） |
-| 仓库 / 分支 | `github.com/YeJoe/91zb-android` → **`duocai`**；数据源 raw = `.../duocai/app-data/rooms.json` |
+| 仓库 / 分支 | `github.com/YeJoe/91zb-android` → **`duocai`**；数据源默认 `https://cdn.jsdelivr.net/gh/YeJoe/91zb-android@duocai/app-data/rooms.json`（国内可达），备选 GitHub raw |
 | 数据源 | 远程 JSON，**不内置房间快照** → 首启空态引导（可填 URL 或粘贴 JSON） |
 | 弹幕输入 | **只读展示**（输入条置灰 + 提示"配置端点后可发"） |
 | 弹幕透明 | **聊天区右滑变透明**（0.62→0），另有「背景 xx%」循环按钮 |

@@ -40,6 +40,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.duocai.live.AppContainer
+import com.duocai.live.data.Prefs
 import kotlinx.coroutines.launch
 
 @Composable
@@ -97,6 +98,18 @@ fun SettingsScreen(c: AppContainer) {
                 ) { Text(if (c.loading) "拉取中…" else "立即拉取") }
                 Spacer(Modifier.width(8.dp))
                 TextButton(onClick = { pasteOpen = true }) { Text("粘贴 JSON") }
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                TextButton(onClick = {
+                    url = Prefs.Defaults.ROOMS_URL
+                    prefs.roomsUrl = url
+                    toast = "已换成 jsDelivr 镜像"
+                }) { Text("jsDelivr 镜像", fontSize = 12.sp) }
+                TextButton(onClick = {
+                    url = Prefs.Defaults.ROOMS_URL_RAW
+                    prefs.roomsUrl = url
+                    toast = "已换成 GitHub raw（国内可能连不上）"
+                }) { Text("GitHub raw", fontSize = 12.sp) }
             }
             Spacer(Modifier.height(4.dp))
             InfoLine("房间 ${c.rooms.size} 个" + if (c.meta.fromCache) " · 本地缓存" else "")

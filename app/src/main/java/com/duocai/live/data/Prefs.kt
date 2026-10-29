@@ -104,8 +104,16 @@ class Prefs(context: Context) {
     }
 
     object Defaults {
-        /** 本仓库 duocai 分支上的数据源；换成自己的 fork 也行 */
+        /**
+         * 默认数据源走 jsDelivr 镜像而不是 raw.githubusercontent.com：
+         * 后者在国内经常被墙，App 首启就会"取不到列表"。jsDelivr 会缓存（几小时），
+         * 刷新数据后想立刻看到，可以在设置页换成 raw 地址。
+         */
         const val ROOMS_URL =
+            "https://cdn.jsdelivr.net/gh/YeJoe/91zb-android@duocai/app-data/rooms.json"
+
+        /** GitHub 原始地址，作备用 */
+        const val ROOMS_URL_RAW =
             "https://raw.githubusercontent.com/YeJoe/91zb-android/duocai/app-data/rooms.json"
 
         /**
