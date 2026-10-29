@@ -13,6 +13,11 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * 网页一键登录。
@@ -20,13 +25,15 @@ import androidx.core.content.ContextCompat
  * 直接加载 [LOGIN_URL]，登录后该网页每次请求接口都会带上 `authorization` 头，
  * 我们只要把这个头里的值抠下来写进 [TokenStore] 即可（和 App 自己的请求方式完全一致）。
  *
- * 双保险抓取：
+ * 双保险抓取令牌：
  *  1. [WebViewClient.shouldInterceptRequest] —— 在协议层扫描所有出栈请求的
  *     `authorization` 头（含 fetch / XHR / 资源加载），最稳妥；
  *  2. 注入 JS 包裹 `fetch` / `XMLHttpRequest.setRequestHeader`，并把捕获结果
  *     通过 [JsBridge] 回传，作为补充（应对个别不出现在请求头里的写法）。
  *
- * 抓到后立即落盘，1.2 秒后自动返回上一页；回到设置页会同步显示新令牌。
+ * 关键：登录页加载瞬间就会带上「游客令牌」，不能直接用。每抓到一个候选令牌，
+ * 都拿去 /user/info 校验是否为真实账号（[Account.isGuest]）；只有通过校验的
+ * 真实令牌才会落盘，1.2 秒后自动返回。回到设置页会同步显示新令牌。
  */
 class WebLoginActivity : AppCompatActivity() {
 
@@ -39,7 +46,11 @@ class WebLoginActivity : AppCompatActivity() {
     private lateinit var web: WebView
     private lateinit var tvStatus: TextView
     private lateinit var store: TokenStore
+    private val api by lazy { Api(store) }
+    private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     private var captured = false
+    /** 最近一次已校验过的候选令牌，避免对同一令牌反复发起校验请求。 */
+    private var lastChecked: String? = null
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -72,17 +83,46 @@ class WebLoginActivity : AppCompatActivity() {
         tvStatus.text = text
     }
 
-    /** 抓到令牌：规整 → 落盘 → 提示 → 延时返回。 */
-    private fun onToken(raw: String) {
+    /** 规整原始令牌：去引号、去 Bearer 前缀。 */
+    private fun normalize(raw: String): String {
         var t = raw.trim().removeSurrounding("\"").removeSurrounding("'")
         if (t.startsWith("Bearer ", true)) t = t.substring(7).trim()
-        if (t.isEmpty() || captured) return
-        // 只认足够长的串，避免误存 cookie / 短串 / JSON 片段
-        if (t.length < 16) return
+        return t
+    }
+
+    /**
+     * 抓到候选令牌：不直接落盘，而是拿去 /user/info 校验是否为「真实账号」。
+     * 登录页加载瞬间就会带上游客令牌，必须排除；只有校验到真实账号才保存并退出。
+     */
+    private fun onToken(raw: String) {
+        val t = normalize(raw)
+        if (t.isEmpty() || t.length < 16 || captured) return
+        if (t == lastChecked) return
+        lastChecked = t
+        status("捕获到令牌（长度 ${t.length}），正在校验是否为真实账号…", R.color.text_secondary)
+        scope.launch {
+            val acct = runCatching {
+                withContext(Dispatchers.IO) { api.accountInfo(store.host, t) }
+            }.getOrNull()
+            if (captured) return@launch
+            if (acct != null && !acct.isGuest) {
+                commit(t, acct)
+            } else {
+                // 游客 / 无效令牌：继续监听，等用户在网页里登录后出现的真实令牌
+                status(
+                    "捕获到的是游客或无效令牌，请在该网页里输入账号密码登录；登录成功后本页会自动捕获真实令牌并退出",
+                    R.color.warn
+                )
+            }
+        }
+    }
+
+    /** 校验通过：落盘 → 提示 → 延时返回。 */
+    private fun commit(t: String, acct: Account) {
         captured = true
         store.token = t
-        status("已捕获并保存登录令牌（长度 ${t.length}），即将返回", R.color.good)
-        Toast.makeText(this, "登录成功，令牌已保存", Toast.LENGTH_LONG).show()
+        status("已保存「${acct.userName}」的登录令牌（关注 ${acct.attenCnt}），即将返回", R.color.good)
+        Toast.makeText(this, "登录成功：${acct.userName}", Toast.LENGTH_LONG).show()
         web.postDelayed({ finish() }, 1200)
     }
 
@@ -182,6 +222,7 @@ class WebLoginActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        scope.cancel()
         web.destroy()
         super.onDestroy()
     }
