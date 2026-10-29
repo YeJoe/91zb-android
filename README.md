@@ -15,9 +15,11 @@
 |---|---|---|
 | **网页版** | `site/` | 纯静态，双击 `index.html` 就能看分类、列表、播放、弹幕；带弹幕分类过滤开关、手机布局、弹幕区右滑透明 |
 | **客户端脚本** | `tools/` | 复现同一套接口的命令行客户端：隧道探测、房间列表、实时弹幕、RTMP→HLS 网关 |
-| **安卓 App** | `app/` | **DC Live**：Kotlin + Compose 原生 App，底部三栏（首页/关注/设置），上下滑切房，弹幕区右滑透明；GitHub Actions 云端编译，本机不用装任何安卓环境 |
+| **安卓 App** | `app/` | **DC Live**：Kotlin + Compose 原生 App，底部三栏（首页/关注/设置），上下滑切房，弹幕区右滑透明，播放时常亮 + 画中画，双指缩放；GitHub Actions 云端编译，本机不用装任何安卓环境 |
 
-> App 的包名是 `com.duocai.live`，数据源就是本分支的 `app-data/rooms.json`。
+> App 的包名是 `com.duocai.live`。**默认走实时模式**：直连源 App 的本地隧道端口，
+> 用 id 池 + `/room/get_list_by_ids` 批量刷新在播列表（实测 1972 号 → 1943 间在播，2–6 秒）；
+> 隧道不可用时自动降级到本分支的 `app-data/rooms.json` 快照。
 > 编译产物（APK）不进仓库，走 Actions 的 artifact / Release。
 
 ---
@@ -33,9 +35,9 @@
 ├── app/                           ★ 安卓 App（DC Live），Kotlin + Compose
 ├── app-data/                      ★ App 的数据源 rooms.json（31.6K）
 ├── tools/                         ★ 客户端脚本 + 数据构建（210K）
-├── docs/                          ★ 文档 17 篇 + 修改教程 8 篇（480K）
+├── docs/                          ★ 文档 18 篇 + 修改教程 8 篇（516K）
 ├── .github/workflows/android.yml  ★ 出包流水线
-└── assets/                        ☆ 保留素材，全部不入库（约 97M）
+└── assets/                        ☆ 保留素材，全部不入库（约 115M）
 ```
 
 ### site/ — 网页版
@@ -65,7 +67,7 @@
 | | `tunnel_api.py` | 把 `/tunnel/open` 上的明文 HTTP 封装成普通请求 |
 | | `wsframe.py` / `wsdump.py` | 帧编解码、抓包复放 |
 | **业务客户端** | `json_api.py` | JSON 接口 + token 获取 |
-| | `room_api.py` | 房间列表 / 详情（`/room/list`、`/room/get_list_by_ids`） |
+| | `room_api.py` | 房间详情（`/room/get_list_by_ids`）；`/room/list` 已下线，留作历史 |
 | | `live_client.py` | 拉流探测（已废弃：测的是推流状态，不是身份） |
 | **抓包解析**（历史） | `pcap_streams.py` | 从 pcap 还原 TCP 流 |
 | | `rtmp_sniff.py` | 从 pcap 提取 RTMP 消息 |
@@ -77,7 +79,8 @@
 
 | 文件 | 内容 |
 |---|---|
-| `README.md` | ★ 索引 + 7 条「结论演进表」（哪条结论被什么推翻） |
+| `README.md` | ★ 索引 + 8 条「结论演进表」（哪条结论被什么推翻） |
+| **`8.5.3接口现状.md`** | ★★ **基准文档**：接口存活表、id 池方案、双凭证、端口探测（旧的接口结论以此为准） |
 | `成功总结.md` / `攻坚全记录.md` | ★ 成果与边界 / 7 小时完整过程含失败路径 |
 | `直播接口清单.md` | 全部接口 + 字段表 + 推送协议（第 11 节最新） |
 | `明文长连接通道.md` | `/tunnel/open` 协议、libkiwi.so 分析 |
@@ -99,10 +102,13 @@
 | 路径 | 体积 | 用途 | 能否再生 |
 |---|---|---|---|
 | `channel.apk` | 89M | 8.5.3 渠道包原包 | ❌ 唯一不可再生，**别删** |
+| `archive/853_all_api.pcap` | 18M | **8.5.3 全接口抓包**：冷启动 → 切分类 → 进房 → 退出，18060 包 / 113 flow，`/room/list` 已下线的直接证据 | ❌ 要源 App 在跑且重新走一遍全流程 |
 | `archive/pp.txt` | 7.2M | blutter 反汇编文本 | ⚠️ 需版本匹配的 blutter，重跑有失败概率 |
 | `archive/join2.pcap` | 340K | 进房抓包，`/websock/join` 的原始证据 | ⚠️ 需重新进房抓包 |
+| `archive/853_lo_token.pcap` | 315K | 冷启动时 `lo` 回环上的 `?token=` 抓取过程 | ❌ 必须 root + 冷启动 |
+| `archive/853_get_list_by_ids.sample.json` | 343K | 一次 250 id 的完整响应样本，字段对照用 | ✅ 接口还通就能重拉 |
 | `archive/lobby_menu.json` | 4.3K | 34 个分类的原始响应 | ✅ 接口还通就能重拉 |
-| `archive/login_init.json` | 48K | 登录初始化（域名 / token 下发） | ⚠️ 需 App 在线 |
+| `archive/login_init.json` / `login_init_20261029.json` | 48K ×2 | 登录初始化（域名 / token 下发），后者是 10-29 的最新一次 | ⚠️ 需 App 在线 |
 | `archive/version_info.json` | 662B | 版本与渠道 | ✅ |
 | `archive/kiwi_report.txt` | 26K | libkiwi.so 分析记录 | ⚠️ 需重新分析 |
 | `archive/AndroidManifest.xml` | 15K | 清单文件 | ✅ 从 apk 解 |
@@ -110,7 +116,11 @@
 | `ida_decomp/*.c` | 105K | libkiwi.so 的 RabbitCipher 反编译 | ⚠️ 需 IDA 重新反编译 |
 
 **判断标准**：删除前先问「重新生成它要什么条件」。要 App 在线、要 IDA、要 blutter 的，都留着——
-它们加起来才 97M 里的零头，真正的大头只有 `channel.apk` 一个。
+它们加起来才 115M 里的零头，真正的大头只有 `channel.apk` 一个。
+
+> 2026-10-29 已清掉一轮：`tools/_dbg/`（140M，含与 `channel.apk` 完全相同的 `base.apk`、
+> 可再生的 `libapp.so` / `fsp.xml`、一次性调试脚本）以及三个误提交进 git 的 CI 查询残留
+> （`.r.json` / `.runs.json` / `.dist/build6.zip`）。
 
 ### 隐藏文件
 
@@ -134,9 +144,12 @@
 
 1. 打开仓库的 **Actions** → `build-apk` → 最新一次运行 → 下载 `build-<run>` 里的 APK
    （只有 `app-arm64-v8a-debug.apk` 一个包，直接装）
-2. 装机后 → **设置** → 数据源默认已填好 jsDelivr 镜像：
-   `https://cdn.jsdelivr.net/gh/YeJoe/91zb-android@duocai/app-data/rooms.json`
-3. 点「立即拉取」→ 回首页即可看到 216 个真人直播间（84 个推广位默认过滤）
+2. 装机后 → **设置 → 实时直播源** → 把 `python tools/token_export.py` 导出的
+   `SESSION_TOKEN=` / `AUTHORIZATION=` 两段粘进「导入配置」，端口留空自动探测
+3. 回首页点右上角 ⟳ → 即可看到 **1900+ 间在播**（人数、在播状态都是服务端实时值）
+
+> 实时模式要求**源 App 在后台跑着**（隧道端口由它提供）。抓不到隧道时会自动降级到
+> `app-data/rooms.json` 快照——那是 300 间的静态样本，能看但不会更新。
 
 > 为什么默认不用 raw.githubusercontent.com：国内大概率连不上，App 首启就会一片空白。
 > jsDelivr 有 CDN 缓存（几小时），刚刷新完数据想立刻看到，就在设置页点「GitHub raw」临时切换。
@@ -148,10 +161,17 @@
 
 | 界面 | 内容 |
 |---|---|
-| **首页** | 双列瀑布卡（渐变卡 + 首字，不依赖图片）、分类 chips、搜索、按人气/名字排序、只看真人/含推广、星标收藏 |
-| **关注** | 「正在直播 / 未开播」两组；点星即收藏，拿房间号去当前快照比在播 |
-| **设置** | 数据源 URL / 粘贴 JSON / RTMP 域名 / HLS 备用网关 / 缩放模式 / 缓冲 / 自动播放 / 弹幕端点与 Token / 主题 / 推广位开关 |
-| **播放页** | 全屏视频 + 上下滑整屏切房 + 双指缩放(1~3x) + 双击暂停 + 单击隐显 UI + 右下比例切换 + 底部弹幕区 |
+| **首页** | 双列瀑布卡（渐变卡 + 首字，不依赖图片）、分类 chips（按 `menu_id` 本地分组）、搜索、按人气/名字排序、只看真人/含推广、星标收藏 |
+| **关注** | 「正在直播 / 未开播」两组；点星即收藏，拿房间号去当前在播列表比 |
+| **设置** | 实时直播源（token / JWE / 端口）/ 自动刷新 / RTMP 域名 / HLS 备用网关 / 播放通道 / 画面缩放 / 缓冲 / 进房自动播放 / 切后台自动浮窗 / 弹幕端点与 Token / 主题 / 推广位开关 |
+| **播放页** | 全屏视频 + **上下滑整屏切房** + 双指缩放(1–3x) + 双击暂停 + 单击隐显 UI + 适应/拉伸切换 + **播放时屏幕常亮** + **画中画** + 底部弹幕区 |
+
+**开关即时生效**：`streamMode` / `scaleMode` / `bufferMs` / `autoPlay` / `refreshSec` / `liveMode` 全部是
+`AppContainer` 里的 `mutableStateOf`，不是「UI 直接读 prefs」。早期版本读的是 SharedPreferences 的普通 getter，
+写盘不触发 Compose 重组，所以点了开关画面纹丝不动——这是本轮修掉的 bug。
+
+**画中画**：播放中按 Home 自动缩成 9:16 小窗继续播，小窗里顶栏 / 弹幕 / 手势层全部隐藏；
+也可以在播放页顶栏点「浮窗」手动进。不想被自动缩窗，就关掉设置里的「切后台自动浮窗」。
 
 **弹幕区右滑透明**：在聊天区向右拖，背景不透明度从 62% 一路滑到 0（跟手），全透明时只剩带投影的弹幕文字浮在画面上；
 左滑恢复；也可以点右上角「背景 62%」在 62% / 25% / 全透明之间循环。首次进房会给 4 秒提示。
@@ -169,8 +189,12 @@ App 端在设置页点「立即拉取」即可拿到新列表（失败会退回�
 
 ### 已知边界
 
-- **房间列表是快照**，不是实时：接口公网 403 / TLS 失败，只有模拟器隧道里能通（见 `docs/安卓App设计方案.md` §1）
-- **关注关系是本地的**：服务端 `/relationship/followees/` 需要真实账号 + 隧道，游客 token 拿不到，所以不做同步
+- **列表是实时的，但房间号池是静态的**：人数、在播状态每次刷新都是服务端真值（1900+ 间），
+  可**新主播新建的房间号发现不了**——8.5.3 已经没有 `/room/list`，源 App 自己也是靠本地表 +
+  WS 增量维护，没有「底部无限加载」可以翻。详见 `docs/8.5.3接口现状.md` §3
+- **实时模式要求源 App 在后台跑着**：隧道端口由它提供，App 被杀就退回 JSON 快照
+- **会话 token 只在内存**：8.5.3 起不落盘，必须 root + 冷启动抓 `lo` 回环才能拿到，App 重启即失效
+- **关注关系是本地的**：服务端 `/user_follow/my_follow` 只回主播 id（没有房间号），拼不出播放地址，所以不做同步
 - **弹幕是离线样本**：没配 WS 反代端点时，聊天区回放打包进 APK 的 182 条真实弹幕，用来验证过滤规则
 - **没有封面图**：`avatar` 是挂在打不通的接口域名上的相对路径，取不到；改用渐变卡 + 名字首字，反而省了 1.5MB 依赖
 
@@ -273,9 +297,9 @@ python tools/gateway.py
 ## 三条链路怎么走的
 
 ```
-房间列表  POST /room/list {"menu_id":104}          ← 参数是下划线，驼峰会被静默忽略
-房间详情  POST /room/get_list_by_ids {"ids":"…"}
-官方分类  POST /lobby_menu/list                     ← 34 项，真人区 5/101/102/103/104/105/108
+房间详情  POST /room/get_list_by_ids {"ids":"123,456,…"}  ← 唯一可用的房间接口，ids 是逗号串
+分类表    POST /login/get_data_by_tbname {"tb_name":"lobby_menu"}   ← 34 项，真人区 5/101/102/103/104/105/108
+          ✗ /room/list 已在 8.5.3 下线：17 个本地端口全 404，源 App 冷启动全程不调用
 实时通道  WS   /tunnel/open?z=1&token=<32hex>       ← zlib 明文 JSON
           └─ /websock/join			    ← 进房（旧名 /room_push/join 已失效）
              /websock/history_msg		    ← 历史弹幕
@@ -285,11 +309,14 @@ python tools/gateway.py
 
 三个硬前提（缺一个就失败）：
 
-1. 隧道 URL 的 `?token=` 必须是 **App 当前会话的 32 位 hex**，只能从 `lo` 回环明文抓取；
+1. 隧道 URL 的 `?token=` 必须是 **App 当前会话的 32 位 hex**，只能从 `lo` 回环明文抓取（且必须冷启动）；
 2. 必须带 `authorization: Bearer <JWE>`；
-3. 端口必须是同时支持 `/index/hello` 和 `/websock/*` 的那台 vhost。
+3. 端口必须是同时支持 `/index/hello` 和 `/websock/*` 的那台 vhost（每次重启都变）。
 
-细节见 `docs/攻坚全记录.md` 阶段五。
+「大厅列表」这一层不是接口，是 **id 池 + 批量刷新**：`assets/room_ids.txt` 里 1972 个种子号，
+按 250 个一批并发打 `get_list_by_ids`，只留 `on_air=1`。
+
+细节见 `docs/8.5.3接口现状.md`（基准）与 `docs/攻坚全记录.md` 阶段五（过程）。
 
 ---
 

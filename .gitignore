@@ -30,6 +30,12 @@ Thumbs.db
 # ---- 抓包/逆向调试临时产物（含 apk、pcap、so，体积大且敏感）----
 tools/_dbg/
 
+# ---- 临时导出与 CI 查询残留（曾经误提交过，这里挡死）----
+.dist/
+.r.json
+.runs.json
+.arts.json
+
 # ---- 安卓构建产物与本地签名 ----
 .gradle/
 build/

@@ -75,7 +75,8 @@ class LiveRepo(private val context: Context, private val prefs: Prefs) {
     }
 
     /**
-     * 找一个真正挂 `/room/*` 的 vhost。
+     * 找一个真正挂 `/room` 前缀的 vhost（注意：注释里别写斜杠星号，Kotlin 的块注释是可嵌套的，
+     * 那样会吃掉后面整段代码）。
      *
      * 判据不能用 `/room/list`（已下线，所有端口 404）。改用 `/room/get_list_by_ids` + 一个**真实房间号**：
      * 只有对的 vhost 才会回 `{"code":0,"rooms":[...]}`；错的 vhost 被 nginx 直接 404（HTML），

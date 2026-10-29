@@ -207,7 +207,11 @@ isPodcast  machineInfo  openChannelId  osVersion  packageName  parentIcode  vali
 字段号用 `dun_replay.py pbdecode` 从套壳版的真实请求里读出来即可，一次对齐永久复用。
 
 游客态还有个便利：**`derive_key` 允许空 token**（`rabbit.py:derive_key(hour, token="")`），
-所以哪怕 `/login/quick` 一时调不通，也能先用 `TOKEN=""` 打通 `room/list` 验证 BASE 是否正确。
+所以哪怕 `/login/quick` 一时调不通，也能先用 `TOKEN=""` 打通接口验证 BASE 是否正确。
+
+> ⚠️ **2026-10-29 更正**：这段写的是 8.1.7 时代「用 `room/list` 验 BASE」的办法。8.5.3 的 `/room/list` 已下线（全端口 404），
+> 验 BASE 请改用 `POST /room/get_list_by_ids {"ids":"<真实房间号>"}`——响应里有 `rooms` 键就说明这台的 vhost 对了。
+> 另外 8.5.3 是 Dart/AOT 架构（libapp.so），本文 §4 那套 protobuf + RabbitCipher 只适用于 8.1.7 套壳版。
 
 ### 4.4 换 token 必须重算 key
 
