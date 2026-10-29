@@ -22,9 +22,12 @@ object Cfg {
     const val SPARE_HOST = "https://ytt.jvjzmc.com"
     /** 弹幕（IM）长连接，和接口域名不是同一个子域，所以单独配置。 */
     const val IM_WS = "wss://yzj.opuxrcm.com/live"
-    /** 首次安装用的默认令牌；失效后在「设置」里换一个即可，不用重装。 */
+    /**
+     * 默认令牌：已登录的正式账号（实测 attenCnt=169，能拉真实关注列表）。
+     * 失效后到「设置」里换一个即可，不用重装。
+     */
     const val DEFAULT_TOKEN =
-        "24e9ab5c9f37247821f4edf5061946e5429de983e86d43b374533b997073ddf5fb69457b759d4da294a290addfa2f6fe"
+        "24e9ab5c9f372478bb4c3171eebdff5b78644b0743a753aca0d9230491ff9ccf4fe5e3ad73da4992b10474bf963a1e7c5ebb501ae89ed243ea09a13104479dc0070b6a052ca272b80333a5db668fd2a3"
     const val SALT = "oknzoiwe@23"
     const val AK = "jyzb"
     const val TERMINAL = "3"
@@ -147,12 +150,24 @@ class Api(private val store: TokenStore) {
         .retryOnConnectionFailure(true)
         .build()
 
-    suspend fun call(path: String, params: Map<String, String> = emptyMap()): JSONObject? =
+    /**
+     * 发一个接口请求。
+     *
+     * host / token 默认取已保存的值；设置页点「测试」时会传入输入框里的值，
+     * 这样不保存也能先验一遍「这个域名 + 这个令牌」到底对应哪个账号。
+     */
+    suspend fun call(
+        path: String,
+        params: Map<String, String> = emptyMap(),
+        host: String? = null,
+        token: String? = null
+    ): JSONObject? =
         withContext(Dispatchers.IO) {
-            val token = store.token
+            val tk = token?.trim()?.takeIf { it.isNotEmpty() } ?: store.token
+            val base = host?.trim()?.takeIf { it.isNotEmpty() }?.let { normalizeHost(it) } ?: store.host
             val ts = System.currentTimeMillis().toString()
-            val sign = makeSign(path, token, ts, params)
-            val url = store.host + encodePath(path, randomHex(3))
+            val sign = makeSign(path, tk, ts, params)
+            val url = base + encodePath(path, randomHex(3))
 
             // 紧凑 JSON，与 Python separators=(",",":") 一致。
             // 整数值按数字输出，长 ID（超出 Int 范围）按字符串输出，
@@ -167,7 +182,7 @@ class Api(private val store: TokenStore) {
             val req = Request.Builder()
                 .url(url)
                 .header("ak", Cfg.AK)
-                .header("authorization", token)
+                .header("authorization", tk)
                 .header("channel", Cfg.CHANNEL)
                 .header("terminal", Cfg.TERMINAL)
                 .header("version", Cfg.VERSION)
@@ -272,7 +287,40 @@ class Api(private val store: TokenStore) {
     }
 
     /** 当前账号信息，主要取 attenCnt（关注数）。 */
-    suspend fun userInfo(): JSONObject? = call("/user/info")?.optJSONObject("data")
+    suspend fun userInfo(host: String? = null, token: String? = null): JSONObject? =
+        call("/user/info", emptyMap(), host, token)?.optJSONObject("data")
+
+    /**
+     * 账号概况。用于「关注」页顶部展示：昵称、关注数、是否游客。
+     *
+     * 注意：`visitors` 字段不能用来判断游客——实测正式账号（169 个关注）
+     * 的 visitors 同样是 1。可靠的判据是 `attenCnt` / `fansCnt`。
+     */
+    suspend fun accountInfo(host: String? = null, token: String? = null): Account? {
+        val d = userInfo(host, token) ?: return null
+        return Account(
+            userId = d.optString("id"),
+            userName = d.optString("userName"),
+            attenCnt = d.optInt("attenCnt", 0),
+            fansCnt = d.optInt("fansCnt", 0),
+            level = d.optInt("userLevel", 0),
+            visitors = d.optInt("visitors", 0)
+        )
+    }
+}
+
+/** 当前登录账号概况。 */
+data class Account(
+    val userId: String,
+    val userName: String,
+    /** 关注数：0 表示这是个没有关注记录的游客账号。 */
+    val attenCnt: Int,
+    val fansCnt: Int,
+    val level: Int,
+    val visitors: Int
+) {
+    /** 是否「游客」：没有关注也没有粉丝，且 userId 为空或后缀是游客特征串。 */
+    val isGuest: Boolean get() = attenCnt == 0 && fansCnt == 0 && userName.isBlank()
 }
 
 // ─────────────────────────── 模型与解析 ───────────────────────────

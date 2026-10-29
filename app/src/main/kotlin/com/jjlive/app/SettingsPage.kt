@@ -139,8 +139,20 @@ class SettingsPage(
         tip("测试中…", R.color.text_secondary)
         scope.launch {
             val (ok, msg) = api.checkToken(host, token)
-            if (ok) tip("✓ 连接正常，可以保存", R.color.good)
-            else tip("✗ 失败：$msg", R.color.warn)
+            if (!ok) {
+                tip("✗ 失败：$msg", R.color.warn)
+                return@launch
+            }
+            // 再问一下账号是谁，方便确认换的是哪个号
+            val acct = runCatching { api.accountInfo(host, token) }.getOrNull()
+            tip(
+                if (acct != null && acct.userName.isNotBlank()) {
+                    "✓ ${acct.userName} · 关注 ${acct.attenCnt} · 粉丝 ${acct.fansCnt}"
+                } else {
+                    "✓ 连接正常，可以保存"
+                },
+                R.color.good
+            )
         }
     }
 

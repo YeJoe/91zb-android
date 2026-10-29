@@ -75,24 +75,41 @@ class FollowPage(
             if (adapter.rows.isEmpty()) meta.text = "正在读取关注列表…"
         }
         scope.launch {
+            // 1) 账号概况（昵称 / 关注总数）
+            val acct = withContext(Dispatchers.IO) {
+                runCatching { api.accountInfo() }.getOrNull()
+            }
+            // 2) 我的关注：分页拉全（实测有 169 条，只拉第一页会漏）
             val following = withContext(Dispatchers.IO) {
-                runCatching { api.attentionList() }.getOrDefault(emptyList())
+                val out = ArrayList<Room>()
+                var page = 1
+                while (page <= MAX_PAGES) {
+                    val batch = runCatching { api.attentionList(page, PAGE_SIZE) }
+                        .getOrDefault(emptyList())
+                    if (batch.isEmpty()) break
+                    out.addAll(batch)
+                    // 服务端还有更多就继续翻；不足一页说明到底了
+                    if (batch.size < PAGE_SIZE) break
+                    page++
+                }
+                out
             }
-            val suggest = withContext(Dispatchers.IO) {
-                runCatching { api.suggestList(1, 12) }.getOrDefault(emptyList())
-            }
-            val count = withContext(Dispatchers.IO) {
-                runCatching { api.userInfo()?.optString("attenCnt")?.toIntOrNull() }.getOrNull()
-            }
+            // 3) 推荐只在「没关注任何人」时才需要
+            val suggest = if (following.isEmpty()) {
+                withContext(Dispatchers.IO) {
+                    runCatching { api.suggestList(1, 12) }.getOrDefault(emptyList())
+                }
+            } else emptyList()
+
             loading = false
             loaded = true
             lastLoadedAt = System.currentTimeMillis()
             swipe.isRefreshing = false
-            render(following, suggest, count)
+            render(following, suggest, acct)
         }
     }
 
-    private fun render(following: List<Room>, suggest: List<Room>, serverCount: Int?) {
+    private fun render(following: List<Room>, suggest: List<Room>, acct: Account?) {
         val rows = ArrayList<Row>()
 
         // 在播的排前面，其次按热度
@@ -124,11 +141,16 @@ class FollowPage(
         adapter.rows.addAll(rows)
         adapter.notifyDataSetChanged()
 
+        val total = acct?.attenCnt?.takeIf { it > 0 } ?: mine.size
         meta.text = when {
             mine.isEmpty() && recommendations.isEmpty() -> "没拉到数据，检查「设置」里的令牌"
             mine.isEmpty() -> "还没有关注任何人 · 从下面挑几个"
-            living > 0 -> "已关注 ${serverCount ?: mine.size} 位 · $living 位正在直播"
-            else -> "已关注 ${serverCount ?: mine.size} 位 · 当前都没有开播"
+            living > 0 -> "$living 位正在直播 · 共关注 $total 位"
+            else -> "已关注 $total 位 · 当前都没有开播"
+        }
+        // 账号名展示在顶部副标题
+        acct?.userName?.takeIf { it.isNotBlank() }?.let { who ->
+            meta.text = "$who · " + meta.text
         }
 
         val nothing = rows.isEmpty()
@@ -275,5 +297,11 @@ class FollowPage(
         private const val TYPE_ITEM = 1
         private const val GROUP_MINE = 0
         private const val GROUP_RECO = 1
+
+        /** 每页条数。 */
+        private const val PAGE_SIZE = 30
+
+        /** 最多翻多少页（30 × 10 = 300 条，足够覆盖绝大多数账号）。 */
+        private const val MAX_PAGES = 10
     }
 }

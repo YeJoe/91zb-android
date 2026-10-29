@@ -39,7 +39,7 @@
 - **接口加密**：路径混淆 + md5 签名 + 报文 xorCode，全部本地实现。
 - **三分类导航**：底部「首页 / 关注 / 设置」，切换只改 visibility，回来还在原滚动位置。
 - **首页**：分类标签 + 自适应列数网格 + 3:4 封面；按 `anchorType` 与关键字过滤博彩/广告房。
-- **关注**：拉真实关注列表（`/home/user/attention/list`），在播的排前面、未开播打灰标；关注为空时展示推荐（`/home/user/notattention/list`），卡片右侧可一键关注 / 取关（`/user/attention/add|cancel`）。
+- **关注**：拉真实关注列表（`/home/user/attention/list`），**分页拉全**（实测账号有 169 条关注），在播的排前面、未开播打灰标，顶部显示账号昵称与关注总数；关注为空时才展示推荐（`/home/user/notattention/list`），卡片右侧可一键关注 / 取关（`/user/attention/add|cancel`）。
 - **设置**：整页表单，可改「接口域名 / 令牌 / 弹幕地址」并做连接测试，另有默认形态、优先清晰度、过滤开关。令牌内置默认值，首次打开直接进列表；换域名或令牌不用重新打包。
 - **播放页**：默认半屏（上方画面 + 下方深色聊天区），点画面或「全屏」按钮切竖屏全屏；**聊天区右滑可甩走**（跟手变透明，甩出后画面铺满，左下角「聊天」胶囊叫回来）；上下滑动切换直播间（落点在聊天区也能切）；直播中屏幕常亮。
 - **明暗跟随**：界面走 Material3 DayNight + 语义色（`values-night/colors.xml`），跟随系统深浅色；播放页固定深色，避免白底晃眼。
@@ -92,7 +92,7 @@ byte5..  = 负载
 | 播放地址 | `/app/live/joinRoom` → `pullStreamAddr*` |
 | 流有效期 | `auth_key` 约 300 分钟 |
 | 弹幕 | `wss://yzj.opuxrcm.com/live?auth=<token>&s=<ms>&aid=<uid>&v=<ver>` |
-| 我的关注 | `/home/user/attention/list`（`state`/`stateStr` 判断是否在播） |
+| 我的关注 | `/home/user/attention/list`（`state`/`stateStr` 判断是否在播；分页 `pageNo`/`pageSize`） |
 | 关注动作 | `/user/attention/add`、`/user/attention/cancel`，参数 `followedUserIds` |
 | 关注推荐 | `/home/user/notattention/list` |
 
@@ -161,7 +161,10 @@ python web\tools\run.py --serve-only :: 用现有数据只起服务
 
 ## 已知限制
 
-1. **令牌会过期**：没有游客登录接口，内置令牌失效后需手动在「设置」里换一个。
+1. **令牌会过期**：内置的是正式账号令牌（实测 `attenCnt=169`，能拉到真实关注）；失效后在「设置」里换一个，
+   「测试」按钮会直接显示该令牌的昵称 / 关注数 / 粉丝数，方便确认换对了账号。
+   - ⚠️ 服务端的 `visitors` 字段**不能**用来判断游客：正式账号的 `visitors` 同样是 1，
+     判据只能是 `attenCnt` / `fansCnt` 是否为 0。
 2. **1V1 表演中不可看**：服务端在表演期间不下发媒体流（`oneToOneState == 2`），提前提示不白等。
 3. **A/V 同步为轻量实现**：以音频时钟为主，视频落后 1 秒以上丢帧，直播场景够用。
 4. **硬解未在真机验证**：开发环境只有模拟器（`OMX.google.hevc.decoder` 软解），真机应走到 `c2.*`。
