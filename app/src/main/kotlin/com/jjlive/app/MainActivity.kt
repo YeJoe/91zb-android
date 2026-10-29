@@ -68,6 +68,8 @@ class MainActivity : AppCompatActivity() {
     private var query = ""
     private var cats: List<Category> = emptyList()
     private val followRooms = ArrayList<Room>()
+    /** 关注列表所属账号昵称（用于顶部核对是不是账号真实关注）。 */
+    private var followOwner = ""
     private var filterHits = 0
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -92,6 +94,8 @@ class MainActivity : AppCompatActivity() {
             scope = scope,
             onSaved = {
                 lastToken = store.token
+                followOwner = ""
+                followRooms.clear()
                 load(refreshAll = true)   // 换了域名/令牌：首页重拉
             },
             onFilterChanged = { onFilterPrefChanged() },
@@ -114,6 +118,9 @@ class MainActivity : AppCompatActivity() {
         val t = store.token
         if (t != lastToken) {
             lastToken = t
+            // 换了账号：关注列表和昵称都得重拉，否则会显示上一个号的数据
+            followOwner = ""
+            followRooms.clear()
             settingsPage.syncToken()
             load(refreshAll = true)
         }
@@ -131,7 +138,17 @@ class MainActivity : AppCompatActivity() {
         btnFilter = pageHome.findViewById(R.id.btnFilter)
 
         rv.layoutManager = GridLayoutManager(this, spanCount())
-        adapter = RoomAdapter(shown) { _, pos -> PlayerActivity.start(this, shown.toList(), pos) }
+        adapter = RoomAdapter(shown) { room, _ ->
+            if (!room.isLiving) {
+                // 未开播的主播没有播放地址，直接提示，不进空白播放页
+                Toast.makeText(this, "「${room.userName}」当前未开播", Toast.LENGTH_SHORT).show()
+            } else {
+                // 只把在播的房间带进播放页，避免上下滑动切到未开播的空房间
+                val playable = shown.filter { it.isLiving }
+                val idx = playable.indexOf(room).coerceAtLeast(0)
+                PlayerActivity.start(this, playable, idx)
+            }
+        }
         rv.adapter = adapter
 
         swipe.setColorSchemeColors(ContextCompat.getColor(this, R.color.accent))
@@ -359,17 +376,25 @@ class MainActivity : AppCompatActivity() {
         query = q
         val key = q.trim().lowercase()
 
+        // 关注列表里存在未开播的主播，需要标状态；首页/分类列表都是在播，不必标
+        adapter.markStatus = category == FOLLOW
+
         val base = if (store.hideJunk) all.filter { !it.isAd && !it.isGame } else all
         filterHits = all.size - base.size
 
         if (category == FOLLOW) {
             val fb = if (store.hideJunk) followRooms.filter { !it.isAd && !it.isGame } else followRooms
+            // 在播数按账号全部关注统计，和顶部「共 N 位」口径一致（N = 关注总数）
+            val living = followRooms.count { it.isLiving }
             shown.clear()
             shown.addAll(
                 fb.filter {
                     key.isEmpty() || it.userName.lowercase().contains(key) ||
                             it.roomName.lowercase().contains(key) || it.roomId.contains(key)
-                }.sortedByDescending { it.hot }
+                }.sortedWith(
+                    // 在播的排前面；未开播的统一沉底（同组按人气）
+                    compareByDescending<Room> { it.isLiving }.thenByDescending { it.hot }
+                )
             )
             adapter.notifyDataSetChanged()
             rv.scrollToPosition(0)
@@ -378,7 +403,8 @@ class MainActivity : AppCompatActivity() {
                 empty.text = if (followRooms.isEmpty()) "正在读取关注列表…\n或你还没有关注任何人"
                 else "关注列表里没有匹配的主播"
             } else empty.visibility = View.GONE
-            meta.text = "我的关注 · 共 ${followRooms.size} 位"
+            val who = if (followOwner.isNotBlank()) "「$followOwner」的关注" else "我的关注"
+            meta.text = "$who · 在播 $living / 共 ${followRooms.size} 位"
             return
         }
 
@@ -415,6 +441,13 @@ class MainActivity : AppCompatActivity() {
     /** 分页拉全关注列表（关注数可能上百，只拉第一页会漏）。 */
     private fun loadFollow() {
         scope.launch {
+            // 先拿到账号昵称，顶部显示「某某的关注」，用来核对拉的是不是账号真实关注
+            if (followOwner.isBlank()) {
+                val acct = withContext(Dispatchers.IO) {
+                    runCatching { api.accountInfo() }.getOrNull()
+                }
+                if (acct != null && acct.userName.isNotBlank()) followOwner = acct.userName
+            }
             val following = withContext(Dispatchers.IO) {
                 val out = ArrayList<Room>()
                 var page = 1
