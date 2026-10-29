@@ -244,6 +244,14 @@ private fun FollowRow(
                 .alpha(if (live) 1f else 0.6f),
             contentAlignment = Alignment.Center
         ) {
+            // 首字**永远画在最底下**：图床不可达（CloudFront 在部分网络下整段被封）时
+            // AsyncImage 加载失败会画成透明，只留渐变，卡片就"空"了；这样至少有首字。
+            Text(
+                initialOf(room.name),
+                fontSize = 18.sp,
+                fontWeight = FontWeight.Bold,
+                color = if (live) Color.White else MaterialTheme.colorScheme.onSurfaceVariant
+            )
             if (room.avatar.isNotEmpty()) {
                 AsyncImage(
                     model = ImageRequest.Builder(LocalContext.current)
@@ -253,13 +261,6 @@ private fun FollowRow(
                     contentDescription = null,
                     contentScale = ContentScale.Crop,
                     modifier = Modifier.fillMaxSize()
-                )
-            } else {
-                Text(
-                    initialOf(room.name),
-                    fontSize = 18.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = if (live) Color.White else MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
         }

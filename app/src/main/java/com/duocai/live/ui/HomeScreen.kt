@@ -20,6 +20,8 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.staggeredgrid.LazyVerticalStaggeredGrid
 import androidx.compose.foundation.lazy.staggeredgrid.StaggeredGridCells
 import androidx.compose.foundation.lazy.staggeredgrid.items
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
@@ -41,9 +43,12 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -66,16 +71,35 @@ import com.duocai.live.data.Room
 import com.duocai.live.ui.theme.Gold
 import kotlinx.coroutines.launch
 
+/**
+ * 首页。
+ *
+ * ## 顶部一级 tab 和内容区是同一个 Pager
+ *
+ * 「关注 / 推荐 / 热门 / 附近」四个页面用 `HorizontalPager` 摆成一条横向的轨道，
+ * **滑动内容区就是切换 tab**，点 tab 也会带动画滚过去。两侧保持同步的方式是：
+ *
+ * - 手指滑 → `settledPage` 停了才写回 `c.feed`（滑动过程中不写，避免和手势抢状态，
+ *   否则会出现"滑到一半被程序拽回去"的抖动）；
+ * - 别处改 `c.feed`（比如空列表提示里的「去推荐看看」）→ 反过来把 pager 滚过去。
+ *
+ * 二级分类行（内容分类 / 城市）和排序行都放进了**每一页内部**，这样滑过去时
+ * 分类条会跟着整页一起动，而不是在顶部硬切一下。
+ *
+ * 每个一级页各自记自己选中的分类（[cats]），从「热门·舞蹈」滑到「推荐」再滑回来，
+ * 还是「热门·舞蹈」——不会被串成同一个值。
+ */
 @Composable
 fun HomeScreen(c: AppContainer) {
 
-    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    val scope = rememberCoroutineScope()
     var query by remember { mutableStateOf("") }
     var searchOpen by remember { mutableStateOf(false) }
-    var cat by remember { mutableStateOf("全部") }
     var sortOnline by remember { mutableStateOf(true) }
     /** 附近页选中的城市；空 = 用容器里记住的，再空 = 取房间最多的那个 */
     var city by remember { mutableStateOf(c.nearbyCity) }
+    /** 一级页 → 该页选中的二级分类 */
+    val cats = remember { mutableStateMapOf<Feed, String>() }
     val keyboard = LocalSoftwareKeyboardController.current
     val ctx = LocalContext.current
 
@@ -87,6 +111,29 @@ fun HomeScreen(c: AppContainer) {
     }
 
     val all = c.rooms
+    val feeds = Feed.entries
+
+    // ---------------- Pager 与 c.feed 的双向同步 ----------------
+    val pager = rememberPagerState(
+        initialPage = feeds.indexOf(c.feed).coerceIn(0, feeds.lastIndex)
+    ) { feeds.size }
+
+    // 手指滑完 → 写回容器
+    LaunchedEffect(pager) {
+        snapshotFlow { pager.settledPage }.collect { i ->
+            feeds.getOrNull(i)?.let { if (c.feed != it) c.feed = it }
+        }
+    }
+    // 容器被别处改了 → 把 pager 滚过去
+    LaunchedEffect(c.feed) {
+        val i = feeds.indexOf(c.feed)
+        if (i >= 0 && pager.currentPage != i && pager.targetPage != i) {
+            pager.animateScrollToPage(i)
+        }
+    }
+
+    // 当前页（拖动中会跟着走，tab 高亮因此是跟手的）
+    val curFeed = feeds.getOrNull(pager.currentPage) ?: c.feed
 
     // 「附近」没有定位能力，降级成同城：取列表里出现最多的 city_show 当默认
     val topCity = remember(all) {
@@ -99,40 +146,46 @@ fun HomeScreen(c: AppContainer) {
     // 本地收藏 ∪ 服务端关注
     val followIds = remember(c.followedIds, c.serverFollowIds) { c.followedIds + c.serverFollowIds }
 
-    // 一级 tab 先把池子筛出来，后面的分类/搜索只在池子里做
-    val base = remember(all, c.feed, followIds, activeCity) {
-        when (c.feed) {
-            Feed.FOLLOW -> all.filter { it.id in followIds }
-            Feed.HOT -> all
-            Feed.RECOMMEND -> recommendOrder(all)
-            Feed.NEARBY ->
-                if (activeCity.isBlank()) emptyList() else all.filter { it.city == activeCity }
-        }
-    }
+    // 关键：把 cats 摊平成普通 map 当 remember 的 key —— 直接传 mutableStateMap 的话
+    // 改值不会让 remember 失效，分类筛选就不会重算。
+    val catMap = cats.toMap()
 
-    val catChips = remember(base) {
-        val counts = LinkedHashMap<String, Int>()
-        for (r in base) counts[r.cat] = (counts[r.cat] ?: 0) + 1
-        listOf("全部" to base.size) +
-            counts.entries.sortedByDescending { it.value }.map { it.key to it.value }
-    }
+    // 四页的列表一次性算好：既给每页用，也给顶部的「N 个直播间」用，
+    // 免得滑动过程中反复对 2000 间房做过滤。
+    val pool: Map<Feed, List<Room>> =
+        remember(all, followIds, activeCity, c.showAd, catMap, query, sortOnline) {
+            feeds.associateWith { f ->
+                // 一级先把池子筛出来
+                var a = when (f) {
+                    Feed.FOLLOW -> all.filter { it.id in followIds }
+                    Feed.HOT -> all
+                    Feed.RECOMMEND -> recommendOrder(all)
+                    Feed.NEARBY ->
+                        if (activeCity.isBlank()) emptyList() else all.filter { it.city == activeCity }
+                }
+                if (!c.showAd) a = a.filter { !it.ad }
+                // 二级分类只有「热门」页有：那 8 个（游戏/星秀/女神/颜值/交友/音乐/舞蹈…）
+                // 是热门入口独有的口径，推荐页是算法排出来的混合流，按它筛没有意义。
+                val cat = catMap[f] ?: "全部"
+                if (f == Feed.HOT && cat != "全部") {
+                    a = a.filter { it.cat == cat }
+                }
+                val q = query.trim()
+                if (q.isNotEmpty()) {
+                    a = a.filter {
+                        it.name.contains(q, ignoreCase = true) || it.id.toString().contains(q)
+                    }
+                }
+                // 推荐页的顺序是算出来的，别被排序按钮盖回去
+                if (f == Feed.RECOMMEND) a
+                else if (sortOnline) a.sortedByDescending { it.online } else a.sortedBy { it.name }
+            }
+        }
 
     val cityChips = remember(all) {
         val counts = LinkedHashMap<String, Int>()
         for (r in all) if (r.city.isNotBlank()) counts[r.city] = (counts[r.city] ?: 0) + 1
         counts.entries.sortedByDescending { it.value }.take(16).map { it.key to it.value }
-    }
-
-    val list = remember(base, cat, query, sortOnline, c.showAd, c.feed) {
-        var a = if (c.showAd) base else base.filter { !it.ad }
-        if (c.feed != Feed.NEARBY && cat != "全部") a = a.filter { it.cat == cat }
-        val q = query.trim()
-        if (q.isNotEmpty()) {
-            a = a.filter { it.name.contains(q, ignoreCase = true) || it.id.toString().contains(q) }
-        }
-        // 推荐页的顺序是算出来的，别被排序按钮盖回去
-        if (c.feed == Feed.RECOMMEND) a
-        else if (sortOnline) a.sortedByDescending { it.online } else a.sortedBy { it.name }
     }
 
     Column(
@@ -156,7 +209,7 @@ fun HomeScreen(c: AppContainer) {
                     color = MaterialTheme.colorScheme.onBackground
                 )
                 Text(
-                    subtitleOf(c, list.size),
+                    subtitleOf(c, pool[curFeed]?.size ?: 0),
                     fontSize = 11.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -185,10 +238,10 @@ fun HomeScreen(c: AppContainer) {
             }
         }
 
-        // 一级 tab：关注 / 推荐 / 热门 / 附近
-        FeedTabs(cur = c.feed, onSelect = {
-            c.feed = it
-            cat = "全部"
+        // 一级 tab：关注 / 推荐 / 热门 / 附近（点它 = 让 pager 滚过去，状态由 pager 回写）
+        FeedTabs(cur = curFeed, onSelect = { f ->
+            val i = feeds.indexOf(f)
+            if (i >= 0) scope.launch { pager.animateScrollToPage(i) }
         })
 
         if (searchOpen) {
@@ -206,66 +259,93 @@ fun HomeScreen(c: AppContainer) {
             )
         }
 
-        // 二级 chips：附近页是城市，其余是内容分类；关注页不需要
-        when {
-            c.feed == Feed.NEARBY -> ChipRow(
-                chips = cityChips,
-                selected = activeCity,
-                onSelect = {
+        HorizontalPager(
+            state = pager,
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth(),
+            // 一屏一页，不留边；横向翻页只吃「横向为主」的手势，
+            // 纵向滚动仍然归每页里的 staggered grid
+            beyondViewportPageCount = 1
+        ) { page ->
+            val f = feeds[page]
+            FeedPage(
+                c = c,
+                feed = f,
+                rooms = pool[f].orEmpty(),
+                cat = catMap[f] ?: "全部",
+                onCat = { cats[f] = it },
+                cityChips = cityChips,
+                activeCity = activeCity,
+                onCity = {
                     city = it
                     c.nearbyCity = it
-                }
-            )
-
-            c.feed != Feed.FOLLOW -> ChipRow(
-                chips = catChips,
-                selected = cat,
-                onSelect = { cat = it }
+                },
+                followIds = followIds,
+                sortOnline = sortOnline,
+                onToggleSort = { sortOnline = !sortOnline },
+                onOpen = { list, idx -> c.openPlayer(list, idx) }
             )
         }
+    }
+}
 
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 2.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            if (c.feed == Feed.RECOMMEND) {
-                Text(
-                    "人气分档 · 智能打散",
-                    fontSize = 12.sp,
-                    color = MaterialTheme.colorScheme.primary,
-                    fontWeight = FontWeight.Medium
-                )
-            } else {
-                Text(
-                    if (sortOnline) "按人气" else "按名字",
-                    fontSize = 12.sp,
-                    color = MaterialTheme.colorScheme.primary,
-                    fontWeight = FontWeight.Medium,
-                    modifier = Modifier.clickable { sortOnline = !sortOnline }
-                )
-            }
-            Spacer(Modifier.width(12.dp))
-            Text(
-                if (c.showAd) "含推广位" else "只看真人",
-                fontSize = 12.sp,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.clickable { c.showAd = !c.showAd }
-            )
-            Spacer(Modifier.weight(1f))
-            Text(
-                "${list.size} 间",
-                fontSize = 11.sp,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+/**
+ * 一个一级页：分类条 + 排序条 + 瀑布流。
+ *
+ * 单独抽出来是因为它要在 Pager 里被实例化 4 次（相邻页会预合成），
+ * 状态全部由外部传入，页面本身不持有跨页的选择。
+ */
+@Composable
+private fun FeedPage(
+    c: AppContainer,
+    feed: Feed,
+    rooms: List<Room>,
+    cat: String,
+    onCat: (String) -> Unit,
+    cityChips: List<Pair<String, Int>>,
+    activeCity: String,
+    onCity: (String) -> Unit,
+    followIds: Set<Long>,
+    sortOnline: Boolean,
+    onToggleSort: () -> Unit,
+    onOpen: (List<Room>, Int) -> Unit
+) {
+    val all = c.rooms
+
+    // 二级 chips：只有「热门」有内容分类（游戏/星秀/女神/颜值/交友/音乐/舞蹈… 共 8 个，
+    // 是热门入口独有的口径）；「附近」用城市；「推荐」是算法混合流，「关注」是收藏，都不带分类条。
+    val catChips = remember(feed, all) {
+        val counts = LinkedHashMap<String, Int>()
+        if (feed == Feed.HOT) {
+            for (r in all) counts[r.cat] = (counts[r.cat] ?: 0) + 1
         }
+        listOf("全部" to all.size) +
+            counts.entries.sortedByDescending { it.value }.map { it.key to it.value }
+    }
+
+    Column(Modifier.fillMaxSize()) {
+        when (feed) {
+            Feed.NEARBY -> ChipRow(chips = cityChips, selected = activeCity, onSelect = onCity)
+            Feed.HOT -> ChipRow(chips = catChips, selected = cat, onSelect = onCat)
+            else -> Unit
+        }
+
+        SortBar(
+            count = rooms.size,
+            recommend = feed == Feed.RECOMMEND,
+            sortOnline = sortOnline,
+            onToggleSort = onToggleSort,
+            showAd = c.showAd,
+            onToggleAd = { c.showAd = !c.showAd }
+        )
 
         Box(Modifier.weight(1f).fillMaxWidth()) {
-            val offAir = followIds.size - base.size
+            val offAir = followIds.size - rooms.size
             when {
-                list.isEmpty() && (c.loading || !c.loadedOnce) -> LoadingBox()
-                list.isEmpty() && c.feed == Feed.FOLLOW && followIds.isEmpty() ->
+                rooms.isEmpty() && (c.loading || !c.loadedOnce) -> LoadingBox()
+
+                rooms.isEmpty() && feed == Feed.FOLLOW && followIds.isEmpty() ->
                     HintBox(
                         title = "还没关注任何主播",
                         desc = "在卡片右上角点星标，或在直播间里点右侧的星；关注过的人会汇总到这里",
@@ -273,14 +353,14 @@ fun HomeScreen(c: AppContainer) {
                         onAction = { c.feed = Feed.RECOMMEND }
                     )
 
-                list.isEmpty() && c.feed == Feed.FOLLOW -> HintBox(
+                rooms.isEmpty() && feed == Feed.FOLLOW -> HintBox(
                     title = "关注的主播都没开播",
                     desc = "共 ${followIds.size} 位关注，当前一个都不在播",
                     action = if (offAir > 0) "去关注页看全部" else null,
                     onAction = { c.tab = Tab.FOLLOW }
                 )
 
-                list.isEmpty() && c.feed == Feed.NEARBY -> HintBox(
+                rooms.isEmpty() && feed == Feed.NEARBY -> HintBox(
                     title = "没取到同城房间",
                     desc = if (activeCity.isBlank()) "房间里没有城市信息，换「推荐」看看"
                     else "「$activeCity」眼下没有在播的房间，换个城市试试",
@@ -288,7 +368,7 @@ fun HomeScreen(c: AppContainer) {
                     onAction = { c.feed = Feed.RECOMMEND }
                 )
 
-                list.isEmpty() -> EmptyBox(c)
+                rooms.isEmpty() -> EmptyBox(c)
 
                 else -> LazyVerticalStaggeredGrid(
                     columns = StaggeredGridCells.Fixed(2),
@@ -296,14 +376,14 @@ fun HomeScreen(c: AppContainer) {
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
                     verticalItemSpacing = 10.dp
                 ) {
-                    items(list, key = { it.id }) { room ->
+                    items(rooms, key = { it.id }) { room ->
                         RoomCard(
                             c = c,
                             room = room,
                             followed = room.id in followIds,
                             onClick = {
-                                val index = list.indexOfFirst { it.id == room.id }
-                                c.openPlayer(list, index)
+                                val index = rooms.indexOfFirst { it.id == room.id }
+                                onOpen(rooms, index)
                             }
                         )
                     }
@@ -348,6 +428,54 @@ private fun FeedTabs(cur: Feed, onSelect: (Feed) -> Unit) {
                 )
             }
         }
+    }
+}
+
+/** 排序/过滤提示条：人气、是否含推广位、当前页有几间 */
+@Composable
+private fun SortBar(
+    count: Int,
+    recommend: Boolean,
+    sortOnline: Boolean,
+    onToggleSort: () -> Unit,
+    showAd: Boolean,
+    onToggleAd: () -> Unit
+) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 2.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        if (recommend) {
+            Text(
+                "人气分档 · 智能打散",
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.primary,
+                fontWeight = FontWeight.Medium
+            )
+        } else {
+            Text(
+                if (sortOnline) "按人气" else "按名字",
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.primary,
+                fontWeight = FontWeight.Medium,
+                modifier = Modifier.clickable(onClick = onToggleSort)
+            )
+        }
+        Spacer(Modifier.width(12.dp))
+        Text(
+            if (showAd) "含推广位" else "只看真人",
+            fontSize = 12.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.clickable(onClick = onToggleAd)
+        )
+        Spacer(Modifier.weight(1f))
+        Text(
+            "$count 间",
+            fontSize = 11.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
     }
 }
 
@@ -501,6 +629,15 @@ private fun RoomCard(c: AppContainer, room: Room, followed: Boolean, onClick: ()
             .background(avBrush(room.id))
             .clickable(onClick = onClick)
     ) {
+        // 首字永远垫在最底下：图床（CloudFront）在部分网络下整段不可达，
+        // AsyncImage 加载失败时是**透明的**，不垫底就只剩一片渐变，看着像没内容。
+        Text(
+            initialOf(room.name),
+            modifier = Modifier.align(Alignment.Center),
+            fontSize = 46.sp,
+            fontWeight = FontWeight.Black,
+            color = Color.White.copy(alpha = 0.9f)
+        )
         if (room.avatar.isNotEmpty()) {
             AsyncImage(
                 model = ImageRequest.Builder(LocalContext.current)
@@ -510,14 +647,6 @@ private fun RoomCard(c: AppContainer, room: Room, followed: Boolean, onClick: ()
                 contentDescription = null,
                 contentScale = ContentScale.Crop,
                 modifier = Modifier.fillMaxSize()
-            )
-        } else {
-            Text(
-                initialOf(room.name),
-                modifier = Modifier.align(Alignment.Center),
-                fontSize = 46.sp,
-                fontWeight = FontWeight.Black,
-                color = Color.White.copy(alpha = 0.9f)
             )
         }
 
