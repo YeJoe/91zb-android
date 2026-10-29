@@ -1,6 +1,8 @@
 package com.duocai.live.tunnel
 
 import android.content.Context
+import android.os.Build
+import android.os.Process
 import dalvik.system.DexClassLoader
 import java.io.File
 
@@ -27,25 +29,38 @@ import java.io.File
  * `ServerToLocal` 就是我们要的东西：给一个 vhost 名（`kiwi_live`），
  * 它把本地 IP 和端口写回两个 StringBuffer，native 返回形如 `"0|127.0.0.1|41305"`。
  *
- * ## 为什么不需要源 App 装着
+ * ## 加载顺序：**绝对不能先 System.load**
  *
- * - `libkiwi.so` 我们从源 APK 里提出来打进自己 APK 的 `jniLibs`，**不依赖源 App**；
- * - `com.kiwi.sdk.*` 从 `classes3.dex` 整体打包成 `assets/kiwi-sdk.jar`，运行时用
- *   [DexClassLoader] 加载（dex 里其余几千个类不会被初始化，只是躺在那里）；
- * - `ContextHelp.getContext()` 是用反射去 `ActivityThread.currentActivityThread()
- *   .getApplication()` 拿进程级 Context —— 在我们进程里拿到的就是我们自己的，
- *   所以初始化前先把 `CONTEXT_INSTANCE` 反射设成我们的 Application，省掉那次反射。
+ * 这是踩过的一次真实闪退（整进程 SIGABRT，`try/catch` 拦不住）：
  *
- * 换句话说：源 App 从此只剩"SDK 提供方"这一个身份，不用启动、不占内存、不用常驻。
+ * ```
+ * JNI DETECTED ERROR IN APPLICATION: JNI NewGlobalRef called with pending exception
+ *   java.lang.ClassNotFoundException: Didn't find class "com.kiwi.sdk.Kiwi"
+ *   on path: DexPathList[[zip file ".../base.apk"], ...]
+ *     at Runtime.nativeLoad(String, ClassLoader, Class)
+ *     at System.load(String)
+ *     at KiwiSdk.ensureLoaded(KiwiSdk.kt:107)
+ * ```
  *
- * ## 已知坑
+ * 原因是 `System.load(path)` 走的是 `Runtime.load0(null, path)`，传给 `JNI_OnLoad`
+ * 的 ClassLoader 是**系统 ClassLoader**（只能看到 base.apk）。而 `libkiwi.so` 的
+ * `JNI_OnLoad` 里会 `FindClass("com.kiwi.sdk.Kiwi")` 做动态注册 —— 找不到就抛异常，
+ * 它没清 pending exception 就接着调 `NewGlobalRef`，ART 直接 abort 掉整个进程。
  *
- * 1. `System.loadLibrary("kiwi")` 在 DexClassLoader 加载的类里调用时，
- *    要靠构造 DexClassLoader 时传的 `librarySearchPath`（这里给 `nativeLibraryDir`）才找得到；
- *    所以加载顺序必须是"先 [System.loadLibrary]，再 Class.forName 触发它的 <clinit>"。
- * 2. `Init` 是**同步**的，会做网络握手，必须放 IO 线程，主线程调用会 ANR。
- * 3. `Init` 成功后会把 `init_appkey` 静态字段清空，所以同一个进程里换 appkey 重试
- *    需要走 `init_code != 0` 的那条分支 —— 换句话说**只有失败才能重试**，这是 SDK 的设计。
+ * 正确姿势：**让 `Kiwi` 自己的 `<clinit>` 去 `System.loadLibrary("kiwi")`**。
+ * 此时 `nativeLoad` 收到的 ClassLoader 是我们构造的 [DexClassLoader]，
+ * `JNI_OnLoad` 里的 `FindClass` 才能找到同一份 jar 里的类。
+ *
+ * 换句话说：不要自己加载 so，只要保证 [DexClassLoader] 的 `librarySearchPath`
+ * 指向 so 所在目录，再 `Class.forName("com.kiwi.sdk.Kiwi", true, loader)` 就行。
+ *
+ * ## 其它已知坑
+ *
+ * 1. **只有 arm64 版 so**。x86/x86_64 设备（绝大多数模拟器）加载不了，
+ *    必须在 `dlopen` 之前就用 [abiSupported] 挡掉，否则一样是 abort。
+ * 2. **targetSdk 34+ 不许从可写文件加载代码**。解压出来的 jar/so 必须置只读，
+ *    否则 `DexClassLoader` / `dlopen` 直接抛 `SecurityException`。
+ * 3. `Init` 是**同步**的，会做网络握手，必须放 IO 线程，主线程调用会 ANR。
  */
 object KiwiSdk {
 
@@ -75,10 +90,31 @@ object KiwiSdk {
     @Volatile var localCode: Int = Int.MIN_VALUE
         private set
 
+    /**
+     * 加载已经走过一遍且失败。
+     *
+     * 不再重试的理由：`Class.forName` 一旦在 `<clinit>` 里失败，这个类在当前进程里
+     * 会被永久标记成 Erroneous，重试必然还是同一个错；而真正危险的路径（JNI 层）
+     * 失败时进程已经没了，重试也没有意义。
+     */
+    @Volatile private var hardFailed = false
+
     private var kiwi: Class<*>? = null
     private var loader: ClassLoader? = null
 
     val usable: Boolean get() = initCode == 0 && port > 0
+
+    /** 本机能不能跑 arm64 的 `libkiwi.so`（模拟器基本都不能） */
+    fun abiSupported(): Boolean {
+        val abis = Build.SUPPORTED_ABIS ?: return false
+        return abis.contains("arm64-v8a") && Process.is64Bit()
+    }
+
+    /** 给设置页用的一句话解释，说明为什么用不了 */
+    fun abiReason(): String =
+        "libkiwi.so 只有 arm64 版，本机 ABI 是 " +
+            (Build.SUPPORTED_ABIS?.joinToString("/") ?: "?") +
+            "，内置隧道不可用"
 
     /**
      * 加载 so + dex，并把 Context 注入 SDK。
@@ -89,65 +125,67 @@ object KiwiSdk {
     @Synchronized
     fun ensureLoaded(ctx: Context): Boolean {
         if (dexLoaded) return true
+        if (hardFailed) return false
         lastError = ""
 
-        // ---- 1. so ----
-        if (!soLoaded) {
-            stage = "准备 libkiwi.so"
-            val soFile = try {
-                prepareLib(ctx)
-            } catch (t: Throwable) {
-                stage = "so 解包失败"
-                lastError = "解包 libkiwi.so 失败：${t.javaClass.simpleName} ${t.message}"
-                return false
-            }
-            val arch = System.getProperty("os.arch") ?: "?"
-            // 只有 arm64 版 so。x86/x86_64 设备（多数模拟器）十有八九加载不了，
-            // 但还是试一把 —— 开了 ARM 兼容/转译的模拟器有时能过。失败就降级。
-            val ok = runCatching { System.load(soFile.absolutePath); true }.getOrElse { e ->
-                lastError = "System.load 失败（本机 $arch，so 只有 arm64 版）：" +
-                    "${e.javaClass.simpleName} ${e.message}"
-                false
-            }
-            if (!ok) {
-                stage = "so 加载失败"
-                return false
-            }
-            soLoaded = true
+        // ---- 0. 架构门禁：必须在任何 dlopen 之前 ----
+        if (!abiSupported()) {
+            stage = "本机不支持"
+            lastError = abiReason()
+            hardFailed = true
+            return false
         }
 
-        // ---- 2. dex ----
+        // ---- 1. 解包（必须置只读，见类注释「已知坑 2」）----
+        stage = "解包 libkiwi.so"
+        val soFile = try {
+            prepareLib(ctx)
+        } catch (t: Throwable) {
+            stage = "so 解包失败"
+            lastError = "解包 libkiwi.so 失败：${t.javaClass.simpleName} ${t.message}"
+            hardFailed = true
+            return false
+        }
+
         stage = "解包 kiwi-sdk.jar"
         val jar = try {
             prepareJar(ctx)
         } catch (t: Throwable) {
-            stage = "解包失败"
-            lastError = "解包失败：${t.javaClass.simpleName} ${t.message}"
+            stage = "jar 解包失败"
+            lastError = "解包 kiwi-sdk.jar 失败：${t.javaClass.simpleName} ${t.message}"
+            hardFailed = true
             return false
         }
 
+        // ---- 2. 先建 ClassLoader，别自己 load so ----
+        stage = "建 DexClassLoader"
+        val opt = File(ctx.codeCacheDir, "kiwi-opt").apply { mkdirs() }
+        val l = DexClassLoader(
+            jar.absolutePath,
+            opt.absolutePath,
+            // librarySearchPath：Kiwi 的 <clinit> 里那句 System.loadLibrary("kiwi")
+            // 就靠这个目录找 libkiwi.so
+            soFile.parentFile?.absolutePath,
+            javaClass.classLoader
+        )
+        loader = l
+
+        // ---- 3. 先把 Context 塞进去，再触发 so 加载 ----
+        bindContext(ctx)
+
+        // ---- 4. 触发 <clinit>：它会 loadLibrary("kiwi")，JNI_OnLoad 此时能 FindClass ----
         stage = "加载 com.kiwi.sdk"
         return try {
-            val opt = File(ctx.codeCacheDir, "kiwi-opt").apply { mkdirs() }
-            val l = DexClassLoader(
-                jar.absolutePath,
-                opt.absolutePath,
-                // librarySearchPath 必须指向 so 所在目录：
-                // Kiwi 的 <clinit> 里还有一句 System.loadLibrary("kiwi")，
-                // 它要靠这个路径才 findLibrary 得到东西
-                File(ctx.filesDir, LIB_DIR).absolutePath,
-                javaClass.classLoader
-            )
-            val k = Class.forName("com.kiwi.sdk.Kiwi", true, l)
-            loader = l
-            kiwi = k
+            kiwi = Class.forName("com.kiwi.sdk.Kiwi", true, l)
+            soLoaded = true
             dexLoaded = true
             stage = "SDK 就绪"
-            bindContext(ctx)
             true
         } catch (t: Throwable) {
-            stage = "dex 加载失败"
-            lastError = "Class.forName 失败：${t.javaClass.simpleName} ${t.message}"
+            val cause = (t as? ExceptionInInitializerError)?.cause ?: t
+            stage = "SDK 加载失败"
+            lastError = "加载 com.kiwi.sdk.Kiwi 失败：${cause.javaClass.simpleName} ${cause.message}"
+            hardFailed = true
             false
         }
     }
@@ -158,6 +196,9 @@ object KiwiSdk {
      * 不换也能跑：`ContextHelp.getContext()` 会反射走
      * `ActivityThread.currentActivityThread().getApplication()`。
      * 但那是 hidden API，Android 9+ 有灰名单限制，直接塞更稳。
+     *
+     * 放在触发 `<clinit>` 之前，是因为加固库的 `JNI_OnLoad` 里也可能要取 Context，
+     * 那时还没有 Java 层入口可以补救。
      */
     fun bindContext(ctx: Context) {
         val l = loader ?: return
@@ -227,7 +268,12 @@ object KiwiSdk {
         }
     }
 
-    /** 重置失败态，让下一次 [init] 重新走一遍（对应 SDK 的 `init_code != 0` 重试分支） */
+    /**
+     * 重置失败态，让下一次 [init] 重新走一遍。
+     *
+     * 注意不动 [hardFailed]：类加载层面的失败在这个进程里不可恢复，
+     * 只有 `Init` 返回码 / 端口这种业务态才值得重试。
+     */
     fun reset() {
         initCode = Int.MIN_VALUE
         localCode = Int.MIN_VALUE
@@ -252,8 +298,7 @@ object KiwiSdk {
      * 为什么不放 `jniLibs`：放 jniLibs 会让 APK 声明自己只有 arm64-v8a，
      * 于是 x86_64 的模拟器连装都装不上（`INSTALL_FAILED_NO_MATCHING_ABIS`）。
      * 放 assets + 运行时解压，APK 就没有 native 代码标记，任何设备都能装；
-     * arm64 设备解压后 `System.load` 即可用，x86 设备在调用前就被
-     * [ensureLoaded] 里的架构检查挡掉，安静降级到"借源 App 端口"。
+     * arm64 设备解压后可用，x86 设备在 [ensureLoaded] 的架构门禁就被挡掉。
      */
     private fun prepareLib(ctx: Context): File {
         val dir = File(ctx.filesDir, LIB_DIR).apply { mkdirs() }
@@ -263,6 +308,8 @@ object KiwiSdk {
         val fresh = so.exists() && so.length() > 0L && stamp.exists() &&
             stamp.readText().trim() == code
         if (!fresh) {
+            // 上一版可能已经被设成只读，覆盖前先放开
+            so.setWritable(true, true)
             ctx.assets.open(ASSET_SO).use { input ->
                 so.outputStream().use { out -> input.copyTo(out, 64 * 1024) }
             }
@@ -270,6 +317,8 @@ object KiwiSdk {
         }
         so.setReadable(true, false)
         so.setExecutable(true, false)
+        // targetSdk 34+：可写位置的代码文件不许加载，必须只读
+        so.setWritable(false, false)
         return so
     }
 
@@ -280,11 +329,13 @@ object KiwiSdk {
         val fresh = jar.exists() && jar.length() > 0 && stamp.exists() &&
             stamp.readText().trim() == code
         if (!fresh) {
+            jar.setWritable(true, true)
             ctx.assets.open(ASSET_JAR).use { input ->
                 jar.outputStream().use { out -> input.copyTo(out, 64 * 1024) }
             }
             stamp.writeText(code)
         }
+        jar.setReadOnly()
         return jar
     }
 

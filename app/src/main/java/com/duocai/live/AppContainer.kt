@@ -252,7 +252,12 @@ class AppContainer(context: Context) {
 
         // 内置隧道单独起一条协程：握手要几秒，不能挡住列表首屏。
         // 它先在后台跑，成功后立刻把手上的端口交给 LiveRepo 并强制刷一轮。
-        if (kiwiAuto && prefs.kiwiAppKey.isNotBlank()) {
+        //
+        // 架构门禁放在这里而不是只放 Tunnel 里：x86 设备上一旦进到 dlopen，
+        // 加固库的 JNI_OnLoad 会 abort 整个进程，连 catch 的机会都没有。
+        if (kiwiAuto && prefs.kiwiAppKey.isNotBlank() &&
+            com.duocai.live.tunnel.KiwiSdk.abiSupported()
+        ) {
             scope.launch {
                 if (tunnel.start()) {
                     live.preferPort = tunnel.port

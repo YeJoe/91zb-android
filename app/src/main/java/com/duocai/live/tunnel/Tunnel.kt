@@ -57,6 +57,15 @@ class Tunnel(private val context: Context, private val prefs: Prefs) {
     suspend fun start(appKey: String = prefs.kiwiAppKey): Boolean {
         if (ready) return true
         if (starting) return false
+
+        // 架构门禁必须放在最前面：x86 设备上 dlopen 一个 arm64 库，
+        // 加固库的 JNI_OnLoad 会在 pending exception 状态下继续跑，直接 abort 整个进程，
+        // Kotlin 的 try/catch 完全拦不住。所以宁可提前拒绝。
+        if (!KiwiSdk.abiSupported()) {
+            fail(KiwiSdk.abiReason())
+            return false
+        }
+
         starting = true
         state = State.STARTING
         message = "加载 SDK…"
@@ -123,6 +132,9 @@ class Tunnel(private val context: Context, private val prefs: Prefs) {
      * 所以这个循环天然只能"失败就试下一个"，一旦某个返回 0 就停。
      */
     suspend fun probeAll(): String = withContext(Dispatchers.IO) {
+        if (!KiwiSdk.abiSupported()) {
+            return@withContext KiwiSdk.abiReason()
+        }
         if (!KiwiSdk.ensureLoaded(context)) {
             return@withContext "SDK 加载失败：${KiwiSdk.lastError}"
         }
