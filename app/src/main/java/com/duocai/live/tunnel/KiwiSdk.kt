@@ -295,8 +295,10 @@ object KiwiSdk {
      * 字节数也拼进去，改一下 so/dex 体积就会自然失效。
      */
     private fun versionStamp(ctx: Context): String {
+        // 不用 longVersionCode：那是 API 28 才有的，minSdk 是 24
         val vc = runCatching {
-            ctx.packageManager.getPackageInfo(ctx.packageName, 0).longVersionCode
+            @Suppress("DEPRECATION")
+            ctx.packageManager.getPackageInfo(ctx.packageName, 0).versionCode.toLong()
         }.getOrDefault(0L)
         val soLen = runCatching {
             ctx.assets.openFd(ASSET_SO).use { it.length }

@@ -60,8 +60,8 @@ class Tunnel(private val context: Context, private val prefs: Prefs) {
         starting = true
         state = State.STARTING
         message = "加载 SDK…"
-        try {
-            return withContext(Dispatchers.IO) {
+        return try {
+            withContext(Dispatchers.IO) {
                 if (!KiwiSdk.ensureLoaded(context)) {
                     fail("SDK 加载失败：${KiwiSdk.lastError}")
                     return@withContext false
