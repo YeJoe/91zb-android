@@ -56,15 +56,12 @@ android {
         }
     }
 
-    // 只出 arm64-v8a 单包：现代真机全覆盖，体积最小；不再出 universal / v7a
-    splits {
-        abi {
-            isEnable = true
-            reset()
-            include("arm64-v8a")
-            isUniversalApk = false
-        }
-    }
+    // 不再按 abi 拆包。
+    //
+    // 之前拆成 arm64-v8a 单包，是因为 APK 里本来就没有 native 代码，拆了也无所谓；
+    // 现在 libkiwi.so 改成从 assets 运行时解压（见 KiwiSdk.prepareLib），
+    // APK 依然不含 native 代码，再拆 abi 只会产生一个多余的 "-arm64-v8a" 后缀，
+    // 反而让 x86_64 模拟器装不上，所以整块去掉。
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17

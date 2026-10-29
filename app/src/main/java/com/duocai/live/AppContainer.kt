@@ -59,6 +59,14 @@ class AppContainer(context: Context) {
     val danmaku = DanmakuStore(this.context, prefs)
     val player = PlayerHolder(this.context)
 
+    /**
+     * 内置隧道：在自家进程里跑源 App 的云层 SDK（libkiwi.so + com.kiwi.sdk.*）。
+     *
+     * 通了就完全不需要源 App 常驻；没通（appKey 失效 / so 加载失败 / 设备 abi 不支持）
+     * 会自动退回老行为 —— 扫本机监听端口去"借"源 App 起好的隧道。
+     */
+    val tunnel = com.duocai.live.tunnel.Tunnel(this.context, prefs)
+
     /** 进程级作用域，承载自动刷新循环（App 活着就一直在） */
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     @Volatile private var refreshStarted = false
@@ -200,6 +208,15 @@ class AppContainer(context: Context) {
             prefs.liveMode = v
         }
 
+    /** 内置隧道：启动时自动拉起（开关同样要可观察，否则点了不重绘） */
+    private var kiwiAutoState by mutableStateOf(prefs.kiwiAuto)
+    var kiwiAuto: Boolean
+        get() = kiwiAutoState
+        set(v) {
+            kiwiAutoState = v
+            prefs.kiwiAuto = v
+        }
+
     fun openPlayer(list: List<Room>, index: Int) {
         if (list.isEmpty()) return
         playlist = list
@@ -232,6 +249,20 @@ class AppContainer(context: Context) {
         loadedOnce = true
         followedIds = follows.ids()
         (live.loadCache() ?: repo.loadCache())?.let { applyData(it, fromCache = true) }
+
+        // 内置隧道单独起一条协程：握手要几秒，不能挡住列表首屏。
+        // 它先在后台跑，成功后立刻把手上的端口交给 LiveRepo 并强制刷一轮。
+        if (kiwiAuto && prefs.kiwiAppKey.isNotBlank()) {
+            scope.launch {
+                if (tunnel.start()) {
+                    live.preferPort = tunnel.port
+                    tunnelPort = tunnel.port
+                    tunnelOk = true
+                    reload(force = true)
+                }
+            }
+        }
+
         reload()
         startAutoRefresh()
     }
@@ -273,6 +304,8 @@ class AppContainer(context: Context) {
             loading = true
             error = null
 
+            // 内置隧道就绪时优先用它给的端口，否则 LiveRepo 还是自己去扫监听端口
+            live.preferPort = tunnel.port
             val result = if (liveMode) live.fetch() else repo.fetch()
 
             loading = false

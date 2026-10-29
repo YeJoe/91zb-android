@@ -149,6 +149,20 @@ class Prefs(context: Context) {
         get() = sp.getString(K_FOLLOW, "") ?: ""
         set(v) = sp.edit().putString(K_FOLLOW, v).apply()
 
+    // ---- 自研隧道（内置云层 SDK，不再依赖源 App 常驻）----
+    /**
+     * 云层 SDK 的 appKey。SDK 的 `Init(String appkey)` 只认这一个参数，
+     * 没有 token 一类的第二凭证。留空 = 不启用内置隧道，退回"借源 App 端口"。
+     */
+    var kiwiAppKey: String
+        get() = sp.getString(K_KIWI_KEY, Defaults.KIWI_APP_KEY) ?: Defaults.KIWI_APP_KEY
+        set(v) = sp.edit().putString(K_KIWI_KEY, v.trim()).apply()
+
+    /** 启动时自动拉起内置隧道 */
+    var kiwiAuto: Boolean
+        get() = sp.getBoolean(K_KIWI_AUTO, true)
+        set(v) = sp.edit().putBoolean(K_KIWI_AUTO, v).apply()
+
     // ---- 首次引导 ----
     var sawChatSwipeHint: Boolean
         get() = sp.getBoolean(K_SAW_SWIPE, false)
@@ -181,6 +195,8 @@ class Prefs(context: Context) {
         const val K_SHOW_AD = "show_ad"
         const val K_NEARBY_CITY = "nearby_city"
         const val K_FOLLOW = "follow_json"
+        const val K_KIWI_KEY = "kiwi_app_key"
+        const val K_KIWI_AUTO = "kiwi_auto"
         const val K_SAW_SWIPE = "saw_swipe_hint"
         const val K_SAW_PLAYER_SWIPE = "saw_player_swipe_hint"
     }
@@ -209,6 +225,24 @@ class Prefs(context: Context) {
          * 与隧道、token 都无关，公网直连 200。
          */
         const val IMG_BASE = "https://drdue73ptt7o.cloudfront.net/images/480"
+
+        /**
+         * 云层 SDK 的 appKey。
+         *
+         * 来源：blutter 从 `libapp.so` 的对象池里 dump 出来的 `main.dart` 常量区，
+         * 与 `"kiwi_"` 前缀、`http://kiwi_live/tunnel/a033b072?z=1&nobase64=1` 紧挨着：
+         *
+         * ```
+         * [pp+0x2830] String: "kiwi_"
+         * [pp+0x2838] String: "dNLmP4x5bcvPKZess6gqv6MzS+2bg…"      // 长 Base64
+         * [pp+0x2840] String: "cZ1dAC6cE5wlH9E0mg4fly6B5ASMXBU4"     // ← 32 位，就是它
+         * [pp+0x2848] String: "http://kiwi_live/tunnel/a033b072?z=1&nobase64=1"
+         * [pp+0x2850] String: "OIWKj3hGjOKA6pU1lMcZvC0…"             // 长 Base64
+         * ```
+         *
+         * 若它失效（SDK 初始化返回非 0），设置页可以直接改，不用重新打包。
+         */
+        const val KIWI_APP_KEY = "cZ1dAC6cE5wlH9E0mg4fly6B5ASMXBU4"
     }
 }
 

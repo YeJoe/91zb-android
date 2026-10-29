@@ -55,6 +55,15 @@ class LiveRepo(private val context: Context, private val prefs: Prefs) {
         private set
 
     /**
+     * 外部指定优先尝试的端口。
+     *
+     * 内置隧道（[com.duocai.live.tunnel.KiwiSdk]）起来后由 [com.duocai.live.AppContainer]
+     * 写进来，那样就不用再去 `/proc/net/tcp` 里瞎扫 —— 扫到的端口里只有个别挂业务 vhost，
+     * 逐个试既慢又容易误判。0 = 没指定，走老逻辑。
+     */
+    @Volatile var preferPort: Int = 0
+
+    /**
      * 源 App 账号关注的房间（`podcast_id` == 房间号）与昵称。
      * 由 [fetch] 每次刷新时更新，供「关注」页直接读。
      */
@@ -104,6 +113,8 @@ class LiveRepo(private val context: Context, private val prefs: Prefs) {
 
         val preferred = prefs.tunnelPort
         val candidates = buildList {
+            // 内置隧道指定的端口排第一：它一定挂业务 vhost，命中即用
+            if (preferPort > 0) add(preferPort)
             if (preferred > 0) add(preferred)
             addAll(listenPorts())
         }.distinct()

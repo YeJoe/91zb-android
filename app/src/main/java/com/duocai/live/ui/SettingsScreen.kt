@@ -25,6 +25,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -99,6 +100,9 @@ fun SettingsScreen(c: AppContainer) {
     var jwe by remember { mutableStateOf(prefs.jwe) }
     var port by remember { mutableStateOf(if (prefs.tunnelPort > 0) prefs.tunnelPort.toString() else "") }
 
+    // 内置隧道
+    var appKey by remember { mutableStateOf(prefs.kiwiAppKey) }
+
     Column(
         Modifier
             .fillMaxSize()
@@ -114,8 +118,113 @@ fun SettingsScreen(c: AppContainer) {
             modifier = Modifier.padding(start = 20.dp, top = 14.dp, bottom = 4.dp)
         )
 
+        // ---------- 内置隧道 ----------
+        Section("内置隧道（不再需要源 App）") {
+            val t = c.tunnel
+            val dot = when (t.state) {
+                com.duocai.live.tunnel.Tunnel.State.READY -> Color(0xFF35D07F)
+                com.duocai.live.tunnel.Tunnel.State.STARTING -> Color(0xFFFFC24B)
+                com.duocai.live.tunnel.Tunnel.State.FAILED -> Color(0xFFFF5C7A)
+                else -> Color(0xFF9AA0A6)
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    Modifier
+                        .size(7.dp)
+                        .clip(CircleShape)
+                        .background(dot)
+                )
+                Spacer(Modifier.width(7.dp))
+                Text(
+                    t.message,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = MaterialTheme.colorScheme.onBackground
+                )
+            }
+            if (t.initCode != Int.MIN_VALUE) {
+                InfoLine("SDK Init 返回码 ${t.initCode}" + if (t.initCode == 0) "（0 = 握手成功）" else "")
+            }
+            Spacer(Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(
+                    onClick = {
+                        scope.launch {
+                            val ok = c.tunnel.start(appKey)
+                            if (ok) {
+                                c.reload(force = true)
+                                toast = "内置隧道就绪 127.0.0.1:${c.tunnel.port}"
+                            } else {
+                                toast = c.tunnel.message
+                            }
+                        }
+                    },
+                    shape = RoundedCornerShape(12.dp),
+                    enabled = t.state != com.duocai.live.tunnel.Tunnel.State.STARTING
+                ) {
+                    Text(
+                        when (t.state) {
+                            com.duocai.live.tunnel.Tunnel.State.STARTING -> "握手…"
+                            com.duocai.live.tunnel.Tunnel.State.READY -> "已就绪"
+                            else -> "启动内置隧道"
+                        }
+                    )
+                }
+                OutlinedButton(
+                    onClick = {
+                        scope.launch {
+                            toast = if (c.tunnel.restart(appKey)) {
+                                c.reload(force = true)
+                                "已重启，端口 ${c.tunnel.port}"
+                            } else c.tunnel.message
+                        }
+                    },
+                    shape = RoundedCornerShape(12.dp),
+                    enabled = t.state != com.duocai.live.tunnel.Tunnel.State.STARTING
+                ) { Text("重来") }
+                OutlinedButton(
+                    onClick = {
+                        scope.launch {
+                            toast = "试 key 中…（每个都要握手，约 5 秒）"
+                            val r = c.tunnel.probeAll()
+                            toast = r
+                            if (c.tunnel.ready) c.reload(force = true)
+                        }
+                    },
+                    shape = RoundedCornerShape(12.dp),
+                    enabled = t.state != com.duocai.live.tunnel.Tunnel.State.STARTING
+                ) { Text("试候选 key") }
+            }
+            Spacer(Modifier.height(8.dp))
+            OutlinedTextField(
+                value = appKey,
+                onValueChange = { appKey = it; prefs.kiwiAppKey = it },
+                label = { Text("云层 SDK appKey") },
+                placeholder = { Text("32 位，SDK 的 Init() 只认这一个参数") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                shape = RoundedCornerShape(12.dp)
+            )
+            InfoLine(
+                "这个 key 是从 libapp.so 的对象池里挖出来的（和 \"kiwi_\" 前缀、" +
+                    "http://kiwi_live/tunnel/… 紧挨着）。留空则完全不启用内置隧道。"
+            )
+            Spacer(Modifier.height(6.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("启动时自动拉起", fontSize = 13.sp, modifier = Modifier.weight(1f))
+                Switch(
+                    checked = c.kiwiAuto,
+                    onCheckedChange = { c.kiwiAuto = it }
+                )
+            }
+            InfoLine(
+                "通了之后源 App 就可以卸载：libkiwi.so 和 com.kiwi.sdk.* 都已经打进本 APK。" +
+                    "没通会自动退回下面的「借源 App 端口」。"
+            )
+        }
+
         // ---------- 直播源 ----------
-        Section("直播源（源 App 必须同机后台运行）") {
+        Section("直播源（内置隧道不可用时的兜底：源 App 必须同机后台运行）") {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Box(
                     Modifier

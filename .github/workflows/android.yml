@@ -101,7 +101,9 @@ jobs:
                 echo "| \`$(basename "$f")\` | $(du -h "$f" | cut -f1) |"
               done
               echo ""
-              echo "> 只出 **arm64-v8a** 单包，直接装即可（Android 7+ 真机通用）。"
+              echo "> 不再拆 abi：APK 本身不含 native 代码，libkiwi.so 是运行时从 assets 解压的，"
+              echo "> 所以同一个包既能装 x86_64 模拟器（自动降级为「借源 App 端口」），"
+              echo "> 也能在 arm64 真机上跑内置隧道。"
             else
               echo "没有产出 APK，构建失败 —— 看上面的注解或 artifact 里的 build.log。"
             fi
