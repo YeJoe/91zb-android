@@ -212,8 +212,8 @@ fun SettingsScreen(c: AppContainer) {
                 shape = RoundedCornerShape(12.dp)
             )
             InfoLine(
-                "这个 key 是从 libapp.so 的对象池里挖出来的（和 \"kiwi_\" 前缀、" +
-                    "http://kiwi_live/tunnel/… 紧挨着）。留空则完全不启用内置隧道。"
+                "这个 key 是从源 App 运行内存里 dump 出来的真值（1432 字符 Base64，AES 密文，不是口令）。" +
+                    "留空则完全不启用内置隧道。"
             )
             Spacer(Modifier.height(6.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {

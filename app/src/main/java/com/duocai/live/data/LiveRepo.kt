@@ -106,7 +106,11 @@ class LiveRepo(private val context: Context, private val prefs: Prefs) {
      */
     private fun probePort(force: Boolean = false, sample: Long? = null): Int {
         val now = System.currentTimeMillis()
-        if (!force && cachedPort != 0 && now - portCheckedAt < 60_000) return cachedPort
+        // preferPort 是**权威**：内置隧道起来后它指向我们进程里那个 listener，
+        // 而缓存里可能还是上一次扫到的源 App 端口（那个会随源 App 退出而失效）。
+        // 所以只要两者不一致，缓存立刻作废，重新探。
+        val stale = preferPort > 0 && cachedPort != 0 && cachedPort != preferPort
+        if (!force && !stale && cachedPort != 0 && now - portCheckedAt < 60_000) return cachedPort
 
         val test = sample ?: idPool().firstOrNull()
         if (test == null) throw IOException("房间号池是空的")
