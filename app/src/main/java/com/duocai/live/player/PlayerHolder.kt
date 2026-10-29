@@ -30,13 +30,10 @@ class PlayerHolder(private val context: Context) {
 
     /** 首帧就绪 —— 决定封面要不要淡出 */
     var ready by mutableStateOf(false)
-        private set
 
     var playing by mutableStateOf(false)
-        private set
 
     var error by mutableStateOf<String?>(null)
-        private set
 
     fun player(): ExoPlayer {
         exo?.let { return it }

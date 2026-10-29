@@ -40,27 +40,19 @@ class AppContainer(context: Context) {
 
     // ---- 数据 ----
     var rooms by mutableStateOf<List<Room>>(emptyList())
-        private set
     var meta by mutableStateOf(SourceMeta())
-        private set
     var loading by mutableStateOf(false)
-        private set
     var error by mutableStateOf<String?>(null)
-        private set
     var loadedOnce by mutableStateOf(false)
-        private set
 
     // ---- 导航 ----
     var tab by mutableStateOf(Tab.HOME)
     /** 当前播放页的房间序列（列表可能被分类/搜索筛过，翻页要跟着筛过的走） */
     var playlist by mutableStateOf<List<Room>>(emptyList())
-        private set
     var openIndex by mutableStateOf(-1)
-        private set
 
     // ---- 关注（ids 是快照，供 Compose 观察）----
     var followedIds by mutableStateOf<Set<Long>>(emptySet())
-        private set
 
     // ---- 设置里会被界面直接读的几项，做成可观察 ----
     private var showAdState by mutableStateOf(prefs.showAd)
