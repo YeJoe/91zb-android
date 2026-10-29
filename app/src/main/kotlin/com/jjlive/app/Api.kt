@@ -479,11 +479,13 @@ object Parser {
         for (i in 0 until arr.length()) {
             val o = arr.optJSONObject(i) ?: continue
             val ft = o.int("fixedType", "fixedType", def = -1)
+            val name = o.str("clsName").ifEmpty { "类别$ft" }
             // fixedType=1 是「关注」：它由首页顶部单独的一个 chip 承载，
             // 且 /home/default/cls/query 查它没有意义。不排除会在顶部出现两个「关注」。
             // 注意不能连 fixedType=0 一起丢——「颜值」就是 0。
-            if (ft < 0 || ft == 1) continue
-            out.add(Category(ft, o.str("clsName").ifEmpty { "类别$ft" }, ft))
+            // fixedType=9 是「帖子」：那是帖子流，不是直播间分类，直接不要。
+            if (ft < 0 || ft == 1 || ft == 9 || name.contains("帖子")) continue
+            out.add(Category(ft, name, ft))
         }
         return out
     }

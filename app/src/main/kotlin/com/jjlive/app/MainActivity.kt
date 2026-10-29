@@ -192,17 +192,33 @@ class MainActivity : AppCompatActivity() {
         // 行为等价，且零签名风险。返回 false 不消费事件，网格仍可正常点击/垂直滚动。
         var downX = 0f
         var downY = 0f
+        var tracking = false
         rv.setOnTouchListener { _, ev ->
             when (ev.actionMasked) {
-                MotionEvent.ACTION_DOWN -> { downX = ev.x; downY = ev.y }
+                MotionEvent.ACTION_DOWN -> {
+                    downX = ev.x
+                    downY = ev.y
+                    tracking = true
+                }
+                // 下拉刷新时 SwipeRefreshLayout 会拦截手势，RecyclerView 收到的是 CANCEL
+                // 而不是 UP。不把这个状态清掉，下次抬手就会拿上一次的 DOWN 坐标来算位移，
+                // 于是「下拉刷新」被误判成左右滑动，自动跳到隔壁分类。
+                MotionEvent.ACTION_CANCEL -> tracking = false
                 MotionEvent.ACTION_UP -> {
-                    val dx = ev.x - downX
-                    val dy = ev.y - downY
-                    if (abs(dx) > abs(dy) && abs(dx) > dp(60)) {
-                        val order = chipOrder()
-                        val idx = order.indexOf(category).coerceAtLeast(0)
-                        val target = if (dx < 0) idx + 1 else idx - 1
-                        if (target in order.indices) selectCategory(order[target])
+                    if (tracking) {
+                        tracking = false
+                        val dx = ev.x - downX
+                        val dy = ev.y - downY
+                        // 必须是明显横向的手势：横向位移要超过纵向 2 倍，且超过 72dp；
+                        // 刷新过程中一律不切换分类。
+                        if (!swipe.isRefreshing &&
+                            abs(dx) > abs(dy) * 2 && abs(dx) > dp(72)
+                        ) {
+                            val order = chipOrder()
+                            val idx = order.indexOf(category).coerceAtLeast(0)
+                            val target = if (dx < 0) idx + 1 else idx - 1
+                            if (target in order.indices) selectCategory(order[target])
+                        }
                     }
                 }
             }
@@ -315,9 +331,25 @@ class MainActivity : AppCompatActivity() {
             while (page <= 6 && merged.size < 400) {
                 val more = fetchPage(catList, page)
                 if (more.isEmpty()) break
-                var added = 0
-                for (room in more) if (merged.put(room.roomId, room) == null) added++
-                if (added == 0) {
+                var changed = 0
+                for (room in more) {
+                    val old = merged[room.roomId]
+                    if (old == null) {
+                        merged[room.roomId] = room
+                        changed++
+                    } else {
+                        // 同一个房间会同时出现在多个分类里（例如「收费」的房间在第 2 页
+                        // 又属于「热门」）。这里若直接 put 覆盖，就会把它上一页带的分类
+                        // 标签冲掉——表现就是「收费」等小分类刷新几秒后整片变空。
+                        // 必须把分类取并集后再写回。
+                        val union = (old.cats + room.cats).distinct()
+                        if (union.size != old.cats.size) changed++
+                        merged[room.roomId] = old.copy(cats = union)
+                    }
+                }
+                // 新增房间、或者只是补齐了分类标签，都算有进展；
+                // 否则会在一页「全是重复房间」时提前 break，后面的分类归属补不上。
+                if (changed == 0) {
                     if (++stagnant >= 2) break
                 } else stagnant = 0
                 all.clear()
@@ -439,6 +471,15 @@ class MainActivity : AppCompatActivity() {
     private fun filter(q: String, resetScroll: Boolean = true) {
         query = q
         val key = q.trim().lowercase()
+
+        // 分类被下架、或被本地规则过滤掉（例如「帖子」）后，当前选中的分类可能已经
+        // 没有对应的 chip 了；这时回落到「全部」，否则列表会一直空白。
+        if (category != ALL && category != FOLLOW &&
+            chips.findViewWithTag<Chip>(category) == null
+        ) {
+            category = ALL
+            chips.findViewWithTag<Chip>(ALL)?.isChecked = true
+        }
 
         // 关注列表里存在未开播的主播，需要标状态；首页/分类列表都是在播，不必标
         adapter.markStatus = category == FOLLOW
