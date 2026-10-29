@@ -16,7 +16,6 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import androidx.swiperefreshlayout.widget.SwipeRefreshLayout
-import android.view.GestureDetector
 import android.view.MotionEvent
 import kotlin.math.abs
 import com.google.android.material.chip.Chip
@@ -157,26 +156,28 @@ class MainActivity : AppCompatActivity() {
         buildChips(emptyList())
 
         // 左右滑动切换分类（在网格区域横向滑动即可切到上一个 / 下一个分类）
-        val gd = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
-            override fun onFling(
-                e1: MotionEvent,
-                e2: MotionEvent,
-                velocityX: Float,
-                velocityY: Float
-            ): Boolean {
-                val dx = e2.x - e1.x
-                val dy = e2.y - e1.y
-                if (abs(dx) > abs(dy) && abs(dx) > dp(60)) {
-                    val order = chipOrder()
-                    val idx = order.indexOf(category).coerceAtLeast(0)
-                    val target = if (dx < 0) idx + 1 else idx - 1
-                    if (target in order.indices) selectCategory(order[target])
-                    return true
+        // 不用 GestureDetector.onFling：各 compileSdk 对 e1/e2 的可空性注解不一致
+        // （@Nullable e1, @NonNull e2），override 签名极易在 CI 上触发 "overrides nothing"。
+        // 这里直接用 OnTouchListener 按位移判断水平滑动——原本也只看位移不看速度，
+        // 行为等价，且零签名风险。返回 false 不消费事件，网格仍可正常点击/垂直滚动。
+        var downX = 0f
+        var downY = 0f
+        rv.setOnTouchListener { _, ev ->
+            when (ev.actionMasked) {
+                MotionEvent.ACTION_DOWN -> { downX = ev.x; downY = ev.y }
+                MotionEvent.ACTION_UP -> {
+                    val dx = ev.x - downX
+                    val dy = ev.y - downY
+                    if (abs(dx) > abs(dy) && abs(dx) > dp(60)) {
+                        val order = chipOrder()
+                        val idx = order.indexOf(category).coerceAtLeast(0)
+                        val target = if (dx < 0) idx + 1 else idx - 1
+                        if (target in order.indices) selectCategory(order[target])
+                    }
                 }
-                return false
             }
-        })
-        rv.setOnTouchListener { _, ev -> gd.onTouchEvent(ev); false }
+            false
+        }
     }
 
     private fun selectTab(which: Int, animate: Boolean = true) {
