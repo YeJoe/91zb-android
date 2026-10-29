@@ -144,6 +144,7 @@ fun SettingsScreen(c: AppContainer) {
                 selected = buffers.indexOf(prefs.bufferMs).let { if (it < 0) 1 else it },
                 onSelect = { prefs.bufferMs = buffers[it]; c.player.setBuffer(buffers[it]) }
             )
+            InfoLine("缓冲档位下次启动生效（解码器只在创建时读一次）")
             Spacer(Modifier.height(4.dp))
             SwitchLine(
                 label = "进房自动播放",

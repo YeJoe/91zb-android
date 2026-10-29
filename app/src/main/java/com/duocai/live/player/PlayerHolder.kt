@@ -72,9 +72,12 @@ class PlayerHolder(private val context: Context) {
         return player
     }
 
+    /**
+     * 缓冲档位。ExoPlayer 的 LoadControl 只能在创建时指定（没有 setLoadControl），
+     * 所以这里只记下来，下次启动 App 生效 —— 比为了改档位重建解码器划算。
+     */
     fun setBuffer(ms: Int) {
         bufferMs = ms
-        exo?.setLoadControl(buildLoadControl(ms))
     }
 
     /** 同一个地址重复调用不会重新拉流 —— 切回来时靠这个省一次握手 */

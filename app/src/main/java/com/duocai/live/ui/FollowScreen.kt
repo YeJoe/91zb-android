@@ -173,7 +173,10 @@ private fun FollowRow(c: AppContainer, room: Room, live: Boolean, onClick: () ->
             Modifier
                 .size(46.dp)
                 .clip(RoundedCornerShape(12.dp))
-                .background(if (live) avBrush(room.id) else MaterialTheme.colorScheme.surfaceVariant)
+                .then(
+                    if (live) Modifier.background(avBrush(room.id))
+                    else Modifier.background(MaterialTheme.colorScheme.surfaceVariant)
+                )
                 .alpha(if (live) 1f else 0.6f),
             contentAlignment = Alignment.Center
         ) {
