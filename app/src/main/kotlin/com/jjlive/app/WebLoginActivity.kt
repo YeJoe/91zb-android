@@ -1,7 +1,6 @@
 package com.jjlive.app
 
 import android.annotation.SuppressLint
-import android.os.Build
 import android.os.Bundle
 import android.view.View
 import android.webkit.JavascriptInterface
@@ -91,23 +90,30 @@ class WebLoginActivity : AppCompatActivity() {
     private inner class JsBridge {
         @JavascriptInterface
         fun onToken(token: String) {
-            runOnUiThread { onToken(token) }
+            // 必须显式指定外层 Activity 的方法，否则会递归调用 JsBridge.onToken 自身
+            runOnUiThread { this@WebLoginActivity.onToken(token) }
         }
     }
 
     private inner class LoginWebViewClient : WebViewClient() {
 
-        /** 协议层兜底：扫出栈请求的 authorization 头（getRequestHeaders 需 API 24+）。 */
+        /** 协议层兜底：扫出栈请求的 authorization 头。
+         *  getRequestHeaders() 是 API 24+，用反射取，避免 API 23 上静态引用导致 VerifyError / NoSuchMethodError。 */
         override fun shouldInterceptRequest(
             view: WebView?,
             request: WebResourceRequest?
         ): WebResourceResponse? {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                request?.requestHeaders?.forEach { (k, v) ->
-                    if (k.equals("authorization", true)) {
-                        val tok = v?.trim().orEmpty()
-                        if (tok.isNotEmpty()) runOnUiThread { onToken(tok) }
-                    }
+            val headers = request?.let { req ->
+                try {
+                    @Suppress("UNCHECKED_CAST")
+                    WebResourceRequest::class.java.getMethod("getRequestHeaders")
+                        .invoke(req) as? Map<String, String>
+                } catch (_: Throwable) { null }
+            }
+            headers?.forEach { (k, v) ->
+                if (k.equals("authorization", true)) {
+                    val tok = v?.trim().orEmpty()
+                    if (tok.isNotEmpty()) runOnUiThread { this@WebLoginActivity.onToken(tok) }
                 }
             }
             return null // 返回 null = 让 WebView 照常处理该请求
@@ -163,6 +169,16 @@ class WebLoginActivity : AppCompatActivity() {
 
     override fun onBackPressed() {
         if (web.canGoBack()) web.goBack() else finish()
+    }
+
+    override fun onPause() {
+        super.onPause()
+        web.onPause()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        web.onResume()
     }
 
     override fun onDestroy() {
