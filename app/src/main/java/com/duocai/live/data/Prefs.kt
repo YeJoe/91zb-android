@@ -30,6 +30,33 @@ class Prefs(context: Context) {
         get() = sp.getString(K_ROOMS_URL, Defaults.ROOMS_URL) ?: Defaults.ROOMS_URL
         set(v) = sp.edit().putString(K_ROOMS_URL, v.trim()).apply()
 
+    /**
+     * 实时模式开关：true = 直连隧道端口（推荐），false = 拉远程 JSON（旧行为，作降级）。
+     */
+    var liveMode: Boolean
+        get() = sp.getBoolean(K_LIVE_MODE, true)
+        set(v) = sp.edit().putBoolean(K_LIVE_MODE, v).apply()
+
+    /** 隧道 token：32 位 hex，来自 quick-login，隧道 URL 的 ?token= */
+    var appToken: String
+        get() = Secure.get(sp, K_APP_TOKEN)
+        set(v) = Secure.put(sp, K_APP_TOKEN, v.trim())
+
+    /** authorization 头的 JWE（源 App prefs 里 MAINUSER_DATA.token 原样） */
+    var jwe: String
+        get() = Secure.get(sp, K_JWE)
+        set(v) = Secure.put(sp, K_JWE, v.trim())
+
+    /** 上次探测成功的隧道端口，0 = 未探测 */
+    var tunnelPort: Int
+        get() = sp.getInt(K_TUNNEL_PORT, 0)
+        set(v) = sp.edit().putInt(K_TUNNEL_PORT, v).apply()
+
+    /** 自动刷新间隔（秒），0 = 关闭 */
+    var refreshSec: Int
+        get() = sp.getInt(K_REFRESH_SEC, 20)
+        set(v) = sp.edit().putInt(K_REFRESH_SEC, v).apply()
+
     // ---- 播放 ----
     var rtmpDomain: String
         get() = sp.getString(K_RTMP_DOMAIN, Defaults.RTMP_DOMAIN) ?: Defaults.RTMP_DOMAIN
@@ -97,6 +124,11 @@ class Prefs(context: Context) {
 
     private companion object {
         const val K_ROOMS_URL = "rooms_url"
+        const val K_LIVE_MODE = "live_mode"
+        const val K_APP_TOKEN = "app_token"
+        const val K_JWE = "jwe"
+        const val K_TUNNEL_PORT = "tunnel_port"
+        const val K_REFRESH_SEC = "refresh_sec"
         const val K_RTMP_DOMAIN = "rtmp_domain"
         const val K_HLS_GATEWAY = "hls_gateway"
         const val K_STREAM_MODE = "stream_mode"

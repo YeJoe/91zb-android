@@ -57,6 +57,12 @@ fun SettingsScreen(c: AppContainer) {
     var pasteOpen by remember { mutableStateOf(false) }
     var toast by remember { mutableStateOf<String?>(null) }
 
+    // 实时直播源（直连源 App 隧道端口）
+    var liveOn by remember { mutableStateOf(prefs.liveMode) }
+    var appToken by remember { mutableStateOf(prefs.appToken) }
+    var jwe by remember { mutableStateOf(prefs.jwe) }
+    var port by remember { mutableStateOf(if (prefs.tunnelPort > 0) prefs.tunnelPort.toString() else "") }
+
     Column(
         Modifier
             .fillMaxSize()
@@ -115,6 +121,66 @@ fun SettingsScreen(c: AppContainer) {
             InfoLine("房间 ${c.rooms.size} 个" + if (c.meta.fromCache) " · 本地缓存" else "")
             if (c.meta.buildAt.isNotBlank()) InfoLine("快照时间 ${c.meta.buildAt}")
             if (c.error != null) InfoLine("上次错误：${c.error}")
+        }
+
+        // ---------- 实时直播源 ----------
+        Section("实时直播源（需源 App 同设备后台运行）") {
+            SwitchLine(
+                label = "实时模式",
+                desc = "直连源 App 隧道端口，拿到实时在播列表；关闭则拉远程 JSON 快照",
+                checked = liveOn,
+                onChange = {
+                    liveOn = it
+                    prefs.liveMode = it
+                    scope.launch { c.reload() }
+                }
+            )
+            Spacer(Modifier.height(8.dp))
+            OutlinedTextField(
+                value = appToken,
+                onValueChange = { appToken = it; prefs.appToken = it },
+                label = { Text("会话 Token（32 位 hex）") },
+                placeholder = { Text("quick-login 换来的，拼在 ?token=") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                shape = RoundedCornerShape(12.dp)
+            )
+            InfoLine("填了就优先走实时；留空则一直走 JSON（实时模式会报错提示）")
+            Spacer(Modifier.height(6.dp))
+            OutlinedTextField(
+                value = jwe,
+                onValueChange = { jwe = it; prefs.jwe = it },
+                label = { Text("JWE（Authorization: Bearer）") },
+                placeholder = { Text("源 App prefs 里 MAINUSER_DATA.token 那串") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                shape = RoundedCornerShape(12.dp)
+            )
+            InfoLine("从源 App 的 SharedPreferences 里原样复制，用 Keystore 加密存本机")
+            Spacer(Modifier.height(6.dp))
+            OutlinedTextField(
+                value = port,
+                onValueChange = {
+                    port = it
+                    prefs.tunnelPort = it.toIntOrNull() ?: 0
+                },
+                label = { Text("隧道端口（可选，留空自动探测）") },
+                placeholder = { Text("0 = 自动扫描 /proc/net/tcp") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                shape = RoundedCornerShape(12.dp),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+            )
+            InfoLine("留空让 App 自动从监听端口里挑能用的；填了就优先用它")
+            Spacer(Modifier.height(6.dp))
+            ChipLine(
+                label = "自动刷新",
+                options = listOf("关", "10s", "20s", "30s"),
+                selected = listOf(0, 10, 20, 30).indexOf(prefs.refreshSec)
+                    .let { if (it < 0) 2 else it },
+                onSelect = { prefs.refreshSec = listOf(0, 10, 20, 30)[it] }
+            )
+            InfoLine("实时模式下定时重拉列表；0 关闭（只手动下拉刷新）")
         }
 
         // ---------- 播放 ----------
@@ -250,7 +316,8 @@ fun SettingsScreen(c: AppContainer) {
         Section("关于") {
             InfoLine("DC Live ${c.versionName}")
             InfoLine("包名 com.duocai.live · 直播流直连，不经过任何中间服务器")
-            InfoLine("数据为快照，非实时列表；播放地址来自第三方 CDN，仅供协议学习研究")
+            InfoLine("实时模式直连源 App 隧道端口拿在播列表；关闭则为 JSON 快照")
+            InfoLine("播放地址来自第三方 CDN，仅供协议学习研究")
         }
 
         toast?.let {

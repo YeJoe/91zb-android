@@ -27,16 +27,21 @@ def adb(*args):
 
 
 def listen_ports():
-    out = adb("shell", "su", "-c",
-              "cat /proc/net/tcp | grep ' 0A ' | awk '{print $2}' | cut -d: -f2")
+    # 只让 su -c 负责 cat（引号不易被 adb 拆坏），过滤在 PC 端做。
+    # 0A = TCP LISTEN 状态。
+    out = adb("shell", "su -c 'cat /proc/net/tcp 2>/dev/null; cat /proc/net/tcp6 2>/dev/null'")
     ports = set()
-    for h in out.split():
-        h = h.strip()
-        if h:
-            try:
-                ports.add(int(h, 16))
-            except ValueError:
-                pass
+    for line in out.splitlines():
+        if " 0A " not in line:
+            continue
+        cols = line.split()
+        if len(cols) < 2:
+            continue
+        hexport = cols[1].rsplit(":", 1)[-1]
+        try:
+            ports.add(int(hexport, 16))
+        except ValueError:
+            pass
     return sorted(ports)
 
 

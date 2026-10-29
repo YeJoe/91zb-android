@@ -9,11 +9,11 @@ import java.net.HttpURLConnection
 import java.net.URL
 
 /**
- * 房间数据源。
+ * 房间数据源（旧路径 / 降级路径）。
  *
- * 为什么必须走"远程 JSON"而不是直连接口：见 docs/安卓App设计方案.md §1 ——
- * 房间列表接口只在模拟器隧道里活着，公网 403 / TLS 失败，手机上根本够不着。
- * 所以链路是：GitHub raw 上一份 rooms.json → 本地缓存 → 断网可用。
+ * 实时模式下 App 走 [LiveRepo] 直连源 App 隧道端口拿列表；
+ * 这里保留的是"远程 JSON"兜底：GitHub raw 上一份 rooms.json → 本地缓存 → 断网可用。
+ * 当实时源失败（源 App 没在跑 / token 失效），[AppContainer.reload] 会退回这里。
  */
 class RoomRepo(private val context: Context, private val prefs: Prefs) {
 

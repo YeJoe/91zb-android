@@ -6,12 +6,18 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import com.duocai.live.data.DanmakuStore
 import com.duocai.live.data.FollowStore
+import com.duocai.live.data.LiveRepo
 import com.duocai.live.data.Prefs
 import com.duocai.live.data.Room
 import com.duocai.live.data.RoomRepo
 import com.duocai.live.data.SourceData
 import com.duocai.live.data.SourceMeta
 import com.duocai.live.player.PlayerHolder
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 enum class Tab(val label: String) {
     HOME("首页"), FOLLOW("关注"), SETTINGS("设置")
@@ -29,9 +35,15 @@ class AppContainer(context: Context) {
 
     val prefs = Prefs(this.context)
     val repo = RoomRepo(this.context, prefs)
+    /** 实时数据源：直连隧道端口。见 LiveRepo 头部注释。 */
+    val live = LiveRepo(this.context, prefs)
     val follows = FollowStore(prefs)
     val danmaku = DanmakuStore(this.context, prefs)
     val player = PlayerHolder(this.context)
+
+    /** 进程级作用域，承载自动刷新循环（App 活着就一直在） */
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    @Volatile private var refreshStarted = false
 
     val versionName: String = runCatching {
         this.context.packageManager
@@ -110,20 +122,55 @@ class AppContainer(context: Context) {
         if (loadedOnce) return
         loadedOnce = true
         followedIds = follows.ids()
-        repo.loadCache()?.let { applyData(it, fromCache = true) }
+        (live.loadCache() ?: repo.loadCache())?.let { applyData(it, fromCache = true) }
         reload()
+        startAutoRefresh()
+    }
+
+    /**
+     * 自动刷新循环：仅当 refreshSec>0 时生效。实时模式下让它"名副其实"。
+     * 进程级协程，只在 bootstrap 后启动一次；循环里动态读 prefs.refreshSec，
+     * 用户改了间隔下次生效，改成 0 就自然停。
+     */
+    private fun startAutoRefresh() {
+        if (refreshStarted) return
+        refreshStarted = true
+        scope.launch {
+            while (true) {
+                val sec = prefs.refreshSec
+                if (sec <= 0) {
+                    delay(2000)
+                    continue
+                }
+                delay(sec * 1000L)
+                // 不在播时（播放页盖在上面）也刷，但避免和正在播的列表抢 IO：照刷即可
+                reload()
+            }
+        }
     }
 
     suspend fun reload() {
         loading = true
         error = null
-        val result = repo.fetch()
+
+        // 实时模式：直连隧道端口（拿得到就是最新，拿不到再降级到 JSON）
+        val result = if (prefs.liveMode) live.fetch() else repo.fetch()
+
         loading = false
         result.onSuccess { applyData(it, fromCache = false) }
             .onFailure { e ->
+                // 实时失败 → 退回远程 JSON（旧路径），保证列表不至于空着
+                if (prefs.liveMode) {
+                    val fallback = repo.fetch()
+                    fallback.onSuccess {
+                        applyData(it, fromCache = false)
+                        error = "实时源失败（${e.message}），已降级为 JSON"
+                        return@onFailure
+                    }
+                }
                 error = e.message ?: "数据源加载失败"
                 if (rooms.isEmpty()) {
-                    repo.loadCache()?.let { applyData(it, fromCache = true) }
+                    (live.loadCache() ?: repo.loadCache())?.let { applyData(it, fromCache = true) }
                 }
             }
     }
