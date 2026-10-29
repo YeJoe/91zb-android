@@ -24,6 +24,22 @@ enum class Tab(val label: String) {
 }
 
 /**
+ * 首页的一级 tab —— 与源 App 大厅顶部那排一致。
+ *
+ * 注意：这四个**不是房间的分类字段**。实测 `/room/get_list_by_ids` 返回的 `menu_id`
+ * 只有 8 / 101~105 / 108（游戏、星秀、女神、颜值、交友、音乐、舞蹈），从来没有 1/2/3/4。
+ * 也就是说 1关注 2推荐 3热门 4附近 是**列表入口**，不是房间属性：
+ *
+ * - 关注：源 App 按账号的关注关系筛 → 我们按本地收藏筛
+ * - 推荐：服务端按算法下发 → 没有列表接口，只能本地模拟（人气分档 + 房号哈希打散）
+ * - 热门：按人气降序 → 本地排序即可，口径一致
+ * - 附近：服务端按定位下发 → 拿不到坐标，降级为「同城」（按 `city_show` 筛）
+ */
+enum class Feed(val label: String) {
+    FOLLOW("关注"), RECOMMEND("推荐"), HOT("热门"), NEARBY("附近")
+}
+
+/**
  * 手写的依赖容器（不用 Hilt：省一个注解处理器、省 ~800KB、也省一堆 KSP 版本对齐）。
  *
  * 顺便承担了"进程内状态"的职责 —— 这些状态挂在 Application 上，
@@ -59,12 +75,20 @@ class AppContainer(context: Context) {
 
     // ---- 导航 ----
     var tab by mutableStateOf(Tab.HOME)
+    /** 首页一级 tab。放在容器里而不是 HomeScreen 局部，切到别的页再回来才不会重置 */
+    var feed by mutableStateOf(Feed.RECOMMEND)
     /** 当前播放页的房间序列（列表可能被分类/搜索筛过，翻页要跟着筛过的走） */
     var playlist by mutableStateOf<List<Room>>(emptyList())
     var openIndex by mutableStateOf(-1)
 
     // ---- 关注（ids 是快照，供 Compose 观察）----
     var followedIds by mutableStateOf<Set<Long>>(emptySet())
+    /** 源 App 账号在服务端关注的人（`podcast_id` 就是房间号）。实时刷新时更新。 */
+    var serverFollowIds by mutableStateOf<Set<Long>>(emptySet())
+    var serverFollowNames by mutableStateOf<Map<Long, String>>(emptyMap())
+
+    /** 本地收藏 ∪ 服务端关注 —— 「关注」页和首页关注 tab 都用这一个口径 */
+    fun followIdSet(): Set<Long> = followedIds + serverFollowIds
 
     // ---- 设置里会被界面直接读的几项，做成可观察 ----
     private var showAdState by mutableStateOf(prefs.showAd)
@@ -146,6 +170,15 @@ class AppContainer(context: Context) {
         set(v) {
             refreshSecState = v
             prefs.refreshSec = v
+        }
+
+    private var nearbyCityState by mutableStateOf(prefs.nearbyCity)
+    /** 「附近」页选中的城市；空 = 自动取房间最多的那个 */
+    var nearbyCity: String
+        get() = nearbyCityState
+        set(v) {
+            nearbyCityState = v
+            prefs.nearbyCity = v
         }
 
     /** 实时模式开关也放到容器里，避免和设置页的局部 state 打架 */
@@ -251,5 +284,10 @@ class AppContainer(context: Context) {
     private fun applyData(data: SourceData, fromCache: Boolean) {
         rooms = data.rooms
         meta = data.meta.copy(fetchedAt = System.currentTimeMillis(), fromCache = fromCache)
+        // 服务端关注只有实时源才有；缓存里没有，别拿空集把上次的覆盖掉
+        if (!fromCache && liveMode) {
+            serverFollowIds = live.followIds
+            serverFollowNames = live.followNames
+        }
     }
 }

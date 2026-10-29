@@ -48,17 +48,33 @@ import com.duocai.live.ui.theme.Gold
 @Composable
 fun FollowScreen(c: AppContainer) {
 
-    // followedIds 是 Compose 状态，变动会触发这里重算
-    val followed = remember(c.followedIds, c.rooms) { c.follows.all() }
+    // 本地收藏 ∪ 源 App 账号在服务端关注的人（podcast_id 就是房间号）
+    val followIds = remember(c.followedIds, c.serverFollowIds) { c.followedIds + c.serverFollowIds }
+    val localById = remember(c.followedIds) { c.follows.all().associateBy { it.id } }
     val byId = remember(c.rooms) { c.rooms.associateBy { it.id } }
 
     val live = ArrayList<Room>()
     val offline = ArrayList<Room>()
-    for (f in followed) {
-        val hit = byId[f.id]
-        if (hit != null && !hit.ad) live.add(hit)
-        else offline.add(hit ?: Room(f.id, f.name, f.cat, 0, "", false, 0))
+    for (id in followIds) {
+        val hit = byId[id]
+        if (hit != null && !hit.ad) {
+            live.add(hit)
+        } else {
+            val local = localById[id]
+            offline.add(
+                hit ?: Room(
+                    id,
+                    local?.name ?: c.serverFollowNames[id] ?: "房间 $id",
+                    local?.cat ?: "",
+                    0,
+                    "",
+                    false,
+                    0
+                )
+            )
+        }
     }
+    live.sortByDescending { it.online }
 
     Column(
         Modifier
@@ -79,13 +95,13 @@ fun FollowScreen(c: AppContainer) {
             )
             Spacer(Modifier.weight(1f))
             Text(
-                "${followed.size} 位",
+                "${followIds.size} 位",
                 fontSize = 12.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
 
-        if (followed.isEmpty()) {
+        if (followIds.isEmpty()) {
             Box(Modifier.fillMaxSize().padding(28.dp), contentAlignment = Alignment.Center) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Icon(
@@ -118,13 +134,13 @@ fun FollowScreen(c: AppContainer) {
             if (live.isNotEmpty()) {
                 item { SectionTitle("正在直播 · ${live.size}", true) }
                 items(live, key = { "live-${it.id}" }) { room ->
-                    FollowRow(c, room, true) { onPlay(c, live, room) }
+                    FollowRow(c, room, true, room.id in c.followedIds) { onPlay(c, live, room) }
                 }
             }
             if (offline.isNotEmpty()) {
                 item { SectionTitle("未开播 · ${offline.size}", false) }
                 items(offline, key = { "off-${it.id}" }) { room ->
-                    FollowRow(c, room, false) { }
+                    FollowRow(c, room, false, room.id in c.followedIds) { }
                 }
             }
         }
@@ -159,7 +175,13 @@ private fun SectionTitle(text: String, live: Boolean) {
 }
 
 @Composable
-private fun FollowRow(c: AppContainer, room: Room, live: Boolean, onClick: () -> Unit) {
+private fun FollowRow(
+    c: AppContainer,
+    room: Room,
+    live: Boolean,
+    removable: Boolean,
+    onClick: () -> Unit
+) {
     Row(
         Modifier
             .fillMaxWidth()
@@ -204,12 +226,22 @@ private fun FollowRow(c: AppContainer, room: Room, live: Boolean, onClick: () ->
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
-        IconButton(onClick = { c.unfollow(room.id) }) {
-            Icon(
-                Icons.Filled.Star,
-                contentDescription = "取消关注",
-                tint = Gold,
-                modifier = Modifier.size(18.dp)
+        // 服务端来的关注没有可用的取消接口，就不给按钮，避免点了没反应
+        if (removable) {
+            IconButton(onClick = { c.unfollow(room.id) }) {
+                Icon(
+                    Icons.Filled.Star,
+                    contentDescription = "取消关注",
+                    tint = Gold,
+                    modifier = Modifier.size(18.dp)
+                )
+            }
+        } else {
+            Text(
+                "源App",
+                fontSize = 10.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 10.dp)
             )
         }
     }

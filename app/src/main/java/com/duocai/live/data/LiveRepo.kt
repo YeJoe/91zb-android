@@ -50,6 +50,15 @@ class LiveRepo(private val context: Context, private val prefs: Prefs) {
     @Volatile private var cachedPort: Int = 0
     @Volatile private var portCheckedAt: Long = 0L
 
+    /**
+     * 源 App 账号关注的房间（`podcast_id` == 房间号）与昵称。
+     * 由 [fetch] 每次刷新时更新，供「关注」页直接读。
+     */
+    @Volatile var followIds: Set<Long> = emptySet()
+        private set
+    @Volatile var followNames: Map<Long, String> = emptyMap()
+        private set
+
     private val cacheFile = File(context.filesDir, "rooms_live.json")
     private val idPoolFile = File(context.filesDir, "room_ids.txt")
 
@@ -210,10 +219,18 @@ class LiveRepo(private val context: Context, private val prefs: Prefs) {
             val ids = idPool()
             if (ids.isEmpty()) throw IOException("房间号池是空的（assets/room_ids.txt 没打包进来？）")
 
-            val rooms = runCatching { pullAll(ids) }.getOrElse { first ->
+            var port = probePort(sample = ids.firstOrNull())
+
+            // 关注的人大多不在大厅 id 池里（池子是按大厅表导出的），单独补一次
+            val follows = pullFollows(port)
+            followIds = follows.keys
+            followNames = follows
+
+            val targets = (ids + follows.keys).distinct()
+            val rooms = runCatching { pullAll(port, targets) }.getOrElse { first ->
                 // 端口大概率变了，重新探一次
-                probePort(force = true, sample = ids.firstOrNull())
-                runCatching { pullAll(ids) }.getOrElse { throw first }
+                port = probePort(force = true, sample = ids.firstOrNull())
+                runCatching { pullAll(port, targets) }.getOrElse { throw first }
             }
 
             if (rooms.isEmpty()) throw IOException("接口通了，但 1 个在播房间都没有（token 可能属于被封的号）")
@@ -234,9 +251,31 @@ class LiveRepo(private val context: Context, private val prefs: Prefs) {
         }
     }
 
+    /**
+     * 服务端关注。
+     *
+     * **`podcast_id` 就是房间号** —— 2026-10-29 实测：8 位关注拿去 `/room/get_list_by_ids`
+     * 全部命中，返回的 `attachment_url` 与关注列表里的头像完全一致。所以拿到 podcast_id
+     * 就等于拿到房间号，不用再做映射。
+     *
+     * 这个接口不分页：`page` / `pageIndex` / `offset` 传什么值都只回同一批，
+     * 所以关注数超过返回条数时补不齐（当前账号 8 位，全拿到了）。
+     * 失败不抛异常 —— 没配 JWE、号被封都不该影响主列表。
+     */
+    private fun pullFollows(port: Int): Map<Long, String> = runCatching {
+        val obj = post(port, "/user_follow/my_follow", "{}", timeout = 6000)
+        val arr = obj.optJSONArray("result") ?: return@runCatching emptyMap<Long, String>()
+        val out = LinkedHashMap<Long, String>()
+        for (i in 0 until arr.length()) {
+            val o = arr.optJSONObject(i) ?: continue
+            val id = o.optLong("podcast_id", 0L)
+            if (id > 0L) out[id] = o.optString("nickname")
+        }
+        out
+    }.getOrDefault(emptyMap<Long, String>())
+
     /** 分片并发拉详情 */
-    private suspend fun pullAll(ids: List<Long>): List<Room> = coroutineScope {
-        val port = probePort(sample = ids.firstOrNull())
+    private suspend fun pullAll(port: Int, ids: List<Long>): List<Room> = coroutineScope {
         val chunks = ids.chunked(batchSize)
         val out = ArrayList<Room>(ids.size)
         val guard = java.util.concurrent.atomic.AtomicInteger(0)

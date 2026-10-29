@@ -350,6 +350,10 @@ fun SettingsScreen(c: AppContainer) {
                 checked = c.showAd,
                 onChange = { c.showAd = it }
             )
+            InfoLine(
+                "附近城市：" + (c.nearbyCity.ifBlank { "自动（取房间最多的城市）" })
+            )
+            InfoLine("「附近」实际是同城：列表里没有坐标，只能按 room.city_show 筛")
         }
 
         // ---------- 关于 ----------

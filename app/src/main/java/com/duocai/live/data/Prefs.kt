@@ -125,6 +125,14 @@ class Prefs(context: Context) {
         get() = sp.getBoolean(K_SHOW_AD, false)
         set(v) = sp.edit().putBoolean(K_SHOW_AD, v).apply()
 
+    /**
+     * 「附近」页选中的城市（`city_show` 原文，如「靜安區」）。
+     * 留空 = 自动取当前列表里房间最多的那个城市。
+     */
+    var nearbyCity: String
+        get() = sp.getString(K_NEARBY_CITY, "") ?: ""
+        set(v) = sp.edit().putString(K_NEARBY_CITY, v.trim()).apply()
+
     // ---- 关注（JSON 数组，明文即可：里面只有房间号和主播名） ----
     var followJson: String
         get() = sp.getString(K_FOLLOW, "") ?: ""
@@ -159,6 +167,7 @@ class Prefs(context: Context) {
         const val K_CHAT_ONLY = "chat_only"
         const val K_THEME = "theme"
         const val K_SHOW_AD = "show_ad"
+        const val K_NEARBY_CITY = "nearby_city"
         const val K_FOLLOW = "follow_json"
         const val K_SAW_SWIPE = "saw_swipe_hint"
         const val K_SAW_PLAYER_SWIPE = "saw_player_swipe_hint"

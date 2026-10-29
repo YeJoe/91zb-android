@@ -367,7 +367,7 @@ fun PlayerScreen(c: AppContainer, startIndex: Int, onClose: () -> Unit) {
                         style = TextStyle(shadow = textShadow())
                     )
                 }
-                val followed = room.id in c.followedIds
+                val followed = room.id in c.followIdSet()
                 IconButton(onClick = { c.toggleFollow(room) }) {
                     Icon(
                         Icons.Filled.Star,
@@ -416,32 +416,64 @@ fun PlayerScreen(c: AppContainer, startIndex: Int, onClose: () -> Unit) {
             }
         }
 
-        // ---- 右侧：第几间 / 竖滑提示 ----
-        if (rooms.size > 1) {
-            Column(
+        // ---- 右侧：关注 / 第几间 / 竖滑提示 ----
+        // 关注按钮不跟 chrome 一起淡出：刷到没关注的人，随手就能点，不用先把顶栏点出来。
+        Column(
+            Modifier
+                .align(Alignment.CenterEnd)
+                .padding(end = 10.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            val followed = room.id in c.followIdSet()
+            Box(
                 Modifier
-                    .align(Alignment.CenterEnd)
-                    .padding(end = 10.dp)
-                    .graphicsLayer { alpha = chromeAlpha },
-                horizontalAlignment = Alignment.CenterHorizontally
+                    .size(50.dp)
+                    .clip(CircleShape)
+                    .background(Color.Black.copy(alpha = 0.40f))
+                    .clickable { c.toggleFollow(room) },
+                contentAlignment = Alignment.Center
             ) {
-                Text(
-                    "${settled + 1}/${rooms.size}",
-                    color = Color.White,
-                    fontSize = 10.sp,
-                    style = TextStyle(shadow = textShadow()),
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(50))
-                        .background(Color.Black.copy(alpha = 0.38f))
-                        .padding(horizontal = 7.dp, vertical = 3.dp)
-                )
-                Spacer(Modifier.height(5.dp))
-                Text(
-                    "↑↓",
-                    color = Color.White.copy(alpha = 0.5f),
-                    fontSize = 12.sp,
-                    style = TextStyle(shadow = textShadow())
-                )
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Icon(
+                        Icons.Filled.Star,
+                        contentDescription = if (followed) "取消关注" else "关注",
+                        tint = if (followed) Gold else Color.White.copy(alpha = 0.92f),
+                        modifier = Modifier.size(21.dp)
+                    )
+                    Spacer(Modifier.height(1.dp))
+                    Text(
+                        if (followed) "已关注" else "关注",
+                        color = if (followed) Gold else Color.White.copy(alpha = 0.92f),
+                        fontSize = 9.sp,
+                        style = TextStyle(shadow = textShadow())
+                    )
+                }
+            }
+
+            if (rooms.size > 1) {
+                Spacer(Modifier.height(10.dp))
+                Column(
+                    Modifier.graphicsLayer { alpha = chromeAlpha },
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text(
+                        "${settled + 1}/${rooms.size}",
+                        color = Color.White,
+                        fontSize = 10.sp,
+                        style = TextStyle(shadow = textShadow()),
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(50))
+                            .background(Color.Black.copy(alpha = 0.38f))
+                            .padding(horizontal = 7.dp, vertical = 3.dp)
+                    )
+                    Spacer(Modifier.height(5.dp))
+                    Text(
+                        "↑↓",
+                        color = Color.White.copy(alpha = 0.5f),
+                        fontSize = 12.sp,
+                        style = TextStyle(shadow = textShadow())
+                    )
+                }
             }
         }
 
