@@ -38,9 +38,12 @@ class PlayerHolder(private val context: Context) {
     fun player(): ExoPlayer {
         exo?.let { return it }
         val dataSourceFactory = DefaultDataSource.Factory(context, RtmpDataSource.Factory())
+        // 兜底：缓冲参数万一下次又被改错，也只退回默认值，不该整个 App 退出
+        val loadControl = runCatching { buildLoadControl(bufferMs) }
+            .getOrElse { DefaultLoadControl() }
         val player = ExoPlayer.Builder(context)
             .setMediaSourceFactory(DefaultMediaSourceFactory(dataSourceFactory))
-            .setLoadControl(buildLoadControl(bufferMs))
+            .setLoadControl(loadControl)
             .setAudioAttributes(
                 AudioAttributes.Builder()
                     .setUsage(C.USAGE_MEDIA)
@@ -127,15 +130,24 @@ class PlayerHolder(private val context: Context) {
         playing = false
     }
 
-    private fun buildLoadControl(bufferMs: Int): DefaultLoadControl =
-        DefaultLoadControl.Builder()
-            .setBufferDurationsMs(
-                bufferMs.coerceAtLeast(500),
-                20_000,
-                bufferMs.coerceAtLeast(500),
-                bufferMs * 2
-            )
+    /**
+     * ExoPlayer 对这四个数有硬约束，违反会直接抛 IllegalArgumentException 闪退：
+     * `minBufferMs >= bufferForPlaybackAfterRebufferMs >= bufferForPlaybackMs`，
+     * 且 bufferForPlaybackMs > 0。
+     *
+     * 直播场景的取法：maxBufferMs 放小（不用囤太久），起播门槛压低（进房快），
+     * 「卡顿后重新起播」门槛略高于起播门槛（避免网络抖一下就反复起停）。
+     */
+    private fun buildLoadControl(bufferMs: Int): DefaultLoadControl {
+        val target = bufferMs.coerceIn(800, 8_000)                       // 稳态缓冲目标
+        val startPlayback = (target / 2).coerceIn(300, 800)              // 首帧起播门槛
+        val afterRebuffer = maxOf(startPlayback, minOf(target, 1_500))   // 卡顿后恢复门槛
+        val minBuffer = maxOf(target, afterRebuffer)                     // 必须 >= afterRebuffer
+        val maxBuffer = maxOf(minBuffer * 3, 12_000)                     // 上限，直播不囤太多
+        return DefaultLoadControl.Builder()
+            .setBufferDurationsMs(minBuffer, maxBuffer, startPlayback, afterRebuffer)
             .build()
+    }
 
     private fun describe(e: PlaybackException): String {
         val head = when (e.errorCode) {

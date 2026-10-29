@@ -1,4 +1,4 @@
-# TM Live · 安卓 App 设计方案（v1 已定稿，代码已落地）
+# DC Live · 安卓 App 设计方案（v1 已定稿，代码已落地）
 
 > 目标：把现有 `site/` 网页改写成原生安卓 App，用 GitHub Actions 云端编译，本机零 Android 环境。
 >
@@ -19,7 +19,7 @@
 | 项 | 结论 |
 |---|---|
 | 仓库 / 分支 | `https://github.com/YeJoe/91zb-android.git` → **`duocai`** 分支（数据源 + 代码都在这个分支） |
-| App 名称 | **TM Live**（包名 `com.duocai.live`，`applicationId` 带 `.debug` 后缀区分调试包） |
+| App 名称 | **DC Live**（包名 `com.duocai.live`，`applicationId` 带 `.debug` 后缀区分调试包） |
 | 弹幕聊天区 | **右滑透明**：不透明度 0.62 一路滑到 0，全透明时只剩带投影的文字，不遮挡画面；左滑恢复；也可点头部的「背景 xx%」循环 62% / 25% / 透明 |
 
 
@@ -72,7 +72,7 @@
 
 **依赖总清单**（就这些，没有别的）：`core-ktx`、`activity-compose`、`lifecycle-runtime-ktx`、Compose BOM（ui / graphics / tooling-preview / material3 / material-icons-core）、media3（exoplayer / exoplayer-hls / ui / datasource-rtmp）。
 
-**预估产物体积**：`app-release.apk` ≈ **5~6 MB**（universal），arm64 单包 ≈ 4MB。比初稿的 6~7MB 又小了一档，原因就是砍掉了 Coil / OkHttp / serialization / DataStore 四个依赖。
+**预估产物体积**：`app-release.apk` ≈ **4 MB**（只出 arm64-v8a 单包）。比初稿的 6~7MB 小了一档，原因就是砍掉了 Coil / OkHttp / serialization / DataStore 四个依赖，外加不再出 universal 包。
 
 ---
 
@@ -279,7 +279,7 @@ app/
 ├── build.gradle.kts                  # 版本号可由 CI 环境变量覆盖；签名按 secret 是否存在决定
 ├── proguard-rules.pro                # 保留 librtmp JNI 类
 └── src/main/
-    ├── AndroidManifest.xml           # TM Live · com.duocai.live · 竖屏 · cleartext 允许
+    ├── AndroidManifest.xml           # DC Live · com.duocai.live · 竖屏 · cleartext 允许
     ├── assets/danmaku_demo.json      # 182 条真实弹幕样本（离线回放用）
     ├── res/
     │   ├── layout/view_player.xml    # 只有这里能设 surface_type=texture_view
@@ -355,7 +355,7 @@ on:
 - **签名**：没有 keystore secret 也能出**可安装**的 debug 包；要长期升级同一个 app，就把 keystore 以 base64 放进
   `KEYSTORE_BASE64` / `KEYSTORE_PASSWORD` / `KEY_ALIAS` / `KEY_PASSWORD` 四个 secret。
 - **版本号**：`APP_VERSION_CODE = github.run_number`，settings 关于页能看到构建号，方便对日志。
-- **ABI 拆分**：`splits.abi` → `arm64-v8a`（真机用，最小）+ `universal`（模拟器/不挑）。
+- **ABI**：`splits.abi` 只留 `arm64-v8a`（`isUniversalApk = false`），产物就一个 `app-arm64-v8a-*.apk`，体积最小。
 - **缓存**：`setup-gradle` 自带依赖缓存，第二次构建 ~2 分钟。
 
 首次构建预计 **6~9 分钟**（含下载 Gradle 与依赖）。
@@ -384,7 +384,7 @@ on:
 
 | 项 | 结论 |
 |---|---|
-| App 名称 | **TM Live** |
+| App 名称 | **DC Live** |
 | 包名 | **`com.duocai.live`**（debug 包 `com.duocai.live.debug`） |
 | 仓库 / 分支 | `github.com/YeJoe/91zb-android` → **`duocai`**；数据源默认 `https://cdn.jsdelivr.net/gh/YeJoe/91zb-android@duocai/app-data/rooms.json`（国内可达），备选 GitHub raw |
 | 数据源 | 远程 JSON，**不内置房间快照** → 首启空态引导（可填 URL 或粘贴 JSON） |

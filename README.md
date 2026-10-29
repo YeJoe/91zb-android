@@ -15,7 +15,7 @@
 |---|---|---|
 | **网页版** | `site/` | 纯静态，双击 `index.html` 就能看分类、列表、播放、弹幕；带弹幕分类过滤开关、手机布局、弹幕区右滑透明 |
 | **客户端脚本** | `tools/` | 复现同一套接口的命令行客户端：隧道探测、房间列表、实时弹幕、RTMP→HLS 网关 |
-| **安卓 App** | `app/` | **TM Live**：Kotlin + Compose 原生 App，底部三栏（首页/关注/设置），上下滑切房，弹幕区右滑透明；GitHub Actions 云端编译，本机不用装任何安卓环境 |
+| **安卓 App** | `app/` | **DC Live**：Kotlin + Compose 原生 App，底部三栏（首页/关注/设置），上下滑切房，弹幕区右滑透明；GitHub Actions 云端编译，本机不用装任何安卓环境 |
 
 > App 的包名是 `com.duocai.live`，数据源就是本分支的 `app-data/rooms.json`。
 > 编译产物（APK）不进仓库，走 Actions 的 artifact / Release。
@@ -30,7 +30,7 @@
 项目根/
 ├── README.md                      本文
 ├── site/                          ★ 网页版，纯静态可发布（544K）
-├── app/                           ★ 安卓 App（TM Live），Kotlin + Compose
+├── app/                           ★ 安卓 App（DC Live），Kotlin + Compose
 ├── app-data/                      ★ App 的数据源 rooms.json（31.6K）
 ├── tools/                         ★ 客户端脚本 + 数据构建（210K）
 ├── docs/                          ★ 文档 17 篇 + 修改教程 8 篇（480K）
@@ -125,7 +125,7 @@
 
 ---
 
-## 安卓 App：TM Live
+## 安卓 App：DC Live
 
 `app/` 是把网页版重写成原生 App 的成果：**Kotlin 2.0 + Jetpack Compose + Media3(librtmp) 直连 RTMP**。
 本机不需要装 JDK / SDK / Gradle，推送代码后由 GitHub Actions 出包。
@@ -133,7 +133,7 @@
 ### 用它
 
 1. 打开仓库的 **Actions** → `build-apk` → 最新一次运行 → 下载 `build-<run>` 里的 APK
-   （真机装 `app-arm64-v8a-debug.apk`，模拟器或不挑装 `app-universal-debug.apk`）
+   （只有 `app-arm64-v8a-debug.apk` 一个包，直接装）
 2. 装机后 → **设置** → 数据源默认已填好 jsDelivr 镜像：
    `https://cdn.jsdelivr.net/gh/YeJoe/91zb-android@duocai/app-data/rooms.json`
 3. 点「立即拉取」→ 回首页即可看到 216 个真人直播间（84 个推广位默认过滤）

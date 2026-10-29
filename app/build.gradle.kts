@@ -56,13 +56,13 @@ android {
         }
     }
 
-    // 只出 arm64 + 通用包：arm64 给真机（最小），universal 给模拟器 / 不挑的人
+    // 只出 arm64-v8a 单包：现代真机全覆盖，体积最小；不再出 universal / v7a
     splits {
         abi {
             isEnable = true
             reset()
-            include("arm64-v8a", "armeabi-v7a")
-            isUniversalApk = true
+            include("arm64-v8a")
+            isUniversalApk = false
         }
     }
 

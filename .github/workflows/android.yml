@@ -92,7 +92,7 @@ jobs:
         if: always()
         run: |
           {
-            echo "### TM Live 构建产物"
+            echo "### DC Live 构建产物"
             echo ""
             if ls dist/*.apk >/dev/null 2>&1; then
               echo "| 文件 | 大小 |"
@@ -101,7 +101,7 @@ jobs:
                 echo "| \`$(basename "$f")\` | $(du -h "$f" | cut -f1) |"
               done
               echo ""
-              echo "> 真机装 **arm64-v8a** 那个（最小），模拟器/不挑装 **universal**。"
+              echo "> 只出 **arm64-v8a** 单包，直接装即可（Android 7+ 真机通用）。"
             else
               echo "没有产出 APK，构建失败 —— 看上面的注解或 artifact 里的 build.log。"
             fi
@@ -126,6 +126,6 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh release create "$GITHUB_REF_NAME" dist/*.apk \
-            --title "TM Live $GITHUB_REF_NAME" \
+            --title "DC Live $GITHUB_REF_NAME" \
             --notes "自动构建：$GITHUB_SHA" \
           || gh release upload "$GITHUB_REF_NAME" dist/*.apk --clobber
