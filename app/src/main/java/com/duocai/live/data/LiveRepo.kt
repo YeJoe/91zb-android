@@ -377,13 +377,17 @@ class LiveRepo(private val context: Context, private val prefs: Prefs) {
             ad = false,
             coins = r.optInt("live_fee", 0),
             menuId = menuId,
-            // 缓存文件里直接存完整 URL（键名 avatar）；接口响应里是相对路径
-            avatar = r.optString("avatar").ifBlank {
-                imageUrl(
-                    r.optString("attachment_url")
-                        .ifBlank { r.optString("attachment_db_url") }
-                )
-            }
+            // 缓存文件里直接存完整 URL（键名 avatar）；接口响应里是相对路径。
+            // 统一过一遍 ImageUrls.plain：接口/旧缓存给的可能是 /images/<宽>/ 加密形态，
+            // 那种 URL 下回来的是 `<mode iv="…">3</mode>` 密文，Coil 解不成图只会画成透明。
+            avatar = ImageUrls.plain(
+                r.optString("avatar").ifBlank {
+                    imageUrl(
+                        r.optString("attachment_url")
+                            .ifBlank { r.optString("attachment_db_url") }
+                    )
+                }
+            )
         )
     }
 
@@ -391,8 +395,12 @@ class LiveRepo(private val context: Context, private val prefs: Prefs) {
      * 相对路径 → 图床 URL。
      *
      * `attachment_url` 长这样：`/static/upload/u/8200/9833/9/head/xxx.jpg`
-     * 源 App 实际请求的是：`<图床>/images/256/u/8200/9833/9/head/xxx.jpg`
-     * 也就是把 `/static/upload` 整段换成 `/images/<尺寸>`。
+     *
+     * 图床根有两种写法，都能用：
+     *   · `<cdn>/images/480`   —— 源 App 的写法，但要的是**加密缩略图**，Coil 解不出
+     *   · `<cdn>/static/upload` —— 明文原图
+     * 这里只做「去前缀 + 拼根」，最终的加密→明文换算交给 [ImageUrls.plain]，
+     * 所以历史缓存里存着的 `/images/<宽>/…` 旧地址也会被一并纠正。
      */
     private fun imageUrl(path: String): String {
         val p = path.trim()

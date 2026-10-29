@@ -2,6 +2,16 @@
 # -*- coding: utf-8 -*-
 """加密图片离线解密器（天美 App）
 
+⚠️ 2026-10-30 重要更正：**图片根本不需要解密。**
+   同一个文件在 CDN 上有两条路径，明文那份一直是公开的：
+       /images/<宽>/u/aa/bb/cc/head/x.jpg      -> <mode iv="...">3</mode> + 密文（32B 头）
+       /static/upload/u/aa/bb/cc/head/x.jpg    -> 明文原图（长度 = 密文长度 - 32，纯流加密无填充）
+       /files/admin_res/<p>/pic/x.png          -> 加密
+       /static/upload/admin_res/<p>/pic/x.png  -> 明文
+   所以 App 端只要把 URL 换成 /static/upload/ 镜像即可（见 tools/check_img_mirror.py 的 7/7 验证
+   与 app/.../data/ImageUrls.kt）。本工具留作「万一镜像下线」时的兜底，密钥仍未拿到
+   （libapp.so 全量 16B 窗口 81M 次爆破 + 56k 字符串常量派生均未命中，key 应是运行时派生）。
+
 加密头格式（blutter 反编译确认）：
     <mode iv="<IV>">N</mode> + 密文
     N 是算法枚举索引：

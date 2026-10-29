@@ -145,8 +145,10 @@ object SourceParser {
                     city = r.optString("city").let { if (it == "火星") "" else it },
                     ad = r.optInt("ad", 0) == 1,
                     coins = r.optInt("coins", 0),
-                    // JSON 数据源没有图床配置可拼，只认完整 URL
-                    avatar = r.optString("avatar").takeIf { it.startsWith("http") } ?: ""
+                    // JSON 数据源没有图床配置可拼，只认完整 URL；加密形态统一换成明文镜像
+                    avatar = ImageUrls.plain(
+                        r.optString("avatar").takeIf { it.startsWith("http") } ?: ""
+                    )
                 )
             )
         }

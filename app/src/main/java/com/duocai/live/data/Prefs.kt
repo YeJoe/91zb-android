@@ -254,9 +254,11 @@ class Prefs(context: Context) {
 
         /**
          * 封面图床。抓包实测：源 App 拉头像是 `GET drdue73ptt7o.cloudfront.net/images/256/…`，
-         * 与隧道、token 都无关，公网直连 200。
+         * 但那个前缀下回来的是 `<mode iv="…">3</mode>` 加密流，解码必失败。
+         * 同一张图的明文原图在 `/static/upload/…`（见 ImageUrls 注释），
+         * 所以默认直接指到明文镜像；老的 `/images/<宽>` 写法也会被 ImageUrls.plain 自动纠正。
          */
-        const val IMG_BASE = "https://drdue73ptt7o.cloudfront.net/images/480"
+        const val IMG_BASE = "https://drdue73ptt7o.cloudfront.net/static/upload"
 
         /**
          * 云层 SDK 的 appKey。
