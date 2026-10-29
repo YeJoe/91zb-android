@@ -276,8 +276,10 @@ class PlayerActivity : AppCompatActivity() {
             lp.height = FrameLayout.LayoutParams.MATCH_PARENT
             videoBox.layoutParams = lp
             chatPanel.visibility = View.GONE
-            (btnChat.layoutParams as FrameLayout.LayoutParams).apply {
-                bottomMargin = barH + dp(8)
+            val bp = btnChat.layoutParams as FrameLayout.LayoutParams
+            if (bp.bottomMargin != barH + dp(8)) {
+                bp.bottomMargin = barH + dp(8)
+                btnChat.layoutParams = bp
             }
             btnChat.visibility = View.VISIBLE
             scrimTop.alpha = 1f
