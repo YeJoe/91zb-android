@@ -132,22 +132,87 @@ case "getProxyTcpByDomain":    // arguments = {token, group_name, ddomain, dport
 注意 `token` / `ddomain` / `dport` 三个参数**取了但没用**（R8 优化后的残留），
 `ServerToLocal` 只需要 `group_name`。
 
-## 3. appKey 从哪来
+## 3. appKey：从源 App 运行内存里捞出来的真值
 
-`blutter` 从 `libapp.so` 的对象池 dump 出来的 `main.dart` 常量区，几条紧挨着：
+### 3.1 走过的弯路
+
+最早是 `blutter` 从 `libapp.so` 对象池 dump 出的 `main.dart` 常量区，几条紧挨着：
 
 ```
 [pp+0x2830] String: "kiwi_"
 [pp+0x2838] String: "dNLmP4x5bcvPKZess6gqv6MzS+2bg2tW…"        ← 长 Base64
-[pp+0x2840] String: "cZ1dAC6cE5wlH9E0mg4fly6B5ASMXBU4"       ← 32 位，最像 appKey
+[pp+0x2840] String: "cZ1dAC6cE5wlH9E0mg4fly6B5ASMXBU4"       ← 32 位，当时最像 appKey
 [pp+0x2848] String: "http://kiwi_live/tunnel/a033b072?z=1&nobase64=1"
-[pp+0x2850] String: "OIWKj3hGjOKA6pU1lMcZvC0…"                ← 长 Base64
-[pp+0x2880] String: "00000000000000000000000000000000"        ← 占位默认值
 ```
 
-> 这几个串在磁盘上的 `libapp.so` 里**搜不到明文**（`grep` 命中 0），
-> 说明它们是运行时构造/解密的，所以只能从 blutter 的对象池 dump 里拿。
-> 候选不止一个 —— 设置页有「试候选 key」按钮，逐个试到 `Init` 返回 0 为止。
+按这些候选逐个试，`Init` 一直返回 **-2**，日志 `[appkey]parse exception unexpected token`。
+用 IDA 反编译 `KiwiAppkey::ParseAppkey`（`0x243f20`）后才知道为什么 —— **它要的根本不是这种串**。
+
+### 3.2 ParseAppkey 要的结构（IDA 反编译还原）
+
+```c
+// sub_243F20(appkey_obj *this, const std::string &text)
+json j = json::parse(text);                       // 失败 -> 打 "[appkey]parse exception %s"，返回 -2
+if (type_of(j["app_id"]) == 6 || type_of(j["content"]) == 6) return -2;   // 6 = 缺失
+if (type_of(j["app_id"]) != 0) err("json value must be integer");         // 0 = number
+this->app_id = (uint32) j["app_id"];
+if (j.has("port_key")) {
+    if (type_of(j["port_key"]) != 0) err("json value must be integer");
+    this->port_key = (int) j["port_key"];
+}
+if (type_of(j["content"]) != 3) err("json value must be array");          // 3 = array
+for (auto &e : j["content"]) {                                            // 每项 {t, v} 且都是字符串
+    if (type_of(e["t"]) != 2 || type_of(e["v"]) != 2) err("json value must be string");
+    this->entries.push_back({e["t"], e["v"]});                            // a1+40 的 vector<pair<string,string>>
+}
+return 0;   // 成功：*(byte*)this = 1
+```
+
+也就是说入参是**明文 JSON**：
+
+```json
+{"app_id": 53, "port_key": <int 可选>, "content": [{"t": "…", "v": "…"}]}
+```
+
+之前那句 `{"app_id":53,"port_key":"AAAA"}` 有两个错：`port_key` 是字符串（要求整数）、`content` 整个缺失。
+
+### 3.3 最终怎么拿到的
+
+`ParseAppkey` 收到的既然是明文 JSON，那源 App 内存里必然有它。
+源 App 冷启动后 `libkiwi.so` 已经加载，模拟器有 root（KernelSU），于是：
+
+```bash
+# 1. 找段：scudo / dalvik 堆才是数据所在
+su -c 'cat /proc/<pid>/maps'
+# 2. 逐段流式 dump，边读边搜（不落盘，1.3 GB 也只要几分钟）
+adb exec-out su -c 'dd if=/proc/<pid>/mem bs=4096 skip=<start/4096> count=<len/4096>' \
+  | <本地搜 "appKey" / "initEx" / "port_key">
+```
+
+命中点很干净 —— Dalvik 主堆里 `getPlatformVersion` / `initEx` / `appKey` / `Kiwi init ` / `kiwitest`
+这几个 MethodChannel 常量**紧挨着**，就在它们前面一段是：
+
+```
+0x21aff80  "360wjdqlAsjhpkqV7pq3Mzj6mfrZdxM4yt39ASqwjWgc3Eq4gjbRp4/qzeH3mlgzQ…"  （1432 字符）
+0x21b0527  "RgetPlatformVersion"
+0x21b0550  "initEx"
+0x21b0568  "appKey"
+```
+
+这串 base64 就是 `initEx` 的 `map["appKey"]`。解码后是 1072 字节二进制（AES 密文，
+不是 JSON）—— 说明 **`Init` 内部先解密再交给 `ParseAppkey`**，所以派生结构猜不出来，
+只能拿真值。
+
+实测：`Kiwi.Init(<这串>)` → **返回 0**。
+
+```
+D kiwitest: Kiwi init
+I KiwiSDK : kiwi init with version A521
+D kiwitest: Kiwi init return 0
+```
+
+> 注意 appKey 是**按 app_id 绑定的密文**，不是通用口令；换 app 就换 key。
+> 它现在已经写进 `Prefs.Defaults.KIWI_APP_KEY`，设置页也能直接改。
 
 ## 4. 落地实现
 
@@ -185,11 +250,35 @@ case "getProxyTcpByDomain":    // arguments = {token, group_name, ddomain, dport
 
 ## 6. 还没验证的两件事
 
-1. **appKey 是否就是 `cZ1dAC6cE5wlH9E0mg4fly6B5ASMXBU4`** —— 靠 `Init` 返回值判断，
-   0 = 对，非 0 = 换下一个候选（设置页有按钮一次试完）。
-2. **SDK 是否校验调用方包名/签名** —— `init_appname` 传的是我们自己的包名
-   （`豆彩直播##com.duocai.live`）。如果云端按 appKey+包名 校验，会返回非 0。
-   这是唯一可能"代码全对但跑不通"的点。
+1. ~~**appKey 是否就是 `cZ1dAC6…`**~~ —— 已解决：真值是那段 1432 字符 base64，
+   `Init` 实测返回 0。见 §3。
+2. **SDK 是否校验调用方包名/签名** —— `Init` 返回 0 说明 **init 阶段不校验包名**
+   （我们传的是 `豆彩直播##com.duocai.live`，源 App 是 `天美##com.l95c2450d7.f68bb4e2d5`）。
+   但 `ServerToLocal` 阶段是否按 appname 下发节点还没验证 —— 如果所有 vhost 都返 -5，
+   下一步就用反射调 `Kiwi.init_appname("天美##com.l95c2450d7.f68bb4e2d5")` 覆盖再重试。
+
+### 6.1 `ServerToLocal` 返回 -5：缺了 `RestartAllServer`
+
+`Init` 返回 0 之后直接调 `ServerToLocal("kiwi_live")`，拿到 **-5**，日志：
+
+```
+I KiwiSDK : [kiwicore]dns query failed kiwi_live     ← 每次 ServerToLocal 打一条
+```
+
+从源 App 的运行内存里把 libkiwi 的明文符号表恢复出来之后（做法见 §8），
+看到相关符号就明白了：
+
+```
+KiwiCore::Dns(char const*, unsigned short*)          ← ServerToLocal 内部靠它找节点
+KiwiCore::RestartAllServer()                          ← 建 listener
+KiwiCore::ForceRestartServer(unsigned short)
+KiwiProxy::TcpProxy::ForceRestart()
+KiwiProxy::TcpProxy::Lport()                          ← 本地端口就是它
+```
+
+`Init` 只完成握手（appKey 校验 + 节点下发），**本地 listener 是 `RestartAllServer`
+才起来的**。组表为空时 `KiwiCore::Dns(group)` 当然查不到东西 → -5。
+所以 `Tunnel.start()` 现在是 `Init → RestartAllServer → 等 1.5s → 逐个 vhost 试 ServerToLocal`。
 
 
 ## 7. 从「能编译」到「能运行」：两次真实闪退
@@ -267,18 +356,56 @@ ro.dalvik.vm.native.bridge  = libnb.so
 
 ## 8. 复现命令
 
-```bash
-# 1. 拿符号（需要 root）
-PID=$(adb shell pidof com.l95c2450d7.f68bb4e2d5)
-adb shell "su -c 'grep libkiwi /proc/$PID/maps'"
-# 按 maps 里 off=0x54a000 的那段 dump，再解析 DT_SYMTAB / DT_STRTAB
+### 8.1 恢复 libkiwi 的符号表（静态文件里全是密文）
 
-# 2. 反编译 Java 层（本仓库自带的三个小工具，纯标准库，不依赖 androguard）
+`libkiwi.so` 的 `.dynstr` 和 `.dynsym` 在磁盘上是密文，但**加载后会被解密**。
+关键是自己算对偏移，别信手抄的地址：
+
+```python
+# 静态文件里 ELF 头前 4 字节被抹了，但 e_phoff / program header 是好的
+e_phoff, = struct.unpack_from("<Q", so, 0x20)
+for i in range(e_phnum):
+    p_type, p_flags, p_offset, p_vaddr, *_ = struct.unpack_from("<IIQQQQQQ", so, e_phoff + i*56)
+    if p_type == 2:                     # PT_DYNAMIC
+        ...
+# 读出 DT_STRTAB / DT_SYMTAB / DT_STRSZ / DT_SYMENT
+#   -> DT_STRTAB = 0x5ff348   DT_SYMTAB = 0x5b48b0   DT_STRSZ = 0x635c0
+```
+
+然后从运行中的进程 dump 那个 rw 段（`maps` 里 `off=0x54a000` 那段），
+`dynstr` 就在 `dump[DT_STRTAB - 0x54a000]`，此时是明文：
+
+```
+0x0c4627  _ZN9KiwiProxy9TcpBridge13UpdateRemotesE...
+0x0d6758  _ZN8KiwiCore3DnsEPKcPt              KiwiCore::Dns(char const*, ushort*)
+0x0d676f  kiwiapi_server_to_local
+0x0d67ab  _ZN8KiwiCore16RestartAllServerEv     KiwiCore::RestartAllServer()
+0x0d67cc  _ZN8KiwiCore18ForceRestartServerEt   KiwiCore::ForceRestartServer(ushort)
+```
+
+### 8.2 从运行内存里捞 appKey
+
+```bash
+PID=$(adb shell pidof com.l95c2450d7.f68bb4e2d5)
+# 只看 rw 段：scudo / dalvik 堆 / libkiwi 的 rw
+adb shell "su -c 'cat /proc/$PID/maps'"
+# 逐段流式 dump 边搜（exec-out 才能传二进制，普通 shell 会把 \n 变 \r\n）
+adb exec-out su -c "dd if=/proc/$PID/mem bs=4096 skip=$((0x2000000/4096)) count=131072" \
+  | grep -aob "appKey"
+# 命中后取前后各 2KB，里面就是 initEx 相邻的那串 base64
+```
+
+### 8.3 反编译 Java 层（本仓库自带的三个小工具，纯标准库，不依赖 androguard）
+
+```bash
 python tools/dex_inspect.py cls com.kiwi.sdk.Kiwi
 python tools/dalvik_dump.py com.kiwi.sdk.Kiwi --meth Init
 python tools/dex_xref.py meth com.kiwi.sdk.Kiwi Init
+```
 
-# 3. 提取资源（一次性）
+### 8.4 提取资源（一次性）
+
+```bash
 python - <<'PY'
 import zipfile
 z = zipfile.ZipFile('assets/channel.apk')
@@ -286,4 +413,15 @@ open('app/src/main/jniLibs/arm64-v8a/libkiwi.so','wb').write(z.read('lib/arm64-v
 with zipfile.ZipFile('app/src/main/assets/kiwi-sdk.jar','w',zipfile.ZIP_DEFLATED) as out:
     out.writestr('classes.dex', z.read('classes3.dex'))
 PY
+```
+
+### 8.5 在设备上快速迭代 appKey（不用每次等 CI）
+
+```bash
+# 直接改 prefs 再冷启动，30 秒一轮
+adb shell "su -c 'cp /data/local/tmp/tm_live.xml /data/data/com.duocai.live.debug/shared_prefs/tm_live.xml'"
+adb shell am force-stop com.duocai.live.debug
+adb logcat -G 32M                       # 先加大缓冲，否则会被 MESA 刷屏冲掉
+adb logcat -s KiwiSDK:V kiwitest:V &
+adb shell monkey -p com.duocai.live.debug -c android.intent.category.LAUNCHER 1
 ```

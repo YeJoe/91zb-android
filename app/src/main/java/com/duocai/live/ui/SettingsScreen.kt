@@ -145,6 +145,12 @@ fun SettingsScreen(c: AppContainer) {
             if (t.initCode != Int.MIN_VALUE) {
                 InfoLine("SDK Init 返回码 ${t.initCode}" + if (t.initCode == 0) "（0 = 握手成功）" else "")
             }
+            // 每个 vhost 组的探测明细：`组=端口:状态码`，200 后面打 ✓ 就是命中的那个组。
+            // -5 = 组名不存在（SDK 组表里没有），404 = 组存在但远端没这个路径，
+            // -1 = 连不上/超时，-2 = 回了 200 但没有 rooms 字段。
+            if (t.diag.isNotBlank()) {
+                InfoLine("组探测：${t.diag}")
+            }
             Spacer(Modifier.height(8.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(

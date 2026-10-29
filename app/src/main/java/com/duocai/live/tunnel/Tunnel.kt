@@ -8,6 +8,10 @@ import com.duocai.live.data.Prefs
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
+import java.io.File
+import java.net.HttpURLConnection
+import java.net.URL
+import java.util.zip.GZIPInputStream
 
 /**
  * 内置隧道的运行外壳：把 [KiwiSdk] 那套"在 IO 线程同步握手"的调用包成可观测的状态。
@@ -21,6 +25,16 @@ import kotlinx.coroutines.withContext
  * 未启动 ──start()──► 握手(IO, 数秒) ──► 就绪(port>0) ──► LiveRepo 走 127.0.0.1:port
  *                        └──失败──► 失败(msg)  ──► LiveRepo 退回扫描本机端口（源 App 模式）
  * ```
+ *
+ * ## 为什么"拿到端口"还不算成功
+ *
+ * SDK 会给**每个 vhost 组**各开一个本地 listener（源 App 进程里同时有 17 个 LISTEN 端口，
+ * 其中 13 个对应 13 个组）。`ServerToLocal(group)` 只回答"这个组有没有 listener"，
+ * 它不回答"这个组是不是挂 `/room` 前缀的那一个"。
+ *
+ * 实测：随便挑一个组拿到端口去打 `/room/get_list_by_ids`，回的是 openresty 的 404 HTML
+ * ——说明**隧道是通的**（请求确实到了远端），只是 Host 路由到了错的 vhost。
+ * 所以 [start] 里必须"拿到端口后再真打一次接口"，能回 `{"rooms":…}` 的那个组才算数。
  */
 class Tunnel(private val context: Context, private val prefs: Prefs) {
 
@@ -42,6 +56,10 @@ class Tunnel(private val context: Context, private val prefs: Prefs) {
         private set
 
     var host by mutableStateOf("")
+        private set
+
+    /** 命中 /room 的那个 vhost 组名（`kiwi_go` 之类） */
+    var group by mutableStateOf("")
         private set
 
     /** 最近一次启动的探测明细（每个 group 的返回码），失败时贴给设置页看 */
@@ -91,37 +109,43 @@ class Tunnel(private val context: Context, private val prefs: Prefs) {
                 // RestartAllServer 才会真正起起来；少了这步 ServerToLocal 必返 -5。
                 message = "启动隧道 listener…"
                 KiwiSdk.restartAllServer(context)
+
+                // listener 是被 native 线程异步拉起来的，给它们一点时间 bind。
+                // 太短会看到"组存在但端口还没开"，太长相册等待；1.5s 是实测够用的值。
                 delay(1500)
 
-                // 一次把所有候选 group 都问一遍，结果留在 [diag] 里给设置页看。
-                // group 名是 vhost，源 App 用的是 kiwi_live（http://kiwi_live/tunnel/…），
-                // 其余的按命名习惯排出，谁通一眼就能看出来。
+                // 一次把所有 vhost 都问一遍：ServerToLocal 只负责"这个组有没有 listener"，
+                // 有 listener 也不代表它就是房间接口那个组，所以拿到端口后再真打一次
+                // /room/get_list_by_ids 才算数。结果全部留在 [diag] 里。
                 val tries = StringBuilder("init=$code")
                 var got = false
                 for (g in GROUPS) {
-                    var c = Int.MIN_VALUE
-                    for (i in 0 until 2) {
-                        c = KiwiSdk.serverToLocal(context, g)
-                        if (c == 0 && KiwiSdk.port > 0) break
-                        if (i == 0) delay(600)
+                    val c = KiwiSdk.serverToLocal(context, g)
+                    tries.append(" | ").append(g).append('=')
+                    if (c != 0 || KiwiSdk.port <= 0) {
+                        tries.append(c)
+                        continue
                     }
-                    tries.append(" | ").append(g).append('=').append(c)
-                    if (c == 0 && KiwiSdk.port > 0) {
+                    val p = KiwiSdk.port
+                    val rc = probeRoom(p)
+                    tries.append(p).append(':').append(rc).append(if (rc == 200) "✓" else "?")
+                    if (rc == 200) {
+                        host = KiwiSdk.host
+                        port = p
+                        group = g
                         got = true
                         break
                     }
                 }
                 diag = tries.toString()
                 if (!got) {
-                    fail("ServerToLocal 没拿到端口：$tries")
+                    fail("没有组挂 /room 前缀：$tries")
                     return@withContext false
                 }
 
-                host = KiwiSdk.host
-                port = KiwiSdk.port
                 prefs.tunnelPort = port
                 state = State.READY
-                message = "隧道就绪 $host:$port（$diag）"
+                message = "隧道就绪 $host:$port（$group）"
                 true
             }
         } catch (t: Throwable) {
@@ -136,6 +160,7 @@ class Tunnel(private val context: Context, private val prefs: Prefs) {
     suspend fun restart(appKey: String = prefs.kiwiAppKey): Boolean {
         KiwiSdk.reset()
         state = State.IDLE
+        group = ""
         return start(appKey)
     }
 
@@ -145,11 +170,78 @@ class Tunnel(private val context: Context, private val prefs: Prefs) {
         port = 0
     }
 
+    // ------------------------------------------------------------------ 探针
+    /**
+     * 打一发 `/room/get_list_by_ids` 看这个端口到底挂了哪个 vhost。
+     *
+     * 判据和 [com.duocai.live.data.LiveRepo.probePort] 一致：只有对的 vhost 才会回
+     * `{"code":0,"rooms":[...]}`。错的 vhost 会被 nginx 直接 404（HTML），
+     * 或者只回 `{"code":-1,"msg":"ids is null"}` 这种空壳。
+     *
+     * @return HTTP 状态码（200 = 这个端口就是 /room 的 vhost）；-1 = 连不上/超时
+     */
+    private fun probeRoom(port: Int): Int {
+        val id = sampleRoomId() ?: return -1
+        return runCatching {
+            val conn = (URL("http://127.0.0.1:$port/room/get_list_by_ids")
+                .openConnection() as HttpURLConnection)
+            try {
+                conn.requestMethod = "POST"
+                conn.connectTimeout = 2000
+                conn.readTimeout = 3000
+                conn.doOutput = true
+                // 这几个头照抄 Dart HttpClient，缺了服务端会挑刺
+                conn.setRequestProperty("content-type", "application/json")
+                conn.setRequestProperty("accept-encoding", "gzip")
+                conn.setRequestProperty("user-agent", "Dart/3.10 (dart:io)")
+                conn.outputStream.use { it.write("""{"ids":"$id"}""".toByteArray()) }
+
+                val code = conn.responseCode
+                if (code !in 200..299) return code
+                val stream = conn.inputStream ?: return -1
+                var raw = stream.use { it.readBytes() }
+                if (raw.size >= 2 && raw[0] == 0x1f.toByte() && raw[1] == 0x8b.toByte()) {
+                    raw = GZIPInputStream(raw.inputStream()).use { it.readBytes() }
+                }
+                // 状态 200 还不够：有的 vhost 会回一个 200 的空 JSON 空壳
+                val text = String(raw, Charsets.UTF_8)
+                if (text.contains("\"rooms\"")) 200 else -2
+            } finally {
+                conn.disconnect()
+            }
+        }.getOrDefault(-1)
+    }
+
+    /**
+     * 拿一个**真实**房间号当探针样本。
+     *
+     * 不能用瞎编的 id：服务端对不存在的 id 也回 200 + 空 rooms，
+     * 那就分不出"vhost 对但 id 错"和"vhost 错"了。
+     * 顺序：先 filesDir（跑过一次就有，可能已增量），再 assets 里的种子。
+     */
+    private fun sampleRoomId(): Long? {
+        runCatching {
+            val f = File(context.filesDir, "room_ids.txt")
+            if (f.exists()) {
+                f.useLines { lines ->
+                    lines.firstOrNull { it.trim().toLongOrNull() != null }
+                        ?.trim()?.toLongOrNull()?.let { return it }
+                }
+            }
+        }
+        return runCatching {
+            context.assets.open("room_ids.txt").bufferedReader().use { r ->
+                r.lineSequence().map { it.trim() }.firstOrNull { it.toLongOrNull() != null }
+                    ?.toLongOrNull()
+            }
+        }.getOrNull()
+    }
+
     /**
      * 逐个试候选 appKey，返回可读的结果串。
      *
-     * 为什么要这个：appKey 是从 `libapp.so` 的对象池里"考古"出来的，
-     * 候选不止一个。SDK 的 `Init` 只在**失败**时才允许换 key 重试
+     * 为什么要这个：appKey 是从源 App 内存里 dump 出来的，候选不止一个。
+     * SDK 的 `Init` 只在**失败**时才允许换 key 重试
      * （成功后会把 `init_appkey` 清空并直接 return 缓存的 `init_code`），
      * 所以这个循环天然只能"失败就试下一个"，一旦某个返回 0 就停。
      */
@@ -166,13 +258,29 @@ class Tunnel(private val context: Context, private val prefs: Prefs) {
             val c = KiwiSdk.init(context, k)
             sb.append(k.take(10)).append("…=").append(c)
             if (c == 0) {
-                val lc = KiwiSdk.serverToLocal(context)
-                sb.append(" port=").append(KiwiSdk.port).append(" (local=$lc)")
-                initCode = 0
-                state = State.READY
-                port = KiwiSdk.port
-                host = KiwiSdk.host
-                message = "隧道就绪 $host:$port"
+                KiwiSdk.restartAllServer(context)
+                delay(1500)
+                // 换 key 之后组表也可能变，重新走一遍组探测
+                var hit: Pair<String, Int>? = null
+                for (g in GROUPS) {
+                    if (KiwiSdk.serverToLocal(context, g) == 0 && KiwiSdk.port > 0 &&
+                        probeRoom(KiwiSdk.port) == 200
+                    ) {
+                        hit = g to KiwiSdk.port
+                        break
+                    }
+                }
+                if (hit != null) {
+                    initCode = 0
+                    state = State.READY
+                    host = KiwiSdk.host
+                    port = hit.second
+                    group = hit.first
+                    message = "隧道就绪 $host:$port（$group）"
+                    sb.append(" port=").append(hit.second).append(" group=").append(hit.first)
+                } else {
+                    sb.append(" 组探测失败")
+                }
                 break
             }
             sb.append("  ")
@@ -181,34 +289,36 @@ class Tunnel(private val context: Context, private val prefs: Prefs) {
     }
 
     private companion object {
-        /** 房间列表挂在 `kiwi_live` 这个 vhost 上（`http://kiwi_live/tunnel/…`） */
-        const val GROUP = "kiwi_live"
-
         /**
-         * 逐个试的 vhost 名。
+         * 13 个真实 vhost 组名 —— 2026-10-29 从源 App 的 native 堆里全量扫出来的。
          *
-         * `kiwi_live` 是确定值（源 App 的 Dart 常量里有 `http://kiwi_live/tunnel/a033b072?z=1&nobase64=1`），
-         * 后面几个是按同一命名习惯排的：SDK 会给每个 vhost 开一个独立 listener，
-         * 源 App 进程里同时开着十几个本地端口，说明组不止一个。
+         * 顺序是按"最可能是业务网关"排的：`go` 看着像网关入口，`selly` / `ssg` / `rz`
+         * 是业务侧，`cdn` / `install` 是静态资源，`pay` 是支付，`im` 是长连接。
+         *
+         * 注意 **没有 `kiwi_live`** —— `http://kiwi_live/tunnel/…` 里那个 `kiwi_live`
+         * 是 Dart 侧自己起的伪域名（走本机 listener 的 Host 头），SDK 的组表里不存在它，
+         * 问它只会拿到 -5。放在末尾当对照，方便在 [diag] 里一眼看出基线。
          */
         val GROUPS = listOf(
-            "kiwi_live", "kiwi_hd", "kiwi_im", "kiwi_api", "kiwi_room",
-            "kiwi", "kiwi_default", "default"
+            "kiwi_go", "kiwi_selly", "kiwi_ssg", "kiwi_rz", "kiwi_hd",
+            "kiwi_im", "kiwi_whd", "kiwi_bobi", "kiwi_kd", "kiwi_cdn",
+            "kiwi_install", "kiwi_pay", "kiwi_yx",
+            "kiwi_live"
         )
 
         /**
          * 候选 appKey，按可能性排序。
          *
-         * 前两个来自 blutter 从 `libapp.so` 对象池 dump 出的 `main.dart` 常量区
-         * （和 `"kiwi_"`、`http://kiwi_live/tunnel/a033b072?z=1&nobase64=1` 紧挨着），
-         * 后几个是本文件同一段高熵扫描出来的漏网之鱼。
+         * 第一个是实测可用的真值（从源 App Dalvik 堆 dump 出来的 1432 字符 base64，
+         * 是 AES 密文不是口令，`Init` 内部自己解密再喂给 `ParseAppkey`）。
+         * 后面几个是早期从 `libapp.so` 对象池里高熵扫描出的误报，留着只为兼容旧日志。
          */
         val CANDIDATES = listOf(
             "cZ1dAC6cE5wlH9E0mg4fly6B5ASMXBU4",
             "fOes34Zne6uYRwId2gVe7A",
             "nZ8h4drPrYCVjtsqqRF1gw",
             "0JirRihgtC6i1kalOn",
-            "GyMkSEahKHcLQdDmsvzZ"
+            "GyMkSEahKHcLdDmsvzZ"
         )
     }
 }
