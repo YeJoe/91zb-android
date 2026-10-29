@@ -20,6 +20,7 @@
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|uiMode|smallestScreenSize"
             android:exported="true"
             android:launchMode="singleTop"
+            android:resizeableActivity="true"
             android:screenOrientation="portrait"
             android:supportsPictureInPicture="true"
             android:theme="@style/Theme.TMLive"

@@ -204,7 +204,7 @@ fun HomeScreen(c: AppContainer) {
         ) {
             Column(Modifier.weight(1f)) {
                 Text(
-                    "DC LIVE",
+                    "TM LIVE",
                     fontSize = 20.sp,
                     fontWeight = FontWeight.Black,
                     letterSpacing = 1.5.sp,

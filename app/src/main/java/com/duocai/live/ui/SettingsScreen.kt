@@ -591,7 +591,7 @@ fun SettingsScreen(c: AppContainer) {
 
         // ---------- 关于 ----------
         Section("关于") {
-            InfoLine("DC Live ${c.versionName}")
+            InfoLine("TM Live ${c.versionName}")
             InfoLine("包名 com.duocai.live · 直播流直连，不经过任何中间服务器")
             InfoLine("直播列表直连源 App 隧道端口，数据是服务端实时值；拉列表不需要任何凭证")
             InfoLine("播放地址来自第三方 CDN，仅供协议学习研究")

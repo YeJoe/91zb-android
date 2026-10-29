@@ -36,6 +36,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.ExitToApp
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Star
@@ -177,6 +178,13 @@ fun PlayerScreen(c: AppContainer, startIndex: Int, onClose: () -> Unit) {
     val inPip = host?.inPip == true
     val pipAvailable = remember(host) { host?.pipSupported() == true }
 
+    // 画中画参数跟着「自动进小窗」开关走。API 31+ 由系统靠 setAutoEnterEnabled
+    // 自己决定进入时机，不再在 onUserLeaveHint 里手动进（那条路会和系统手势动画抢
+    // 时序，导致小窗上的展开/关闭按钮点不动 —— 见 MainActivity.syncPip）。
+    LaunchedEffect(host, pipAvailable, c.autoPip) {
+        if (host != null && pipAvailable) host.syncPip(c.autoPip)
+    }
+
     val settled = pager.settledPage
     val offset = pager.currentPageOffsetFraction
     val room = rooms.getOrNull(settled) ?: rooms[safeStart]
@@ -305,8 +313,32 @@ fun PlayerScreen(c: AppContainer, startIndex: Int, onClose: () -> Unit) {
             }
         }
 
-        // 出错浮层
-        holder.error?.let { err ->
+        // 小窗里系统自带的「展开 / 关闭」控件在部分 ROM 上会失灵（点了完全没反应），
+        // 这里自己画一个还原按钮兜底：点一下直接把任务拉回前台回到全屏。
+        // 放右上角 + 半透明，尽量不挡画面。
+        if (inPip) {
+            Box(
+                Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(top = 6.dp, end = 6.dp)
+                    .size(26.dp)
+                    .clip(CircleShape)
+                    .background(Color.Black.copy(alpha = 0.42f))
+                    .clickable { host?.exitPipToFull() },
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    Icons.Filled.ExitToApp,
+                    contentDescription = "还原全屏",
+                    tint = Color.White.copy(alpha = 0.92f),
+                    modifier = Modifier.size(15.dp)
+                )
+            }
+        }
+
+        // 出错浮层。小窗里不弹：尺寸不够摆不下按钮，而且这时候用户也没法操作，
+        // 摆上去只会把画面整个盖住。
+        if (!inPip) holder.error?.let { err ->
             val urls = room.streamUrls(c.prefs.rtmpDomain, StreamMode.of(c.streamMode))
             ErrorOverlay(
                 message = err,
