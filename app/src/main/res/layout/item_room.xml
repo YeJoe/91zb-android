@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
   房间卡片：封面固定 3:4 比例（随列宽自适应缩放，不再被压成横条），下方信息区。
+  颜色全部走语义色，跟随系统深浅色。
 -->
 <com.google.android.material.card.MaterialCardView
     xmlns:android="http://schemas.android.com/apk/res/android"
@@ -10,10 +11,10 @@
     android:layout_margin="6dp"
     android:clickable="true"
     android:focusable="true"
-    app:cardBackgroundColor="#151B24"
+    app:cardBackgroundColor="@color/surface"
     app:cardCornerRadius="14dp"
     app:cardElevation="0dp"
-    app:strokeColor="#232C3A"
+    app:strokeColor="@color/stroke"
     app:strokeWidth="1dp">
 
     <androidx.constraintlayout.widget.ConstraintLayout
@@ -24,7 +25,7 @@
             android:id="@+id/cover"
             android:layout_width="0dp"
             android:layout_height="0dp"
-            android:background="#1D2430"
+            android:background="@color/surface_alt"
             android:contentDescription="封面"
             android:scaleType="centerCrop"
             app:layout_constraintDimensionRatio="3:4"
@@ -58,7 +59,7 @@
             android:layout_marginEnd="10dp"
             android:ellipsize="end"
             android:singleLine="true"
-            android:textColor="#E6E9EF"
+            android:textColor="@color/text_primary"
             android:textSize="13sp"
             android:textStyle="bold"
             app:layout_constraintEnd_toEndOf="parent"
@@ -73,7 +74,7 @@
             android:layout_marginEnd="10dp"
             android:ellipsize="end"
             android:singleLine="true"
-            android:textColor="#8B95A7"
+            android:textColor="@color/text_secondary"
             android:textSize="11sp"
             app:layout_constraintEnd_toEndOf="parent"
             app:layout_constraintStart_toStartOf="parent"
@@ -89,7 +90,7 @@
             android:layout_marginBottom="10dp"
             android:ellipsize="end"
             android:singleLine="true"
-            android:textColor="#3DDC97"
+            android:textColor="@color/good"
             android:textSize="10sp"
             app:layout_constraintBottom_toBottomOf="parent"
             app:layout_constraintEnd_toEndOf="parent"

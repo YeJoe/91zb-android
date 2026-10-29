@@ -1,5 +1,35 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  语义色（日间）。values-night/colors.xml 里给出同名深色值，
+  布局与代码只引用语义名，系统切深色时自动换肤。
+-->
 <resources>
     <color name="black">#FF000000</color>
-    <color name="bg">#FF0E1117</color>
+    <color name="white">#FFFFFFFF</color>
+
+    <!-- 页面 / 卡片 -->
+    <color name="bg">#FFF5F6FA</color>
+    <color name="surface">#FFFFFFFF</color>
+    <color name="surface_alt">#FFEFF1F7</color>
+    <color name="stroke">#FFE3E7EF</color>
+
+    <!-- 文字 -->
+    <color name="text_primary">#FF12141C</color>
+    <color name="text_secondary">#FF66707F</color>
+    <color name="text_hint">#FF9AA3B2</color>
+
+    <!-- 主题色 -->
+    <color name="accent">#FFE8437A</color>
+    <color name="accent_ink">#FFFFFFFF</color>
+    <color name="accent_tint">#14E8437A</color>
+    <color name="good">#FF1F9E68</color>
+    <color name="warn">#FFD9534F</color>
+
+    <!-- 底部导航 -->
+    <color name="nav_bar">#FFFFFFFF</color>
+    <color name="nav_idle">#FF8A92A2</color>
+
+    <!-- 播放页恒为深色（视频场景不跟随系统，避免白底晃眼） -->
+    <color name="player_bg">#FF05070B</color>
+    <color name="player_panel">#FF0B0E14</color>
 </resources>

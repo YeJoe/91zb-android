@@ -1,141 +1,128 @@
 <?xml version="1.0" encoding="utf-8"?>
-<androidx.coordinatorlayout.widget.CoordinatorLayout
-    xmlns:android="http://schemas.android.com/apk/res/android"
+<!--
+  主界面外壳：上方是可切换的三个页面（首页 / 关注 / 设置），下方是底部导航。
+  页面用 include 引入，切换只改 visibility，避免重建列表、保留滚动位置。
+-->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="#0E1117">
+    android:background="@color/bg"
+    android:orientation="vertical">
+
+    <FrameLayout
+        android:id="@+id/pages"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1">
+
+        <include
+            android:id="@+id/pageHome"
+            layout="@layout/page_home" />
+
+        <include
+            android:id="@+id/pageFollow"
+            layout="@layout/page_follow"
+            android:visibility="gone" />
+
+        <include
+            android:id="@+id/pageSettings"
+            layout="@layout/page_settings"
+            android:visibility="gone" />
+    </FrameLayout>
+
+    <View
+        android:layout_width="match_parent"
+        android:layout_height="1dp"
+        android:background="@color/stroke" />
 
     <LinearLayout
+        android:id="@+id/navBar"
         android:layout_width="match_parent"
-        android:layout_height="match_parent"
-        android:orientation="vertical">
+        android:layout_height="56dp"
+        android:background="@color/nav_bar"
+        android:orientation="horizontal">
 
-        <!-- 顶部：标题 + 搜索 -->
         <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:gravity="center_vertical"
-            android:orientation="horizontal"
-            android:paddingLeft="14dp"
-            android:paddingTop="12dp"
-            android:paddingRight="14dp"
-            android:paddingBottom="8dp">
+            android:id="@+id/navHome"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1"
+            android:background="?attr/selectableItemBackground"
+            android:gravity="center"
+            android:orientation="vertical">
 
-            <LinearLayout
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:orientation="vertical">
-
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="直播"
-                    android:textColor="#E6E9EF"
-                    android:textSize="19sp"
-                    android:textStyle="bold" />
-
-                <TextView
-                    android:id="@+id/meta"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="1dp"
-                    android:text="加载中…"
-                    android:textColor="#7C8699"
-                    android:textSize="11sp" />
-            </LinearLayout>
+            <ImageView
+                android:id="@+id/navHomeIcon"
+                android:layout_width="22dp"
+                android:layout_height="22dp"
+                android:contentDescription="首页"
+                android:src="@drawable/ic_home"
+                app:tint="@color/accent" />
 
             <TextView
-                android:id="@+id/btnFilter"
-                android:layout_width="wrap_content"
-                android:layout_height="38dp"
-                android:layout_marginRight="8dp"
-                android:background="@drawable/bg_field"
-                android:gravity="center"
-                android:paddingLeft="10dp"
-                android:paddingRight="10dp"
-                android:text="过滤广告"
-                android:textColor="#7FD1A8"
-                android:textSize="12sp" />
-
-            <EditText
-                android:id="@+id/search"
-                android:layout_width="132dp"
-                android:layout_height="38dp"
-                android:background="@drawable/bg_field"
-                android:hint="搜索主播 / 房间"
-                android:imeOptions="actionSearch"
-                android:inputType="text"
-                android:paddingLeft="12dp"
-                android:paddingRight="10dp"
-                android:singleLine="true"
-                android:textColor="#E6E9EF"
-                android:textColorHint="#5B6376"
-                android:textSize="12sp" />
-
-            <!-- 右上角设置：域名 / 令牌 / 弹幕地址 -->
-            <ImageView
-                android:id="@+id/btnSettings"
-                android:layout_width="38dp"
-                android:layout_height="38dp"
-                android:layout_marginLeft="8dp"
-                android:background="@drawable/bg_field"
-                android:contentDescription="设置"
-                android:padding="9dp"
-                android:src="@drawable/ic_settings"
-                app:tint="#E6E9EF" />
-        </LinearLayout>
-
-        <!-- 分类标签：水平滚动，单选 -->
-        <HorizontalScrollView
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:paddingLeft="10dp"
-            android:paddingRight="10dp"
-            android:paddingBottom="6dp"
-            android:scrollbars="none">
-
-            <com.google.android.material.chip.ChipGroup
-                android:id="@+id/chips"
+                android:id="@+id/navHomeText"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                app:chipSpacingHorizontal="8dp"
-                app:singleLine="true"
-                app:singleSelection="true" />
-        </HorizontalScrollView>
+                android:layout_marginTop="3dp"
+                android:text="首页"
+                android:textColor="@color/accent"
+                android:textSize="10.5sp" />
+        </LinearLayout>
 
-        <androidx.swiperefreshlayout.widget.SwipeRefreshLayout
-            android:id="@+id/swipe"
-            android:layout_width="match_parent"
-            android:layout_height="0dp"
-            android:layout_weight="1">
+        <LinearLayout
+            android:id="@+id/navFollow"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1"
+            android:background="?attr/selectableItemBackground"
+            android:gravity="center"
+            android:orientation="vertical">
 
-            <FrameLayout
-                android:layout_width="match_parent"
-                android:layout_height="match_parent">
+            <ImageView
+                android:id="@+id/navFollowIcon"
+                android:layout_width="22dp"
+                android:layout_height="22dp"
+                android:contentDescription="关注"
+                android:src="@drawable/ic_heart"
+                app:tint="@color/nav_idle" />
 
-                <androidx.recyclerview.widget.RecyclerView
-                    android:id="@+id/rv"
-                    android:layout_width="match_parent"
-                    android:layout_height="match_parent"
-                    android:clipToPadding="false"
-                    android:paddingLeft="8dp"
-                    android:paddingTop="2dp"
-                    android:paddingRight="8dp"
-                    android:paddingBottom="24dp" />
+            <TextView
+                android:id="@+id/navFollowText"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="3dp"
+                android:text="关注"
+                android:textColor="@color/nav_idle"
+                android:textSize="10.5sp" />
+        </LinearLayout>
 
-                <TextView
-                    android:id="@+id/empty"
-                    android:layout_width="match_parent"
-                    android:layout_height="match_parent"
-                    android:gravity="center"
-                    android:text="加载中…"
-                    android:textColor="#8B95A7"
-                    android:textSize="14sp"
-                    android:visibility="gone" />
-            </FrameLayout>
-        </androidx.swiperefreshlayout.widget.SwipeRefreshLayout>
+        <LinearLayout
+            android:id="@+id/navSettings"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1"
+            android:background="?attr/selectableItemBackground"
+            android:gravity="center"
+            android:orientation="vertical">
+
+            <ImageView
+                android:id="@+id/navSettingsIcon"
+                android:layout_width="22dp"
+                android:layout_height="22dp"
+                android:contentDescription="设置"
+                android:src="@drawable/ic_settings"
+                app:tint="@color/nav_idle" />
+
+            <TextView
+                android:id="@+id/navSettingsText"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="3dp"
+                android:text="设置"
+                android:textColor="@color/nav_idle"
+                android:textSize="10.5sp" />
+        </LinearLayout>
     </LinearLayout>
 
-</androidx.coordinatorlayout.widget.CoordinatorLayout>
+</LinearLayout>

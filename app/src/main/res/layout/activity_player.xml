@@ -98,8 +98,8 @@
                 android:textSize="15sp" />
         </LinearLayout>
 
-        <!-- 聊天区：半屏时是深色面板，全屏时是压画面底部的渐隐层 -->
-        <LinearLayout
+        <!-- 聊天区：右滑可甩走（SlideAwayLayout），甩走后变全屏、只留右下角"聊天"胶囊 -->
+        <com.jjlive.app.SlideAwayLayout
             android:id="@+id/chatPanel"
             android:layout_width="match_parent"
             android:layout_height="260dp"
@@ -167,7 +167,24 @@
                 android:paddingRight="16dp"
                 android:paddingBottom="4dp"
                 android:scrollbars="none" />
-        </LinearLayout>
+        </com.jjlive.app.SlideAwayLayout>
+
+        <!-- 聊天区被右滑收起后，用这个小胶囊叫回来 -->
+        <TextView
+            android:id="@+id/btnChat"
+            android:layout_width="wrap_content"
+            android:layout_height="30dp"
+            android:layout_gravity="bottom|start"
+            android:layout_marginStart="14dp"
+            android:layout_marginBottom="52dp"
+            android:background="@drawable/pill_dark"
+            android:gravity="center"
+            android:paddingLeft="12dp"
+            android:paddingRight="12dp"
+            android:text="聊天"
+            android:textColor="#E8EDF5"
+            android:textSize="11.5sp"
+            android:visibility="gone" />
 
         <!-- 底部信息条：清晰度 / 码率 -->
         <LinearLayout

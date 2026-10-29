@@ -1,15 +1,17 @@
 package com.jjlive.app
 
 import android.content.res.ColorStateList
-import android.graphics.Color
 import android.os.Bundle
 import android.view.View
 import android.view.inputmethod.EditorInfo
 import android.widget.EditText
+import android.widget.ImageView
 import android.widget.TextView
 import android.widget.Toast
-import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.ContextCompat
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import androidx.swiperefreshlayout.widget.SwipeRefreshLayout
@@ -22,13 +24,33 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+/**
+ * 主界面：底部三个分类。
+ *
+ *  · 首页 —— 分类标签 + 房间网格，支持搜索、过滤广告房；
+ *  · 关注 —— 拉真实关注列表（/home/user/attention/list），空态给推荐并支持一键关注；
+ *  · 设置 —— 域名 / 令牌 / 弹幕地址 + 播放偏好。
+ *
+ * 三个页面用 include 引入、切 tab 只改 visibility：不重建列表，回来还在原滚动位置。
+ */
 class MainActivity : AppCompatActivity() {
 
     private lateinit var store: TokenStore
     private lateinit var api: Api
-    private lateinit var adapter: RoomAdapter
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
 
+    // 外壳
+    private lateinit var pages: View
+    private lateinit var navBar: View
+    private lateinit var pageHome: View
+    private lateinit var pageFollow: View
+    private lateinit var pageSettings: View
+    private lateinit var followPage: FollowPage
+    private lateinit var settingsPage: SettingsPage
+    private var tab = TAB_HOME
+
+    // 首页
+    private lateinit var adapter: RoomAdapter
     private lateinit var swipe: SwipeRefreshLayout
     private lateinit var rv: RecyclerView
     private lateinit var empty: TextView
@@ -41,9 +63,8 @@ class MainActivity : AppCompatActivity() {
     private val shown = ArrayList<Room>()
     private var category = ALL
     private var query = ""
-    private var hideJunk = true
-    private var filteredOut = 0
     private var cats: List<Category> = emptyList()
+    private var filterHits = 0
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -52,41 +73,31 @@ class MainActivity : AppCompatActivity() {
         store = TokenStore(this)
         api = Api(store)
 
-        swipe = findViewById(R.id.swipe)
-        rv = findViewById(R.id.rv)
-        empty = findViewById(R.id.empty)
-        meta = findViewById(R.id.meta)
-        chips = findViewById(R.id.chips)
-        search = findViewById(R.id.search)
-        btnFilter = findViewById(R.id.btnFilter)
+        pages = findViewById(R.id.pages)
+        navBar = findViewById(R.id.navBar)
+        pageHome = findViewById(R.id.pageHome)
+        pageFollow = findViewById(R.id.pageFollow)
+        pageSettings = findViewById(R.id.pageSettings)
 
-        hideJunk = getSharedPreferences("jjlive", MODE_PRIVATE).getBoolean("hideJunk", true)
-        renderFilterButton()
-        btnFilter.setOnClickListener {
-            hideJunk = !hideJunk
-            getSharedPreferences("jjlive", MODE_PRIVATE).edit().putBoolean("hideJunk", hideJunk).apply()
-            renderFilterButton()
-            buildChips(cats)
-            filter(query)
-        }
+        setupHome()
+        followPage = FollowPage(this, pageFollow,
+            api = api,
+            scope = scope,
+            onOpen = { list, idx -> PlayerActivity.start(this, list, idx) },
+            onGoHome = { selectTab(TAB_HOME) })
+        settingsPage = SettingsPage(
+            act = this,
+            root = pageSettings,
+            store = store,
+            api = api,
+            scope = scope,
+            onSaved = { load(refreshAll = true) },   // 换了域名/令牌：首页重拉
+            onFilterChanged = { onFilterPrefChanged() }
+        )
 
-        // 列数按屏幕宽度自适应：手机 2 列，平板/横屏 4~6 列，避免卡片被拉成长条
-        rv.layoutManager = GridLayoutManager(this, spanCount())
-        // 把当前可见列表整份带进播放页，播放页据此支持上下滑动切换直播间
-        adapter = RoomAdapter(shown) { _, pos -> PlayerActivity.start(this, shown.toList(), pos) }
-        rv.adapter = adapter
-
-        swipe.setOnRefreshListener { load() }
-
-        findViewById<View>(R.id.btnSettings).setOnClickListener { showSettings() }
-        search.setOnEditorActionListener { _, actionId, _ ->
-            if (actionId == EditorInfo.IME_ACTION_SEARCH) { filter(search.text.toString()); true }
-            else false
-        }
-
-        buildChips(emptyList())
-        // 令牌有内置默认值，首次打开直接进列表；要换域名/令牌点右上角齿轮
-        load()
+        selectTab(TAB_HOME, animate = false)
+        applyNavInsets()
+        load(refreshAll = true)
     }
 
     override fun onDestroy() {
@@ -94,96 +105,137 @@ class MainActivity : AppCompatActivity() {
         super.onDestroy()
     }
 
+    // ─────────── 底部导航 ───────────
+
+    private fun setupHome() {
+        swipe = pageHome.findViewById(R.id.swipe)
+        rv = pageHome.findViewById(R.id.rv)
+        empty = pageHome.findViewById(R.id.empty)
+        meta = pageHome.findViewById(R.id.meta)
+        chips = pageHome.findViewById(R.id.chips)
+        search = pageHome.findViewById(R.id.search)
+        btnFilter = pageHome.findViewById(R.id.btnFilter)
+
+        rv.layoutManager = GridLayoutManager(this, spanCount())
+        adapter = RoomAdapter(shown) { _, pos -> PlayerActivity.start(this, shown.toList(), pos) }
+        rv.adapter = adapter
+
+        swipe.setColorSchemeColors(ContextCompat.getColor(this, R.color.accent))
+        swipe.setOnRefreshListener { load() }
+
+        pageHome.findViewById<View>(R.id.btnSettings).setOnClickListener { selectTab(TAB_SETTINGS) }
+        btnFilter.setOnClickListener {
+            store.hideJunk = !store.hideJunk
+            settingsPage.syncSwitches()
+            renderFilterButton()
+            buildChips(cats)
+            filter(query)
+        }
+        search.setOnEditorActionListener { _, actionId, _ ->
+            if (actionId == EditorInfo.IME_ACTION_SEARCH) { filter(search.text.toString()); true } else false
+        }
+
+        findViewById<View>(R.id.navHome).setOnClickListener { selectTab(TAB_HOME) }
+        findViewById<View>(R.id.navFollow).setOnClickListener { selectTab(TAB_FOLLOW) }
+        findViewById<View>(R.id.navSettings).setOnClickListener { selectTab(TAB_SETTINGS) }
+
+        renderFilterButton()
+        buildChips(emptyList())
+    }
+
+    private fun selectTab(which: Int, animate: Boolean = true) {
+        tab = which
+        val list = arrayOf(pageHome, pageFollow, pageSettings)
+        list.forEachIndexed { i, v ->
+            v.animate().cancel()
+            if (i == which) {
+                v.visibility = View.VISIBLE
+                if (animate) {
+                    v.alpha = 0f
+                    v.translationY = dp(10).toFloat()
+                    v.animate().alpha(1f).translationY(0f).setDuration(170).start()
+                } else {
+                    v.alpha = 1f
+                    v.translationY = 0f
+                }
+            } else {
+                v.visibility = View.GONE
+                v.alpha = 1f
+                v.translationY = 0f
+            }
+        }
+        updateNavColors()
+        when (which) {
+            TAB_FOLLOW -> followPage.onShown()
+            TAB_SETTINGS -> settingsPage.onShown()
+        }
+    }
+
+    private fun updateNavColors() {
+        val accent = ContextCompat.getColor(this, R.color.accent)
+        val idle = ContextCompat.getColor(this, R.color.nav_idle)
+        val tabs = arrayOf(
+            Triple(R.id.navHomeIcon, R.id.navHomeText, TAB_HOME),
+            Triple(R.id.navFollowIcon, R.id.navFollowText, TAB_FOLLOW),
+            Triple(R.id.navSettingsIcon, R.id.navSettingsText, TAB_SETTINGS)
+        )
+        for ((iconId, textId, idx) in tabs) {
+            val on = idx == tab
+            val c = if (on) accent else idle
+            findViewById<ImageView>(iconId).imageTintList = ColorStateList.valueOf(c)
+            findViewById<TextView>(textId).setTextColor(c)
+        }
+    }
+
+    /** 底部导航避开系统手势条。 */
+    private fun applyNavInsets() {
+        val baseH = dp(56)
+        ViewCompat.setOnApplyWindowInsetsListener(navBar) { v, insets ->
+            val bottom = insets.getInsets(WindowInsetsCompat.Type.systemBars()).bottom
+            v.setPadding(0, 0, 0, bottom)
+            v.layoutParams = v.layoutParams.apply { height = baseH + bottom }
+            insets
+        }
+        ViewCompat.requestApplyInsets(pages)
+    }
+
+    private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
+
     private fun spanCount(): Int {
         val widthDp = resources.displayMetrics.widthPixels / resources.displayMetrics.density
         return (widthDp / 170f).toInt().coerceIn(2, 6)
     }
 
+    // ─────────── 首页数据 ───────────
+
     /**
-     * 设置面板：接口域名 + 令牌（+ 弹幕地址）。
-     *
-     * 令牌失效时不用重装 App —— 原版每次换域名/换令牌都要重新打包，
-     * 这里把三个值落到 SharedPreferences，改完立刻重新拉列表。
+     * @param refreshAll true 表示连分类一起重新拉（改域名 / 令牌后必须），
+     *                   false 表示普通刷新（沿用已缓存的分类）。
      */
-    private fun showSettings() {
-        val v = layoutInflater.inflate(R.layout.dialog_settings, null)
-        val etHost = v.findViewById<EditText>(R.id.etHost)
-        val etToken = v.findViewById<EditText>(R.id.etToken)
-        val etIm = v.findViewById<EditText>(R.id.etIm)
-        val tvTip = v.findViewById<TextView>(R.id.tvTip)
-
-        etHost.setText(store.host)
-        etToken.setText(store.token)
-        etIm.setText(if (store.imHost == Cfg.IM_WS) "" else store.imHost)
-        tvTip.text = "令牌失效或域名被墙时改这里。弹幕地址一般不用动。"
-
-        val dlg = AlertDialog.Builder(this)
-            .setTitle("设置")
-            .setView(v)
-            .setPositiveButton("保存", null)
-            .setNeutralButton("测试", null)
-            .setNegativeButton("取消", null)
-            .create()
-        dlg.show()
-
-        dlg.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
-            val host = normalizeHost(etHost.text.toString())
-            if (host == null) {
-                etHost.error = "域名格式不对"
-                return@setOnClickListener
-            }
-            val token = etToken.text.toString().trim()
-            if (token.isEmpty()) {
-                etToken.error = "令牌不能为空"
-                return@setOnClickListener
-            }
-            store.host = host
-            store.token = token
-            store.imHost = etIm.text.toString()
-            dlg.dismiss()
-            Toast.makeText(this, "已保存，正在重新加载", Toast.LENGTH_SHORT).show()
-            load()
-        }
-
-        dlg.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener {
-            val host = normalizeHost(etHost.text.toString())
-            if (host == null) {
-                tvTip.setTextColor(Color.parseColor("#FF7A8A"))
-                tvTip.text = "域名格式不对，示例：https://utp.opuxrcm.com"
-                return@setOnClickListener
-            }
-            tvTip.setTextColor(Color.parseColor("#8B95A7"))
-            tvTip.text = "测试中…"
-            scope.launch {
-                val (ok, msg) = api.checkToken(host, etToken.text.toString().trim())
-                tvTip.setTextColor(Color.parseColor(if (ok) "#7FD1A8" else "#FF7A8A"))
-                tvTip.text = if (ok) "✓ 连接正常，可以保存" else "✗ 失败：$msg"
-            }
-        }
-
-        v.findViewById<TextView>(R.id.btnReset).setOnClickListener {
-            store.resetAll()
-            etHost.setText(store.host)
-            etToken.setText(store.token)
-            etIm.setText("")
-            tvTip.setTextColor(Color.parseColor("#8B95A7"))
-            tvTip.text = "已恢复内置默认值（点保存生效）"
-        }
-    }
-
-    private fun load() {
+    private fun load(refreshAll: Boolean = false) {
         swipe.isRefreshing = true
         scope.launch {
-            val cats = withContext(Dispatchers.IO) {
-                runCatching { Parser.categories(api.call("/home/recommend/cls")) }.getOrDefault(emptyList())
+            if (refreshAll || cats.isEmpty()) {
+                val c = withContext(Dispatchers.IO) {
+                    runCatching { Parser.categories(api.call("/home/recommend/cls")) }
+                        .getOrDefault(emptyList())
+                }
+                if (c.isNotEmpty()) cats = c
+                buildChips(cats)
             }
-            this@MainActivity.cats = cats
             val rooms = withContext(Dispatchers.IO) {
                 val out = LinkedHashMap<String, Room>()
                 for (c in cats) {
                     for (p in 1..40) {
                         val r = runCatching {
-                            api.call("/home/default/cls/query", mapOf("type" to c.fixedType.toString(), "pageNo" to p.toString(), "pageSize" to "20"))
+                            api.call(
+                                "/home/default/cls/query",
+                                mapOf(
+                                    "type" to c.fixedType.toString(),
+                                    "pageNo" to p.toString(),
+                                    "pageSize" to "20"
+                                )
+                            )
                         }.getOrNull() ?: break
                         val list = Parser.rooms(r)
                         if (list.isEmpty()) break
@@ -200,31 +252,34 @@ class MainActivity : AppCompatActivity() {
             swipe.isRefreshing = false
             all.clear()
             all.addAll(rooms)
-            buildChips(cats)
             filter(query)
             if (all.isEmpty()) {
                 empty.visibility = View.VISIBLE
-                empty.text = "没有获取到房间\n令牌可能已失效，点右上角 ⚙ 更新域名 / 令牌"
+                empty.text = "没有获取到房间\n令牌可能已失效，去「设置」更新域名 / 令牌"
             } else empty.visibility = View.GONE
         }
     }
 
-    // ─────────────────────── 分类标签 ───────────────────────
+    // ─────────── 分类标签 ───────────
 
     private fun buildChips(cats: List<Category>) {
         chips.removeAllViews()
         addChip(ALL)
         cats.map { it.name }.distinct()
-            .filter { !(hideJunk && it == "游戏") }   // 过滤开启时游戏分类恒为空，干脆不显示
+            .filter { !(store.hideJunk && it == "游戏") }
             .forEach { addChip(it) }
 
-        // 当前分类已经不在了（例如刷新后分类变动）就回到“全部”
         if (category != ALL && chips.findViewWithTag<Chip>(category) == null) category = ALL
         chips.findViewWithTag<Chip>(category)?.isChecked = true
     }
 
     private fun addChip(name: String) {
         val checked = intArrayOf(android.R.attr.state_checked)
+        val accent = ContextCompat.getColor(this, R.color.accent)
+        val onAccent = ContextCompat.getColor(this, R.color.accent_ink)
+        val chipBg = ContextCompat.getColor(this, R.color.surface_alt)
+        val chipText = ContextCompat.getColor(this, R.color.text_secondary)
+
         val chip = Chip(this).apply {
             text = name
             tag = name
@@ -237,16 +292,8 @@ class MainActivity : AppCompatActivity() {
             chipStartPadding = 4f
             chipEndPadding = 4f
             textSize = 12.5f
-            chipBackgroundColor = ColorStateList(
-                arrayOf(checked, intArrayOf()),
-                intArrayOf(Color.parseColor("#FF5C8A"), Color.parseColor("#1A2130"))
-            )
-            setTextColor(
-                ColorStateList(
-                    arrayOf(checked, intArrayOf()),
-                    intArrayOf(Color.WHITE, Color.parseColor("#AEB8C8"))
-                )
-            )
+            chipBackgroundColor = ColorStateList(arrayOf(checked, intArrayOf()), intArrayOf(accent, chipBg))
+            setTextColor(ColorStateList(arrayOf(checked, intArrayOf()), intArrayOf(onAccent, chipText)))
             setOnClickListener {
                 category = name
                 filter(query)
@@ -256,38 +303,52 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun renderFilterButton() {
-        btnFilter.text = if (hideJunk) "已过滤广告" else "未过滤"
+        btnFilter.text = if (store.hideJunk) "已过滤广告" else "未过滤"
         btnFilter.setTextColor(
-            if (hideJunk) Color.parseColor("#7FD1A8") else Color.parseColor("#8B95A7")
+            ContextCompat.getColor(this, if (store.hideJunk) R.color.good else R.color.text_secondary)
         )
+    }
+
+    /** 设置页改了过滤开关后回来同步首页按钮文案。 */
+    fun onFilterPrefChanged() {
+        renderFilterButton()
+        buildChips(cats)
+        filter(query)
     }
 
     private fun filter(q: String) {
         query = q
         val key = q.trim().lowercase()
 
-        // 广告 / 博彩 / 游戏房：默认过滤掉（anchorType=1 全是博彩推广房，名称关键字兜底）
-        val base = if (hideJunk) all.filter { !it.isAd && !it.isGame } else all
-        filteredOut = all.size - base.size
+        val base = if (store.hideJunk) all.filter { !it.isAd && !it.isGame } else all
+        filterHits = all.size - base.size
 
         shown.clear()
-        shown.addAll(base.filter {
-            (category == ALL || it.cats.contains(category)) &&
-                    (key.isEmpty() || it.userName.lowercase().contains(key) ||
-                            it.roomName.lowercase().contains(key) || it.roomId.contains(key))
-        }.sortedByDescending { it.hot })
+        shown.addAll(
+            base.filter {
+                (category == ALL || it.cats.contains(category)) &&
+                        (key.isEmpty() || it.userName.lowercase().contains(key) ||
+                                it.roomName.lowercase().contains(key) || it.roomId.contains(key))
+            }.sortedByDescending { it.hot }
+        )
         adapter.notifyDataSetChanged()
         rv.scrollToPosition(0)
-        empty.visibility = if (shown.isEmpty()) View.VISIBLE else View.GONE
-        if (shown.isEmpty() && all.isNotEmpty()) empty.text = "该分类下暂无主播"
+
+        if (shown.isEmpty()) {
+            empty.visibility = View.VISIBLE
+            if (all.isNotEmpty()) empty.text = "该分类下暂无主播"
+        } else empty.visibility = View.GONE
 
         meta.text = buildString {
             append("共 ${shown.size} 个在线房间")
-            if (filteredOut > 0) append(" · 已过滤 $filteredOut 个广告/游戏")
+            if (filterHits > 0) append(" · 已过滤 $filterHits 个广告/游戏")
         }
     }
 
     companion object {
         private const val ALL = "全部"
+        private const val TAB_HOME = 0
+        private const val TAB_FOLLOW = 1
+        private const val TAB_SETTINGS = 2
     }
 }

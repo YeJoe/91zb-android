@@ -97,7 +97,8 @@ class PlayerActivity : AppCompatActivity() {
 
     private lateinit var page: SwipeLayout
     private lateinit var videoBox: FrameLayout
-    private lateinit var chatPanel: LinearLayout
+    private lateinit var chatPanel: SlideAwayLayout
+    private lateinit var btnChat: TextView
     private lateinit var bottomBar: LinearLayout
     private lateinit var scrimTop: View
     private lateinit var chat: RecyclerView
@@ -143,6 +144,11 @@ class PlayerActivity : AppCompatActivity() {
 
     /** 是否处于全屏形态。 */
     private var fullScreen = false
+
+    /** 聊天区是否被右滑甩走了（此时画面铺满，只留一个"聊天"胶囊）。 */
+    private var chatHidden = false
+    /** 甩走之前的形态，叫回聊天区时恢复。 */
+    private var modeBeforeHide = false
     private var barHeight = 0
     private var insetBottom = 0
     private var lastVw = 0
@@ -192,6 +198,7 @@ class PlayerActivity : AppCompatActivity() {
         overlay = findViewById(R.id.overlay)
         btnRetry = findViewById(R.id.btnRetry)
         title = findViewById(R.id.title)
+        btnChat = findViewById(R.id.btnChat)
 
         // 聊天区：从下往上堆
         chat.layoutManager = LinearLayoutManager(this).apply { stackFromEnd = true }
@@ -207,6 +214,11 @@ class PlayerActivity : AppCompatActivity() {
         btnRetry.setOnClickListener { fetchAndPlay() }
         findViewById<View>(R.id.btnClose).setOnClickListener { finish() }
         btnMode.setOnClickListener { toggleMode() }
+        btnChat.setOnClickListener { showChat() }
+
+        // 初始形态按设置走（默认半屏，可在「设置 - 播放」里改成直接全屏）
+        fullScreen = store.defaultFull
+        setupChatSwipe()
 
         applyInsets()
         page.post { applyMode() }
@@ -259,6 +271,22 @@ class PlayerActivity : AppCompatActivity() {
         val cp = chatPanel.layoutParams as FrameLayout.LayoutParams
         val barH = if (barHeight > 0) barHeight else dp(40)
 
+        // 聊天区被右滑收起：不再摆面板，画面直接铺满，只留一个"聊天"胶囊
+        if (chatHidden) {
+            lp.height = FrameLayout.LayoutParams.MATCH_PARENT
+            videoBox.layoutParams = lp
+            chatPanel.visibility = View.GONE
+            (btnChat.layoutParams as FrameLayout.LayoutParams).apply {
+                bottomMargin = barH + dp(8)
+            }
+            btnChat.visibility = View.VISIBLE
+            scrimTop.alpha = 1f
+            videoBox.post { fitVideo(lastVw, lastVh) }
+            return
+        }
+        chatPanel.visibility = View.VISIBLE
+        btnChat.visibility = View.GONE
+
         if (fullScreen) {
             lp.height = FrameLayout.LayoutParams.MATCH_PARENT
             cp.gravity = Gravity.BOTTOM
@@ -294,11 +322,44 @@ class PlayerActivity : AppCompatActivity() {
     }
 
     private fun toggleMode() {
+        if (chatHidden) { showChat(); return }
         fullScreen = !fullScreen
         applyMode()
         // 只淡化聊天面板：SurfaceView 做 alpha 动画在部分机型会闪一帧黑
         chatPanel.alpha = 0.55f
         chatPanel.animate().alpha(1f).setDuration(180).start()
+    }
+
+    // ─────────── 右滑收起聊天区 ───────────
+
+    private fun setupChatSwipe() {
+        chatPanel.onDismiss = { hideChat() }
+    }
+
+    /**
+     * 右滑把聊天区甩走：画面铺满，底部留一个"聊天"胶囊随时叫回来。
+     * 半屏时收起会顺带进入全屏（否则下方只剩黑底），全屏时只隐藏压底层。
+     */
+    private fun hideChat() {
+        if (chatHidden) return
+        chatHidden = true
+        modeBeforeHide = fullScreen
+        fullScreen = true
+        applyMode()
+        Log.i(TAG, "chat hidden")
+    }
+
+    /** 叫回聊天区，回到收起前的形态。 */
+    private fun showChat() {
+        if (!chatHidden) return
+        chatHidden = false
+        chatPanel.resetTransform()
+        chatPanel.visibility = View.VISIBLE
+        fullScreen = modeBeforeHide
+        applyMode()
+        chatPanel.translationX = dp(36).toFloat()
+        chatPanel.alpha = 0f
+        chatPanel.animate().alpha(1f).translationX(0f).setDuration(200).start()
     }
 
     // ─────────── 上下滑动切换直播间 ───────────
@@ -319,7 +380,7 @@ class PlayerActivity : AppCompatActivity() {
         }
         page.onDrag = { dy, _ -> onDrag(dy) }
         page.onDragEnd = { dy, vy -> finishDrag(dy, vy) }
-        page.onTap = { _, _ -> toggleMode() }
+        page.onTap = { _, _ -> if (chatHidden) showChat() else toggleMode() }
     }
 
     private fun onDrag(dy: Float) {
@@ -434,6 +495,14 @@ class PlayerActivity : AppCompatActivity() {
         imShown = 0
         chatAdapter.clear()
         renderFilterCount()
+
+        // 换房间时把聊天区叫回来（不然新房间一进来就是"没聊天"的状态）
+        if (chatHidden) {
+            chatHidden = false
+            fullScreen = store.defaultFull
+            chatPanel.resetTransform()
+            applyMode()
+        }
 
         title.text = roomName
         resolution.text = ""
@@ -795,9 +864,15 @@ class PlayerActivity : AppCompatActivity() {
             val data = detail?.optJSONObject("data")
             val room = data?.let { Parser.room(it) }
 
-            // 原画 → 720P → 360P
-            urls = listOf(room?.url0, room?.url720, room?.url360)
-                .filterNotNull().filter { it.isNotBlank() }.distinct()
+            // 默认原画 → 720P → 360P；「设置 - 优先清晰度」可改成 720 或省流优先
+            val u0 = room?.url0.orEmpty()
+            val u720 = room?.url720.orEmpty()
+            val u360 = room?.url360.orEmpty()
+            urls = when (store.quality) {
+                1 -> listOf(u720, u0, u360)
+                2 -> listOf(u360, u720, u0)
+                else -> listOf(u0, u720, u360)
+            }.filter { it.isNotBlank() }.distinct()
 
             if (urls.isEmpty()) {
                 onStatus("该房间暂无可用播放地址（可能未开播）")

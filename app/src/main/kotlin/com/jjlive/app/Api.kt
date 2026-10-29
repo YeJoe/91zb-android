@@ -110,6 +110,21 @@ class TokenStore(context: Context) {
         get() = sp.getString("token", null)?.trim()?.takeIf { it.isNotBlank() } ?: Cfg.DEFAULT_TOKEN
         set(v) = sp.edit().putString("token", v.trim()).apply()
 
+    /** 进直播间默认全屏（否则半屏 + 下方聊天区）。 */
+    var defaultFull: Boolean
+        get() = sp.getBoolean("defaultFull", false)
+        set(v) = sp.edit().putBoolean("defaultFull", v).apply()
+
+    /** 优先清晰度：0 自动（原画优先）/ 1 720P 优先 / 2 省流 360P。 */
+    var quality: Int
+        get() = sp.getInt("quality", 0)
+        set(v) = sp.edit().putInt("quality", v).apply()
+
+    /** 首页是否过滤广告 / 游戏房。 */
+    var hideJunk: Boolean
+        get() = sp.getBoolean("hideJunk", true)
+        set(v) = sp.edit().putBoolean("hideJunk", v).apply()
+
     val deviceUid: String
         get() = sp.getString("uid", null) ?: randomHex(32).also {
             sp.edit().putString("uid", it).apply()
@@ -217,6 +232,47 @@ class Api(private val store: TokenStore) {
                 false to "${e.javaClass.simpleName}: ${e.message}"
             }
         }
+
+    // ─────────── 关注 ───────────
+
+    /**
+     * 我的关注（真实接口，返回结构与房间列表一致，另带 state / stateStr）。
+     *
+     * 账号关注数为 0 时 data 是空数组，这是正常的，不是接口失败。
+     */
+    suspend fun attentionList(page: Int = 1, size: Int = 30): List<Room> =
+        Parser.rooms(
+            call(
+                "/home/user/attention/list",
+                mapOf("pageNo" to page.toString(), "pageSize" to size.toString())
+            )
+        )
+
+    /** 未关注的推荐主播（关注页空态时给用户挑）。 */
+    suspend fun suggestList(page: Int = 1, size: Int = 12): List<Room> {
+        val js = call(
+            "/home/user/notattention/list",
+            mapOf("pageNo" to page.toString(), "pageSize" to size.toString())
+        )
+        // 这个接口只返回一遍，重复拉会给出同样的人，去重由调用方按 userId 做
+        return Parser.rooms(js)
+    }
+
+    /**
+     * 关注 / 取关。参数名是 followedUserIds（逆向 request_home.dart 得到），
+     * 传单个 userId 即可；接口即使成功也可能返回 msg="关注失败"，以 code 为准。
+     */
+    suspend fun follow(userId: String, on: Boolean): Boolean {
+        if (userId.isBlank()) return false
+        val js = call(
+            if (on) "/user/attention/add" else "/user/attention/cancel",
+            mapOf("followedUserIds" to userId)
+        )
+        return js?.optInt("code", -1) == 0 && js.optBoolean("success", true)
+    }
+
+    /** 当前账号信息，主要取 attenCnt（关注数）。 */
+    suspend fun userInfo(): JSONObject? = call("/user/info")?.optJSONObject("data")
 }
 
 // ─────────────────────────── 模型与解析 ───────────────────────────
@@ -239,11 +295,18 @@ data class Room(
     val url720: String,
     val cats: List<String>,
     val anchorType: Int = 2,
-    val gameRoom: Int = 0
+    val gameRoom: Int = 0,
+    /** 关注列表带 state / stateStr；普通列表没有这个字段，默认当作在播。 */
+    val liveState: Int = 1,
+    val stateStr: String = ""
 ) {
     val isPay: Boolean get() = moneyFen > 0
     val performing: Boolean get() = oneToOneState == 2
     val hasStream: Boolean get() = url0.isNotEmpty() || url360.isNotEmpty() || url720.isNotEmpty()
+
+    /** 主播是否在播（关注列表里会有没开播的主播）。 */
+    val isLiving: Boolean
+        get() = liveState == 1 || stateStr.contains("直播")
 
     /**
      * 广告 / 赌博直播间。
@@ -330,7 +393,9 @@ object Parser {
             url720 = o.str("pullStreamAddr720", "pullAddress720"),
             cats = cats,
             anchorType = o.int("anchorType", def = 2),
-            gameRoom = o.int("gameRoom", def = 0)
+            gameRoom = o.int("gameRoom", def = 0),
+            liveState = o.int("state", "liveState", def = 1),
+            stateStr = o.str("stateStr")
         )
     }
 

@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 深色模式：只覆盖需要变的语义色，其余沿用日间定义。 -->
+<resources>
+    <color name="bg">#FF0E1117</color>
+    <color name="surface">#FF151B24</color>
+    <color name="surface_alt">#FF1A2130</color>
+    <color name="stroke">#FF232C3A</color>
+
+    <color name="text_primary">#FFE6E9EF</color>
+    <color name="text_secondary">#FF8B95A7</color>
+    <color name="text_hint">#FF5B6376</color>
+
+    <color name="accent">#FFFF5C8A</color>
+    <color name="accent_tint">#26FF5C8A</color>
+    <color name="good">#FF3DDC97</color>
+
+    <color name="nav_bar">#FF111721</color>
+    <color name="nav_idle">#FF7C8699</color>
+</resources>
