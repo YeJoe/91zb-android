@@ -135,10 +135,17 @@ body{
 .toast.on{opacity:1;transform:translate(-50%,0)}
 
 /* ============ 聊天区 ============ */
-.chat{flex:1;display:flex;flex-direction:column;min-height:0;
-  border-top:1px solid var(--line);background:var(--panel)}
+/* --ca = 背景不透明度，右滑把它一路压到 0 就是"透明弹幕"：不挡画面 */
+.chat{flex:1;display:flex;flex-direction:column;min-height:0;--ca:.96;
+  border-top:1px solid rgba(35,40,56,var(--ca));
+  background:rgba(18,21,29,var(--ca))}
+.chat.tp .chat-h,.chat.tp .fbar,.chat.tp .msg{
+  text-shadow:0 1px 3px rgba(0,0,0,.92),0 0 12px rgba(0,0,0,.7)}
+.chat.tp .input{display:none}
+.chat.tp .msgs{-webkit-mask-image:linear-gradient(to bottom,transparent 0,#000 14px);
+  mask-image:linear-gradient(to bottom,transparent 0,#000 14px)}
 .chat-h{display:flex;align-items:center;gap:9px;padding:9px 16px;
-  border-bottom:1px solid var(--line);font-size:12.5px;color:var(--dim)}
+  border-bottom:1px solid rgba(35,40,56,var(--ca));font-size:12.5px;color:var(--dim)}
 .chat-h b{color:var(--txt);font-weight:500;font-size:13px;max-width:40%;
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .chat-h .sp{margin-left:auto;display:flex;gap:8px;align-items:center}
@@ -167,12 +174,14 @@ body{
   font-size:10.5px;line-height:16px;vertical-align:1px;
   background:#2a3142;color:#9aa4b8;border:1px solid #333c50}
 .fbar{padding:6px 16px;font-size:11.5px;line-height:1.9;
-  color:var(--dim2);border-bottom:1px solid var(--line);background:#12151d;
+  color:var(--dim2);border-bottom:1px solid rgba(35,40,56,var(--ca));
+  background:rgba(18,21,29,var(--ca));
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .fbar b{color:#9aa4b8;font-weight:500}
 .fbar .dot{display:inline-block;width:4px;height:4px;border-radius:50%;
   background:#394357;vertical-align:2px;margin:0 7px}
-.input{display:flex;gap:9px;padding:10px 16px 14px;border-top:1px solid var(--line);align-items:center}
+.input{display:flex;gap:9px;padding:10px 16px 14px;
+  border-top:1px solid rgba(35,40,56,var(--ca));align-items:center}
 .input input{flex:1;background:var(--panel2);border:1px solid var(--line);border-radius:9px;
   padding:9px 12px;color:var(--txt);font-size:13px;outline:none}
 .input input:focus{border-color:#3a4256}
@@ -260,7 +269,7 @@ body{
       <div class="chat-h">
         <b id="ctitle">聊天区</b>
         <span id="cmeta"></span>
-        <span class="sp"><span class="mini on" id="fchat" title="只显示真人聊天">只看聊天</span><span class="mini" id="fall" title="连系统消息一起看，用于核对过滤效果">全部</span><span class="mini" id="pause">暂停</span></span>
+        <span class="sp"><span class="mini on" id="fchat" title="只显示真人聊天">只看聊天</span><span class="mini" id="fall" title="连系统消息一起看，用于核对过滤效果">全部</span><span class="mini" id="tpbtn" title="点一下循环 96% / 40% / 透明；也可以直接在这个区域向右滑动">背景 96%</span><span class="mini" id="pause">暂停</span></span>
       </div>
       <div class="fbar" id="fbar">过滤开关决定这里出现什么：<b>只看聊天</b> 丢掉博彩/关注/开奖/广告，<b>全部</b> 保留并打标签。</div>
       <div class="msgs" id="msgs">
@@ -804,6 +813,80 @@ function sendMsg(){
   box.scrollTop = box.scrollHeight;
   inp.value = '';
 }
+
+/* ---------- 弹幕区：右滑透明 ---------- */
+var CHAT = document.querySelector('.chat');
+var TP = {a: 0.96};
+try {
+  var savedA = parseFloat(localStorage.getItem('tm_chat_alpha'));
+  if (!isNaN(savedA)) TP.a = Math.min(1, Math.max(0, savedA));
+} catch (e) {}
+
+function chatApply(){
+  TP.a = Math.min(1, Math.max(0, TP.a));
+  CHAT.style.setProperty('--ca', TP.a.toFixed(3));
+  CHAT.classList.toggle('tp', TP.a < 0.12);
+  var btn = document.getElementById('tpbtn');
+  if (btn) btn.textContent = TP.a < 0.02 ? '背景 全透明' : '背景 ' + Math.round(TP.a * 100) + '%';
+}
+function chatSet(a, remember){
+  TP.a = a;
+  chatApply();
+  if (remember !== false){
+    try { localStorage.setItem('tm_chat_alpha', String(TP.a)); } catch (e) {}
+  }
+}
+chatApply();
+
+document.getElementById('tpbtn').onclick = function(){
+  // 96% → 40% → 全透明 → 96%，点比记手势靠谱
+  chatSet(TP.a > 0.6 ? 0.4 : (TP.a > 0.12 ? 0 : 0.96));
+};
+
+(function(){
+  var dragging = false, horiz = false, sx = 0, sy = 0, base = 0;
+
+  function start(x, y){ dragging = true; horiz = false; sx = x; sy = y; base = TP.a; }
+  function move(x, y, prevent){
+    if (!dragging) return;
+    var dx = x - sx, dy = y - sy;
+    if (!horiz){
+      if (Math.abs(dx) < 6 && Math.abs(dy) < 6) return;
+      if (Math.abs(dx) <= Math.abs(dy)){ dragging = false; return; }  // 纵向手势交给滚动
+      horiz = true;
+    }
+    if (prevent) prevent();
+    chatSet(base - dx / Math.max(260, CHAT.clientWidth * 0.55), false);
+  }
+  function end(){
+    if (horiz) chatSet(TP.a, true);
+    dragging = false;
+    horiz = false;
+  }
+
+  CHAT.addEventListener('touchstart', function(e){
+    if (e.touches.length !== 1) return;
+    start(e.touches[0].clientX, e.touches[0].clientY);
+  }, {passive: true});
+  CHAT.addEventListener('touchmove', function(e){
+    if (e.touches.length !== 1) return;
+    move(e.touches[0].clientX, e.touches[0].clientY, function(){
+      if (e.cancelable) e.preventDefault();
+    });
+  }, {passive: false});
+  CHAT.addEventListener('touchend', end);
+  CHAT.addEventListener('touchcancel', end);
+
+  CHAT.addEventListener('mousedown', function(e){
+    if (e.button !== 0) return;
+    if (e.target.closest && e.target.closest('.mini')) return;
+    var tag = (e.target.tagName || '').toLowerCase();
+    if (tag === 'input' || tag === 'button') return;
+    start(e.clientX, e.clientY);
+  });
+  window.addEventListener('mousemove', function(e){ move(e.clientX, e.clientY, null); });
+  window.addEventListener('mouseup', end);
+})();
 
 /* ---------- 启动 ---------- */
 // 探一下本地网关：决定"本地播放器"是直接调起，还是退回下载 m3u

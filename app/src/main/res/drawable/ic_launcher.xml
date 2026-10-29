@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- 底：近黑圆角方块 -->
+    <path
+        android:fillColor="#12141B"
+        android:pathData="M26,0 H82 A26,26 0 0 1 108,26 V82 A26,26 0 0 1 82,108 H26 A26,26 0 0 1 0,82 V26 A26,26 0 0 1 26,0 Z" />
+
+    <!-- 信号弧：直播 -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#3A4155"
+        android:strokeWidth="4"
+        android:pathData="M30,40 A22,22 0 0 0 30,68" />
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#3A4155"
+        android:strokeWidth="4"
+        android:pathData="M78,40 A22,22 0 0 1 78,68" />
+
+    <!-- 播放三角 -->
+    <path
+        android:fillColor="#FF5C7A"
+        android:pathData="M44,36 L72,54 L44,72 Z" />
+</vector>

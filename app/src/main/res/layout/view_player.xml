@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  播放器容器：刻意用 XML 而不是代码 new PlayerView()，因为只有 XML 才能设 surface_type。
+  texture_view 是必须的 —— SurfaceView 的画面在独立的图层里，Compose 的 scale / alpha
+  对它不生效，双指缩放和淡入都会失效（会看到画面不跟手）。TextureView 代价是多一次 GPU 纹理拷贝，
+  换来缩放真的能用。
+-->
+<androidx.media3.ui.PlayerView xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:id="@+id/player_view"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@android:color/black"
+    app:resize_mode="zoom"
+    app:show_buffering="when_playing"
+    app:surface_type="texture_view"
+    app:use_controller="false" />

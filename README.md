@@ -9,27 +9,32 @@
 
 不依赖 App 运行、不需要中间人证书、不需要破解加固 so。
 
-产出分两层，互相独立：
+产出分三层，互相独立：
 
 | 层 | 目录 | 说明 |
 |---|---|---|
-| **网页版** | `site/` | 纯静态，双击 `index.html` 就能看分类、列表、播放、弹幕；带弹幕分类过滤开关 |
+| **网页版** | `site/` | 纯静态，双击 `index.html` 就能看分类、列表、播放、弹幕；带弹幕分类过滤开关、手机布局、弹幕区右滑透明 |
 | **客户端脚本** | `tools/` | 复现同一套接口的命令行客户端：隧道探测、房间列表、实时弹幕、RTMP→HLS 网关 |
+| **安卓 App** | `app/` | **TM Live**：Kotlin + Compose 原生 App，底部三栏（首页/关注/设置），上下滑切房，弹幕区右滑透明；GitHub Actions 云端编译，本机不用装任何安卓环境 |
 
-> 没有 App 端代码：本机没有 Android SDK / Gradle，无法编译验证 APK，所以不做"能装但没测过"的壳子。
+> App 的包名是 `com.duocai.live`，数据源就是本分支的 `app-data/rooms.json`。
+> 编译产物（APK）不进仓库，走 Actions 的 artifact / Release。
 
 ---
 
 ## 目录
 
-只有四个顶层目录，分工互不重叠：**跑起来的（site/tools）、看的（docs）、留证据的（assets）**。
+顶层按"跑什么 / 看什么 / 留证据"分工，互不重叠：
 
 ```
 项目根/
 ├── README.md                      本文
 ├── site/                          ★ 网页版，纯静态可发布（544K）
-├── tools/                         ★ 客户端脚本，20 个（210K）
-├── docs/                          ★ 文档 16 篇 + 修改教程 8 篇（460K）
+├── app/                           ★ 安卓 App（TM Live），Kotlin + Compose
+├── app-data/                      ★ App 的数据源 rooms.json（31.6K）
+├── tools/                         ★ 客户端脚本 + 数据构建（210K）
+├── docs/                          ★ 文档 17 篇 + 修改教程 8 篇（480K）
+├── .github/workflows/android.yml  ★ 出包流水线
 └── assets/                        ☆ 保留素材，全部不入库（约 97M）
 ```
 
@@ -117,6 +122,52 @@
 | `.gitignore` | 挡住上面全部凭证 + 整个 `assets/` |
 | `.workbuddy/` | 项目记忆（每日工作日志），不入库 |
 | `.vscode/` | 编辑器配置，不入库 |
+
+---
+
+## 安卓 App：TM Live
+
+`app/` 是把网页版重写成原生 App 的成果：**Kotlin 2.0 + Jetpack Compose + Media3(librtmp) 直连 RTMP**。
+本机不需要装 JDK / SDK / Gradle，推送代码后由 GitHub Actions 出包。
+
+### 用它
+
+1. 打开仓库的 **Actions** → `build-apk` → 最新一次运行 → 下载 `tm-live-apk-<run>` 里的 APK
+2. 装机后 → **设置** → 确认「房间数据 URL」指向 `https://raw.githubusercontent.com/YeJoe/91zb-android/duocai/app-data/rooms.json`
+3. 点「立即拉取」→ 回首页即可看到 216 个真人直播间（84 个推广位默认过滤）
+
+> 首次构建没有 keystore secret 时自动出 **debug 签名**的包（能直接装，但不能上架、不能覆盖升级）。
+> 想要稳定升级：把 keystore base64 放进 `KEYSTORE_BASE64`，再配 `KEYSTORE_PASSWORD` / `KEY_ALIAS` / `KEY_PASSWORD`。
+
+### 功能
+
+| 界面 | 内容 |
+|---|---|
+| **首页** | 双列瀑布卡（渐变卡 + 首字，不依赖图片）、分类 chips、搜索、按人气/名字排序、只看真人/含推广、星标收藏 |
+| **关注** | 「正在直播 / 未开播」两组；点星即收藏，拿房间号去当前快照比在播 |
+| **设置** | 数据源 URL / 粘贴 JSON / RTMP 域名 / HLS 备用网关 / 缩放模式 / 缓冲 / 自动播放 / 弹幕端点与 Token / 主题 / 推广位开关 |
+| **播放页** | 全屏视频 + 上下滑整屏切房 + 双指缩放(1~3x) + 双击暂停 + 单击隐显 UI + 右下比例切换 + 底部弹幕区 |
+
+**弹幕区右滑透明**：在聊天区向右拖，背景不透明度从 62% 一路滑到 0（跟手），全透明时只剩带投影的弹幕文字浮在画面上；
+左滑恢复；也可以点右上角「背景 62%」在 62% / 25% / 全透明之间循环。首次进房会给 4 秒提示。
+网页版 `site/index.html` 同步支持这套手势（写进 `localStorage`）。
+
+### 数据源怎么更新
+
+```bash
+python tools/build_site3.py       # 重新抓房间列表 → site/data.js
+python tools/build_app_data.py    # → app-data/rooms.json + app/assets/danmaku_demo.json
+git add -A && git commit -m "data: 刷新房间列表" && git push
+```
+
+App 端在设置页点「立即拉取」即可拿到新列表（失败会退回本地缓存）。
+
+### 已知边界
+
+- **房间列表是快照**，不是实时：接口公网 403 / TLS 失败，只有模拟器隧道里能通（见 `docs/安卓App设计方案.md` §1）
+- **关注关系是本地的**：服务端 `/relationship/followees/` 需要真实账号 + 隧道，游客 token 拿不到，所以不做同步
+- **弹幕是离线样本**：没配 WS 反代端点时，聊天区回放打包进 APK 的 182 条真实弹幕，用来验证过滤规则
+- **没有封面图**：`avatar` 是挂在打不通的接口域名上的相对路径，取不到；改用渐变卡 + 名字首字，反而省了 1.5MB 依赖
 
 ---
 

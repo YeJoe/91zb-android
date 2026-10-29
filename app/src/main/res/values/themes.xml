@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 用系统 Material 主题做壳，避免为了一个 NoActionBar 引入 appcompat / material 组件库 -->
+    <style name="Theme.TMLive" parent="@android:style/Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/boot_bg</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowDrawsSystemBarBackgrounds">true</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+</resources>
