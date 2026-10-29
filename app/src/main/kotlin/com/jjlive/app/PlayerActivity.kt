@@ -14,6 +14,7 @@ import android.view.Gravity
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.view.View
+import android.view.WindowManager
 import android.view.animation.DecelerateInterpolator
 import android.webkit.JavascriptInterface
 import android.webkit.WebResourceRequest
@@ -900,12 +901,16 @@ class PlayerActivity : AppCompatActivity() {
 
     override fun onPause() {
         super.onPause()
+        // 离开页面就撤掉常亮，别在后台白白耗电
+        window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         // WebView 软解很吃 CPU，页面不可见时暂停；原生解码保持拉流（回前台立刻有画面）
         if (useWeb) runCatching { web?.onPause() }
     }
 
     override fun onResume() {
         super.onResume()
+        // 直播页常亮：看直播时手不会一直摸屏幕，不常亮几十秒就息屏了
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         if (useWeb) runCatching { web?.onResume() }
     }
 
