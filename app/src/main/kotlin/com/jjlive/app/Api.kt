@@ -24,10 +24,12 @@ object Cfg {
     const val IM_WS = "wss://yzj.opuxrcm.com/live"
     /**
      * 默认令牌：已登录的正式账号（实测 attenCnt=169，能拉真实关注列表）。
+     * 2026-10-29 更新：旧令牌已失效（返回 code=4000「请重新登陆」），
+     * 换成本机当前有效的那一枚；实测与 deviceuid 无关，换设备也能用。
      * 失效后到「设置」里换一个即可，不用重装。
      */
     const val DEFAULT_TOKEN =
-        "24e9ab5c9f372478bb4c3171eebdff5b78644b0743a753aca0d9230491ff9ccf4fe5e3ad73da4992b10474bf963a1e7c5ebb501ae89ed243ea09a13104479dc0070b6a052ca272b80333a5db668fd2a3"
+        "24e9ab5c9f372478bf7d54164c0bde7e0e070c924ec94cdbec26d869af167d984fe5e3ad73da4992b10474bf963a1e7c5ebb501ae89ed243ea09a13104479dc0070b6a052ca272b8969da3f406031830"
     const val SALT = "oknzoiwe@23"
     const val AK = "jyzb"
     const val TERMINAL = "3"
@@ -283,8 +285,44 @@ class Api(private val store: TokenStore) {
             if (on) "/user/attention/add" else "/user/attention/cancel",
             mapOf("followedUserIds" to userId)
         )
-        return js?.optInt("code", -1) == 0 && js.optBoolean("success", true)
+        val ok = js?.optInt("code", -1) == 0 && js.optBoolean("success", true)
+        if (ok) followCache = null   // 关注关系变了，本地缓存作废
+        return ok
     }
+
+    /** 关注列表的 userId 集合缓存（5 分钟内有效），用于判断「这个主播我关注了吗」。 */
+    @Volatile
+    private var followCache: Set<String>? = null
+
+    @Volatile
+    private var followCacheAt: Long = 0L
+
+    /**
+     * 拉全「我关注的 userId 集合」。
+     *
+     * 服务端没有「单个主播是否已关注」的字段（joinRoom / 房间详情都不返回），
+     * 所以只能自己翻关注列表比对；169 个关注 = 4 页 50 条，结果缓存 5 分钟。
+     */
+    suspend fun attentionIds(force: Boolean = false): Set<String> {
+        val now = System.currentTimeMillis()
+        followCache?.let { if (!force && now - followCacheAt < 5 * 60_000L) return it }
+        val out = HashSet<String>()
+        var page = 1
+        while (page <= 40) {
+            val batch = runCatching { attentionList(page, 50) }.getOrDefault(emptyList())
+            if (batch.isEmpty()) break
+            for (r in batch) if (r.userId.isNotBlank()) out.add(r.userId)
+            if (batch.size < 50) break
+            page++
+        }
+        followCache = out
+        followCacheAt = now
+        return out
+    }
+
+    /** 我是否已关注该主播（无接口字段，靠关注列表比对）。 */
+    suspend fun isFollowing(userId: String): Boolean =
+        userId.isNotBlank() && attentionIds().contains(userId)
 
     /**
      * 发送弹幕 / 直播间聊天（真实接口）。
@@ -293,11 +331,19 @@ class Api(private val store: TokenStore) {
      * 业务参数 `authorId`（主播 userId，即直播间的主人）+ `msg`（正文）。
      * 发送成功后服务端会通过 IM 长连接（type=1002 进房的那条 WS）把这条 evt:5
      * 广播回来，聊天区会自然显示（见 ChatFilter / handleIm）。
+     *
+     * 返回 (是否成功, 失败原因)，失败原因直接透传服务端 msg——
+     * 例如等级不足时会返回「等级小于20级仅限发送中文」，不能笼统显示"发送失败"。
      */
-    suspend fun sendMsg(authorId: String, msg: String): Boolean {
-        if (authorId.isBlank() || msg.isBlank()) return false
+    suspend fun sendMsg(authorId: String, msg: String): Pair<Boolean, String> {
+        if (authorId.isBlank()) return false to "直播间信息未就绪"
+        if (msg.isBlank()) return false to "内容不能为空"
         val js = call("/im/sendMsg", mapOf("authorId" to authorId, "msg" to msg))
-        return js?.optInt("code", -1) == 0
+            ?: return false to "网络异常，请重试"
+        val code = js.optInt("code", -1)
+        if (code == 0) return true to ""
+        val reason = js.optString("msg").trim()
+        return false to reason.ifEmpty { "发送失败（code=$code）" }
     }
 
     /** 当前账号信息，主要取 attenCnt（关注数）。 */
@@ -430,7 +476,10 @@ object Parser {
         for (i in 0 until arr.length()) {
             val o = arr.optJSONObject(i) ?: continue
             val ft = o.int("fixedType", "fixedType", def = -1)
-            if (ft < 0) continue
+            // fixedType=1 是「关注」：它由首页顶部单独的一个 chip 承载，
+            // 且 /home/default/cls/query 查它没有意义。不排除会在顶部出现两个「关注」。
+            // 注意不能连 fixedType=0 一起丢——「颜值」就是 0。
+            if (ft < 0 || ft == 1) continue
             out.add(Category(ft, o.str("clsName").ifEmpty { "类别$ft" }, ft))
         }
         return out

@@ -302,7 +302,10 @@ class MainActivity : AppCompatActivity() {
         chips.removeAllViews()
         addChip(FOLLOW)
         addChip(ALL)
+        // 「关注 / 全部」由上面两个固定 chip 承载，接口若再返回同名分类要去掉，
+        // 否则顶部会出现两个「关注」。
         cats.map { it.name }.distinct()
+            .filter { it != FOLLOW && it != ALL }
             .filter { !(store.hideJunk && it == "游戏") }
             .forEach { addChip(it) }
 
@@ -434,6 +437,7 @@ class MainActivity : AppCompatActivity() {
     /** 顶部分类的顺序（与 buildChips 一致），供左右滑动切换定位。 */
     private fun chipOrder(): List<String> {
         val names = cats.map { it.name }.distinct()
+            .filter { it != FOLLOW && it != ALL }
             .filter { !(store.hideJunk && it == "游戏") }
         return listOf(FOLLOW, ALL) + names
     }

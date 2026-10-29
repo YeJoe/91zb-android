@@ -269,12 +269,21 @@ class PlayerActivity : AppCompatActivity() {
             val sys = insets.getInsets(WindowInsetsCompat.Type.systemBars())
             insetBottom = sys.bottom
             topBar.setPadding(dp(14), sys.top + dp(8), dp(14), dp(10))
-            barHeight = dp(40) + sys.bottom
-            bottomBar.layoutParams = bottomBar.layoutParams.apply { height = barHeight }
-            bottomBar.setPadding(dp(14), 0, dp(14), sys.bottom)
+
+            // 发送栏常驻屏幕最底部：高度把系统手势条也算进去，内边距留出来，
+            // 这样它和聊天区之间不会再被别的浮层隔开。
+            sendBarH = dp(48) + sys.bottom
             val sp = sendBar.layoutParams as FrameLayout.LayoutParams
-            sp.bottomMargin = barHeight
+            sp.height = sendBarH
+            sp.bottomMargin = 0
             sendBar.layoutParams = sp
+            sendBar.setPadding(dp(12), 0, dp(12), sys.bottom)
+
+            // 清晰度 / 码率条不再占底部一栏，改成浮在聊天区正上方
+            barHeight = dp(40)
+            bottomBar.layoutParams = bottomBar.layoutParams.apply { height = barHeight }
+            bottomBar.setPadding(dp(14), 0, dp(14), 0)
+
             applyMode()
             insets
         }
@@ -300,7 +309,6 @@ class PlayerActivity : AppCompatActivity() {
 
         val lp = videoBox.layoutParams as FrameLayout.LayoutParams
         val cp = chatPanel.layoutParams as FrameLayout.LayoutParams
-        val barH = if (barHeight > 0) barHeight else dp(40)
 
         // 聊天区被右滑收起：不再摆面板，画面直接铺满，只留一个"聊天"胶囊
         if (chatHidden) {
@@ -308,11 +316,15 @@ class PlayerActivity : AppCompatActivity() {
             videoBox.layoutParams = lp
             chatPanel.visibility = View.GONE
             val bp = btnChat.layoutParams as FrameLayout.LayoutParams
-            if (bp.bottomMargin != barH + dp(8)) {
-                bp.bottomMargin = barH + dp(8)
+            if (bp.bottomMargin != sendBarH + dp(8)) {
+                bp.bottomMargin = sendBarH + dp(8)
                 btnChat.layoutParams = bp
             }
             btnChat.visibility = View.VISIBLE
+            // 码率条浮在发送栏上方
+            val stp = bottomBar.layoutParams as FrameLayout.LayoutParams
+            stp.bottomMargin = sendBarH + dp(8)
+            bottomBar.layoutParams = stp
             scrimTop.alpha = 1f
             videoBox.post { fitVideo(lastVw, lastVh) }
             return
@@ -324,14 +336,19 @@ class PlayerActivity : AppCompatActivity() {
         lp.height = FrameLayout.LayoutParams.MATCH_PARENT
         cp.gravity = Gravity.BOTTOM
         cp.topMargin = 0
-        cp.height = dp(248) + insetBottom
-        cp.bottomMargin = barH + sendBarH
+        cp.height = dp(248)
+        cp.bottomMargin = sendBarH      // 聊天区紧贴发送栏，中间不再夹东西
         chatPanel.setBackgroundResource(R.drawable.bg_chat_full)
         chat.setPadding(dp(16), dp(2), dp(16), dp(6))
         btnMode.text = if (chatHidden) "聊天" else "隐藏"
         scrimTop.alpha = 1f
         videoBox.layoutParams = lp
         chatPanel.layoutParams = cp
+
+        // 清晰度 / 码率条挪到聊天区正上方，避免压住发送栏
+        val stp = bottomBar.layoutParams as FrameLayout.LayoutParams
+        stp.bottomMargin = sendBarH + cp.height + dp(6)
+        bottomBar.layoutParams = stp
 
         // 切间提示摆在画面正中间
         val sp = swipeHint.layoutParams as FrameLayout.LayoutParams
@@ -884,6 +901,19 @@ class PlayerActivity : AppCompatActivity() {
             isFollowing = false
             ui.post { updateFollowBtn() }
 
+            // 真实关注状态：joinRoom / 房间详情都不返回该字段，
+            // 只能拿「我的关注 userId 集合」比对（Api 内部有 5 分钟缓存）。
+            val uid = roomUserId
+            if (uid.isNotBlank()) {
+                val followed = withContext(Dispatchers.IO) {
+                    runCatching { api.isFollowing(uid) }.getOrDefault(false)
+                }
+                if (my == reqSeq && !isFinishing) {
+                    isFollowing = followed
+                    ui.post { updateFollowBtn() }
+                }
+            }
+
             // 默认原画 → 720P → 360P；「设置 - 优先清晰度」可改成 720 或省流优先
             val u0 = room?.url0.orEmpty()
             val u720 = room?.url720.orEmpty()
@@ -1063,10 +1093,12 @@ class PlayerActivity : AppCompatActivity() {
         val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
         imm.hideSoftInputFromWindow(etDanmu.windowToken, 0)
         scope.launch {
-            val ok = withContext(Dispatchers.IO) { api.sendMsg(roomUserId, toSend) }
+            // 失败原因直接用服务端 msg（例如「等级小于20级仅限发送中文」），
+            // 不要笼统地报"发送失败"，否则用户完全不知道该怎么改。
+            val (ok, reason) = withContext(Dispatchers.IO) { api.sendMsg(roomUserId, toSend) }
             if (!ok && !isFinishing) {
                 ui.post {
-                    Toast.makeText(this@PlayerActivity, "弹幕发送失败", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this@PlayerActivity, reason, Toast.LENGTH_LONG).show()
                     etDanmu.setText(toSend)
                 }
             }
