@@ -5,6 +5,8 @@ import android.content.Context
 import coil.Coil
 import coil.ImageLoader
 import coil.ImageLoaderFactory
+import coil.disk.DiskCache
+import coil.memory.MemoryCache
 import okhttp3.OkHttpClient
 import java.net.InetSocketAddress
 import java.net.Proxy
@@ -18,6 +20,32 @@ class App : Application(), ImageLoaderFactory {
     override fun onCreate() {
         super.onCreate()
         container = AppContainer(this)
+    }
+
+    /**
+     * 图片缓存对象**必须跨 ImageLoader 重建复用**。
+     *
+     * [reloadImageLoader] 每次都会造一个新的 ImageLoader；缓存对象如果跟着一起新建，
+     * 用户每改一次代理设置，整屏封面就得重新下一遍 —— 这是"回到列表又从头加载"
+     * 的主要来源之一。缓存本身与 Http 客户端无关，所以单独拎出来做单例。
+     *
+     * 内存缓存 25% 是 Coil 的默认量级，只装"解码后的位图"，LRU 淘汰；
+     * 列表是 Lazy 布局，实际占用只跟可见格子数走，不会随房间总数涨。
+     */
+    private val memoryCache: MemoryCache by lazy {
+        MemoryCache.Builder(this).maxSizePercent(0.25).build()
+    }
+
+    /**
+     * 磁盘缓存放大到 256MB（Coil 默认只占可用空间 2%，小容量机器上几十 MB 就顶满，
+     * 一满就开始淘汰，表现就是"滑过去再滑回来又要重新下"）。
+     * 封面一张 30~80KB，256MB 够放几千张。
+     */
+    private val diskCache: DiskCache by lazy {
+        DiskCache.Builder()
+            .directory(cacheDir.resolve("image_cache"))
+            .maxSizeBytes(256L * 1024 * 1024)
+            .build()
     }
 
     /**
@@ -39,6 +67,11 @@ class App : Application(), ImageLoaderFactory {
         }
         return ImageLoader.Builder(this)
             .okHttpClient { builder.build() }
+            .memoryCache(memoryCache)
+            .diskCache(diskCache)
+            // 图床给静态图带的是短 max-age / no-cache，按响应头尊重的盘缓存形同虚设；
+            // 但这些文件名本身是内容哈希，内容不会变，所以放心无视缓存头。
+            .respectCacheHeaders(false)
             .crossfade(true)
             .build()
     }

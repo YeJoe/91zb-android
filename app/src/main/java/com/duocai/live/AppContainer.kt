@@ -56,8 +56,6 @@ class AppContainer(context: Context) {
     /** 实时数据源：直连隧道端口。见 LiveRepo 头部注释。 */
     val live = LiveRepo(this.context, prefs)
     val follows = FollowStore(prefs)
-    val danmaku = DanmakuStore(this.context, prefs)
-    val player = PlayerHolder(this.context)
 
     /**
      * 内置隧道：在自家进程里跑源 App 的云层 SDK（libkiwi.so + com.kiwi.sdk.*）。
@@ -66,6 +64,16 @@ class AppContainer(context: Context) {
      * 会自动退回老行为 —— 扫本机监听端口去"借"源 App 起好的隧道。
      */
     val tunnel = com.duocai.live.tunnel.Tunnel(this.context, prefs)
+
+    /**
+     * 弹幕。端口优先取内置隧道自己的 listener，没起来就退回上一次探到的源 App 端口 ——
+     * 弹幕走的是同一条隧道上的 WS（/tunnel/open → /websock/join），和列表用的是同一批 vhost。
+     */
+    val danmaku = DanmakuStore(this.context, prefs) {
+        if (tunnel.port > 0) tunnel.port else live.lastPort
+    }
+
+    val player = PlayerHolder(this.context)
 
     /** 进程级作用域，承载自动刷新循环（App 活着就一直在） */
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
@@ -109,13 +117,8 @@ class AppContainer(context: Context) {
     fun followIdSet(): Set<Long> = followedIds + serverFollowIds
 
     // ---- 设置里会被界面直接读的几项，做成可观察 ----
-    private var showAdState by mutableStateOf(prefs.showAd)
-    var showAd: Boolean
-        get() = showAdState
-        set(v) {
-            showAdState = v
-            prefs.showAd = v
-        }
+    // 原先这里还有个 showAd（「显示推广位」）。开关连同 Prefs 字段一起删了：
+    // 博彩/棋牌房在数据入口就被 NonHuman 过滤，没有"显示"这个选项。
 
     private var themeState by mutableStateOf(prefs.themeMode)
     var themeMode: Int
@@ -197,6 +200,16 @@ class AppContainer(context: Context) {
         set(v) {
             nearbyCityState = v
             prefs.nearbyCity = v
+        }
+
+    private var gridColsState by mutableStateOf(prefs.gridCols)
+    /** 首页瀑布流列数 2/3（3 = 紧凑，一屏更多房间） */
+    var gridCols: Int
+        get() = gridColsState
+        set(v) {
+            val n = v.coerceIn(2, 3)
+            gridColsState = n
+            prefs.gridCols = n
         }
 
     /** 允不允许去"借"源 App 后台跑着的隧道（默认关，见 [Prefs.sourceTunnel]） */

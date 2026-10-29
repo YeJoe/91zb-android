@@ -42,9 +42,16 @@ class Prefs(context: Context) {
         get() = Secure.get(sp, K_APP_TOKEN)
         set(v) = Secure.put(sp, K_APP_TOKEN, v.trim())
 
-    /** authorization 头的 JWE（源 App prefs 里 MAINUSER_DATA.token 原样） */
+    /**
+     * authorization 头的 JWE（源 App prefs 里 `MAINUSER_DATA.token` 原样）。
+     *
+     * 全仓只有 `/user_follow/my_follow`（服务端关注）和弹幕 join 两处需要它，
+     * 但缺了就是 403「用户不存在或超时」，关注分类永远空着、弹幕也连不上。
+     * 用户没有义务自己去扒这个 330 字符的串，所以内置一份默认值（[Defaults.JWE]）：
+     * 设置页留空 = 用内置的；粘贴别的 = 覆盖它（换号时用）。
+     */
     var jwe: String
-        get() = Secure.get(sp, K_JWE)
+        get() = Secure.get(sp, K_JWE).ifBlank { Defaults.JWE }
         set(v) = Secure.put(sp, K_JWE, v.trim())
 
     /**
@@ -162,9 +169,12 @@ class Prefs(context: Context) {
         set(v) = sp.edit().putInt(K_THEME, v).apply()
 
     // ---- 列表 ----
-    var showAd: Boolean
-        get() = sp.getBoolean(K_SHOW_AD, false)
-        set(v) = sp.edit().putBoolean(K_SHOW_AD, v).apply()
+    /*
+     * 这里原本有个 `showAd`（「显示推广位」开关）。
+     *
+     * 已经删掉，而且不再加回来：这类房间是博彩/棋牌导流，在数据入口就被 [NonHuman]
+     * 硬过滤掉了，开关打开也只会是空列表 —— 留着只会让人以为"点了没反应"。
+     */
 
     /**
      * 「附近」页选中的城市（`city_show` 原文，如「靜安區」）。
@@ -173,6 +183,17 @@ class Prefs(context: Context) {
     var nearbyCity: String
         get() = sp.getString(K_NEARBY_CITY, "") ?: ""
         set(v) = sp.edit().putString(K_NEARBY_CITY, v.trim()).apply()
+
+    /**
+     * 首页瀑布流列数：2 = 封面大、看得清；3 = 紧凑，一屏多出一倍的房间。
+     *
+     * 默认 3 —— 这个列表是用来「扫一眼挑一间」的，不是看图墙，
+     * 一屏 6 间太少，翻半天还不如直接搜。列表右上角可一键切回 2 列。
+     * 只允许 2/3：4 列时封面宽度不到 80dp，主播名和人气全被挤掉，没有意义。
+     */
+    var gridCols: Int
+        get() = sp.getInt(K_GRID_COLS, 3).coerceIn(2, 3)
+        set(v) = sp.edit().putInt(K_GRID_COLS, v.coerceIn(2, 3)).apply()
 
     // ---- 关注（JSON 数组，明文即可：里面只有房间号和主播名） ----
     var followJson: String
@@ -222,8 +243,8 @@ class Prefs(context: Context) {
         const val K_DM_TOKEN = "dm_token"
         const val K_CHAT_ONLY = "chat_only"
         const val K_THEME = "theme"
-        const val K_SHOW_AD = "show_ad"
         const val K_NEARBY_CITY = "nearby_city"
+        const val K_GRID_COLS = "grid_cols"
         const val K_FOLLOW = "follow_json"
         const val K_KIWI_KEY = "kiwi_app_key"
         const val K_KIWI_AUTO = "kiwi_auto"
@@ -278,6 +299,21 @@ class Prefs(context: Context) {
          * 抓到的真值：base64 的 1072 字节密文，`Kiwi.Init` 实测返回 0。
          * 若它失效（SDK 初始化返回非 0），设置页可以直接改，不用重新打包。
          */
+        /**
+         * 内置 JWE（`alg=dir` / `enc=A128CBC-HS256`）。
+         *
+         * 2026-10-29 从源 App 的 `FlutterSharedPreferences.xml` 里
+         * `flutter.MAINUSER_DATA` → `token` 字段原样取出，330 字符，与磁盘
+         * `.jwe.txt` 一致。它不是会话令牌（不会随登录刷新），目前没观察到过期，
+         * 所以直接内置当默认值 —— 否则用户装完 App 得自己扒这个串，
+         * 「关注」分类永远是空的。
+         *
+         * 失效表现：`/user_follow/my_follow` 返回 401/403 或空数组。
+         * 届时在设置页粘贴一份新的即可覆盖，不用重新打包。
+         */
+        const val JWE =
+            "eyJhbGciOiJkaXIiLCJlbmMiOiJBMTI4Q0JDLUhTMjU2In0..UL92WOqbRRtDc84vjAloUQ.7O00WSXSCjgaWhQgrngpqx-jqcEYimDZr18hcEHj1y8XFgYM6m-fMZ3bCqZZYc5hMWwPy00n3TtulK7ZQNfIhhKiZk1EaSvsyXCP1dXS-Rcm6USUxJ7HyIw-Lklyu1zoW1INXtTFiqiujPElCJCXDvbZne7OxHHE8d7WK4bzokd0zIyMz6UDHXUhxOxixKKO93-n664Qx8urx8wDtc7H6LJ8hDCJ6Ofccf7nDuY3r2s.wMUa4eXemBncmq9Ynwo9DQ"
+
         const val KIWI_APP_KEY =
             "360wjdqlAsjhpkqV7pq3Mzj6mfrZdxM4yt39ASqwjWgc3Eq4gjbRp4/qzeH3mlgzQCGK197OhozJE7wxXR1lHHvsbbfn8e+7YRS4p3rgdAg33j6OkmmntfBvqcmvA67vkSwe8rFbLZF1IZGAy6U76eqCd8mQzlEovcAqLT9xcU7kpAWc3svYbMwXCDTNL6aufyS5IaerIygPzSeeafzt4+C0kjXKYuolKELlFv4ltQMPRqOQTrxK2fW9qvHMQUsjjlklnAarvVimL8pg2ewANRvxuBGoZEN6ePLSvnLL+ffGdgq+D/1citmYauR6sK6BRiMQnUXFGksyIf09AmqI6GRMhHjgaviv8VFz2GFyW4awq7shOJQbsykqhzI3E9gf2UdWSHElt4fVvZByA5JlaZKeAijN7fitPWs6RaahHMdk8z5NiSPRTQnMN97YMZKaJEEuOts9QqG1h5vzlcXjlGSCfVRmGv+zadHzoE4XDtW0Oqbb4/1hYzS4ageeNXswo6jzXgIiYcg8tXy1WvKYdzy1E7USYGG/WRdmBCM0+nDG3lHsiOK2Lcs6QugL2isZc/W//glYh+mMuN9vnalWv/JYGesap2Q2Gr19TxIJoDvBorZXzNKxq1mVBR3M8Bd14cxBgqi1gEx8te37d8Qpb0rW4NkVi7WGevOG3RsA4mrUPc5kQGtJ70rEC4VFzshCLFQnRoBVeJh1APevNiKtW13/ExcFCyp4EovUeUVmujgjAklG0sql2TMcPLLoYVtCshzwD3FIXB4WorckMge1uldb7pTHHjB55jmW4tsgnyQR7Im+7jBVV9rfuoUSoq2wNpEU8W2xi7D8mVi2XZfwTZGsb6e0p4nSxy1+FLX/4/Lu7pVfFK1rzxbq346mJJgJSZkkEzzlCOKzPpU3WF8rwnYcWqdNYLnyzXTNpCQjLcNeqBZU8uQoSxyBANmw0AoslNGRImN7m6H81DtbP8XY28Pa9wIKQBw/u/mAvMxtVE2b8smZlt7CU733X3ikkkRGR5F6kRhGmulQbcuqLHiwI5Y9Tq9kEhU+VCCA5+56lmW+NukiIqYBgL9H3woNHTF9JHw/H0UwqacQzruCZ+ez4zbP2HGXvW/4TlJ5LCFhbiU1o3N7VWgsehj+zxsOQoRq3+XhcJo2V6z2GYYytgTUDT7QTYK64ThDJ0vnUnizTqlPppRn0AU+jwh3YOj/QGhQOM4sKD2CcHfoafcwNMoyb5phHi3xuoGE4uyeQUeRKc0EvJ1SVFlt6OT9FwBlhVMwbYl7Jgs3yty0g6WMxmVDUM8+RYawSFjoKNGRr4ckXCCqpX7+E+/mqAhEW/NZWWw63f4oPlPdOSZTva1NVdIlLbcAuaGzQImU4Fg/a9DRSCF+UcHCivl1p959xoWcLiD9H/eAyKnVFckebrlEpJnT7Q=="
     }

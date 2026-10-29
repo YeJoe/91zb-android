@@ -133,14 +133,17 @@ object SourceParser {
             val r = arr.optJSONObject(i) ?: continue
             val id = r.optLong("id", 0L)
             if (id <= 0L) continue
-            // 游戏区 / 推广位一律不要（口径同 LiveRepo.toRoom：真人房 chess_id 恒为 3、menu_id 不是 8）
+            val name = r.optString("name").ifBlank { "房间 $id" }
+            val cat = r.optString("cat").ifBlank { "其他" }
+            // 离线 JSON 没有 menu_id，只能拿 cat 当分区、拿房名当话术判据（判据同 LiveRepo.toRoom）
             if (r.optInt("ad", 0) == 1) continue
-            if (r.optString("cat") == "游戏") continue
+            if (cat == "游戏") continue
+            if (NonHuman.bannedName(name)) continue
             out.add(
                 Room(
                     id = id,
-                    name = r.optString("name").ifBlank { "房间 $id" },
-                    cat = r.optString("cat").ifBlank { "其他" },
+                    name = name,
+                    cat = cat,
                     online = r.optInt("online", 0),
                     city = r.optString("city").let { if (it == "火星") "" else it },
                     ad = r.optInt("ad", 0) == 1,

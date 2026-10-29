@@ -197,11 +197,12 @@ fun PlayerScreen(c: AppContainer, startIndex: Int, onClose: () -> Unit) {
             r.streamUrls(c.prefs.rtmpDomain, StreamMode.of(c.streamMode)),
             c.autoPlay
         )
+        // 弹幕跟着换房走：同一条隧道上重开 WS，打新房间的 /websock/join
+        c.danmaku.start(this, r.id)
     }
 
     LaunchedEffect(Unit) {
         entered = true
-        c.danmaku.start(this)
         if (ui.chatHint) {
             delay(4200)
             ui.chatHint = false
@@ -895,13 +896,21 @@ private fun ChatInputBar(bg: Float) {
 
 @Composable
 private fun ChatLine(m: DmMessage) {
+    // 礼物单独一个暖金色：聊天区混着几十条白字，送礼全靠眼睛扫很容易漏掉
+    val gift = m.kind == "gift"
+    val accent = Color(0xFFFFC46B)
     Text(
         buildAnnotatedString {
             withStyle(
-                SpanStyle(color = nickColor(m.nick), fontWeight = FontWeight.SemiBold)
+                SpanStyle(
+                    color = if (gift) accent else nickColor(m.nick),
+                    fontWeight = FontWeight.SemiBold
+                )
             ) { append(m.nick) }
             withStyle(SpanStyle(color = Color.White.copy(alpha = 0.42f))) { append("：") }
-            withStyle(SpanStyle(color = Color.White.copy(alpha = 0.96f))) { append(m.text) }
+            withStyle(
+                SpanStyle(color = if (gift) accent else Color.White.copy(alpha = 0.96f))
+            ) { append(m.text) }
         },
         fontSize = 13.sp,
         lineHeight = 18.sp,

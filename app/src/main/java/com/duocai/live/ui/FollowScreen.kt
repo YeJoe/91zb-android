@@ -170,8 +170,8 @@ fun FollowScreen(c: AppContainer) {
         }
 
         LazyColumn(
-            contentPadding = PaddingValues(start = 14.dp, end = 14.dp, bottom = 18.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+            contentPadding = PaddingValues(start = 12.dp, end = 12.dp, bottom = 18.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
             if (live.isNotEmpty()) {
                 item { SectionTitle("正在直播 · ${live.size}", true) }
@@ -227,16 +227,16 @@ private fun FollowRow(
     Row(
         Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(14.dp))
+            .clip(RoundedCornerShape(12.dp))
             .background(MaterialTheme.colorScheme.surface)
             .clickable(enabled = live, onClick = onClick)
-            .padding(10.dp),
+            .padding(8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Box(
             Modifier
-                .size(46.dp)
-                .clip(RoundedCornerShape(12.dp))
+                .size(38.dp)
+                .clip(RoundedCornerShape(10.dp))
                 .then(
                     if (live) Modifier.background(avBrush(room.id))
                     else Modifier.background(MaterialTheme.colorScheme.surfaceVariant)
@@ -248,27 +248,28 @@ private fun FollowRow(
             // AsyncImage 加载失败会画成透明，只留渐变，卡片就"空"了；这样至少有首字。
             Text(
                 initialOf(room.name),
-                fontSize = 18.sp,
+                fontSize = 16.sp,
                 fontWeight = FontWeight.Bold,
                 color = if (live) Color.White else MaterialTheme.colorScheme.onSurfaceVariant
             )
             if (room.avatar.isNotEmpty()) {
+                val ctx = LocalContext.current
+                val req = remember(room.avatar) {
+                    ImageRequest.Builder(ctx).data(room.avatar).crossfade(150).build()
+                }
                 AsyncImage(
-                    model = ImageRequest.Builder(LocalContext.current)
-                        .data(room.avatar)
-                        .crossfade(150)
-                        .build(),
+                    model = req,
                     contentDescription = null,
                     contentScale = ContentScale.Crop,
                     modifier = Modifier.fillMaxSize()
                 )
             }
         }
-        Spacer(Modifier.width(12.dp))
+        Spacer(Modifier.width(10.dp))
         Column(Modifier.weight(1f)) {
             Text(
                 room.name,
-                fontSize = 14.sp,
+                fontSize = 13.sp,
                 fontWeight = FontWeight.Medium,
                 color = MaterialTheme.colorScheme.onSurface,
                 maxLines = 1,
@@ -276,19 +277,25 @@ private fun FollowRow(
             )
             Spacer(Modifier.height(2.dp))
             Text(
-                if (live) "${room.cat} · ${fmtCount(room.online)} 人在看" else "未开播 · 房间 ${room.id}",
-                fontSize = 11.sp,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                if (live) "${room.cat} · ${fmtCount(room.online)} 人在看 · ID ${room.id}"
+                else "未开播 · ID ${room.id}",
+                fontSize = 10.5.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
             )
         }
         // 服务端来的关注没有可用的取消接口，就不给按钮，避免点了没反应
         if (removable) {
-            IconButton(onClick = { c.unfollow(room.id) }) {
+            IconButton(
+                onClick = { c.unfollow(room.id) },
+                modifier = Modifier.size(34.dp)
+            ) {
                 Icon(
                     Icons.Filled.Star,
                     contentDescription = "取消关注",
                     tint = Gold,
-                    modifier = Modifier.size(18.dp)
+                    modifier = Modifier.size(16.dp)
                 )
             }
         } else {

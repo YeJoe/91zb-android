@@ -1,9 +1,14 @@
 package com.duocai.live.data
 
 import android.content.Context
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -12,13 +17,24 @@ import org.json.JSONObject
 data class DmMessage(val kind: String, val typ: Int, val nick: String, val text: String)
 
 /**
- * 弹幕分类与过滤 —— 规则与 tools/danmaku_filter.py、site/dm_filter.js 保持 1:1。
+ * 弹幕分类与过滤 —— 只按服务端类型码判断，不看正文。
  *
- * 关键结论（实测 31 个房间 462 条弹幕得出）：
- *   - 真正的类型码在 content.typ，顶层 optcode 在 content_type=8 时是 null
- *   - 32 普通聊天、4 @提及 都要留；19 下注 / 20 结算 / 23 开奖 / 10 博彩播报 / 5 关注 / 1 管理 / 26 心愿 / 33、34 下单 全丢
- *   - 真人聊天只拦链接和联系方式，不做博彩词过滤，否则观众聊"下注"会被误杀
- *   - 引流词只在 >=25 字的句子里判，避免"一对一多久"这种正常提问被干掉
+ * 实测结论（2026-10-30，4 个房间 100 条样本）：
+ *   ct=1 typ=32  33 条   普通聊天   ← 留
+ *   ct=8 typ=3    1 条   礼物       ← 留（送礼是真人互动）
+ *   ct=8 typ=1   42 条   管理操作   ← 丢
+ *   ct=8 typ=19   8 条   下注       ← 丢
+ *   ct=8 typ=5    6 条   关注       ← 丢
+ *   ct=8 typ=20   4 条   结算       ← 丢
+ *   ct=8 typ=23   2 条   开奖       ← 丢
+ *   ct=8 typ=26   2 条   心愿/引流  ← 丢
+ *   ct=8 typ=10   2 条   博彩播报   ← 丢
+ *
+ * **typ=32 的正文一律原样保留**，不做关键词过滤：真实聊天里也会出现"下注""福利"
+ * 这类词，按词杀会把真人也一起杀掉。要干净的只剩 32，就应该只看类型码。
+ *
+ * **typ=3 的礼物同样保留**：它的 `content` 里没有正文，只有
+ * `item_id / count / combos`，正文由 [LiveDanmaku] 拼成「送出礼物 ×N（连击 M）」。
  */
 object DmFilter {
 
@@ -52,19 +68,6 @@ object DmFilter {
         "欢迎来到", "感谢关注", "排行榜", "活动期间"
     )
 
-    private val SPAM_PATTERNS = listOf("http://", "https://", ".com", ".cn", ".net", "＋v", "+v")
-
-    private val CHAT_AD_WORDS = listOf(
-        "加我", "私聊", "加私人", "福利视频", "解锁", "一对一", "包本人",
-        "可约", "上门", "秒发", "心愿单下单", "听指挥"
-    )
-
-    private val EMOJI_HINT = listOf("💖", "💞", "💦", "🌊", "🛌", "👗", "👍", "🉑", "🌃")
-
-    private const val CHAT_WORD_MIN = 25
-    private const val CHAT_LONG = 60
-    private const val CHAT_TOO_LONG = 110
-
     private fun hit(list: List<String>, s: String): String? {
         for (w in list) if (s.contains(w)) return w
         return null
@@ -72,95 +75,162 @@ object DmFilter {
 
     private fun kindOf(typ: Int?): String = TYP_KIND[typ] ?: "other"
 
-    /** 返回最终类别；返回 "ad" 表示这条不能显示 */
+    /** 返回最终类别；"chat" 是唯一可以直接上屏的真人内容 */
     fun classify(typ: Int?, text: String): String {
+        val kind = kindOf(typ)
+        // 真人聊天：只看类型码，正文原样保留
+        if (kind == "chat") return "chat"
+
         val t = text.trim()
-        if (t.isEmpty()) return kindOf(typ)
-        var kind = kindOf(typ)
-
-        if (kind == "chat") {
-            if (hit(SPAM_PATTERNS, t.lowercase()) != null) return "ad"
-            if (t.length >= CHAT_WORD_MIN && hit(CHAT_AD_WORDS, t) != null) return "ad"
-            if (t.length >= CHAT_TOO_LONG) return "ad"
-            if (t.length >= CHAT_LONG) {
-                var emo = 0
-                for (e in EMOJI_HINT) {
-                    var p = t.indexOf(e)
-                    while (p >= 0) {
-                        emo++
-                        p = t.indexOf(e, p + e.length)
-                    }
-                }
-                if (emo >= 2) return "ad"
-            }
-            return "chat"
-        }
-
-        // 非聊天类：先用关键词把伪装成系统消息的广告/博彩挑出来
+        if (t.isEmpty()) return kind
+        // 非聊天类：把伪装成系统消息的博彩/引流挑出来，方便统计
         hit(AD_WORDS, t)?.let { return "ad" }
         hit(BET_WORDS, t)?.let { return "bet" }
         hit(SYS_WORDS, t)?.let { return "sys" }
         return kind
     }
 
-    fun keep(kind: String, chatOnly: Boolean): Boolean =
-        if (chatOnly) kind == "chat" else (kind == "chat" || kind == "gift")
+    /**
+     * 上屏判定。
+     *
+     * **礼物始终保留**：送礼是真人花钱产生的互动，不是下注/开奖那类噪声，
+     * 所以不管开没开「只显示观众聊天」，`gift` 都要上屏。
+     * [chatOnly] 只决定「聊天与礼物以外的杂项」要不要一起显示（默认不要）。
+     */
+    fun keep(kind: String, chatOnly: Boolean): Boolean = when (kind) {
+        "chat", "gift" -> true
+        else -> !chatOnly
+    }
 }
 
 /**
  * 弹幕来源。
  *
- * 现在没有可用的 WS 端点（公网反代要用户自备），所以这里做两件事：
- *   1. 有 ws 地址就（未来版本）订阅，目前留占位
- *   2. 没有就用打包进 APK 的真实样本按接近实时的节奏回放
- * 这样聊天区不会空着，过滤规则也能被用户直接看见。
+ * 两条路：
+ *   1. **实时**：隧道端口上开 WS 打 `/websock/join`，收 `room_msg` 推送（见 [LiveDanmaku]）
+ *   2. **兜底**：隧道还没热起来时，用打包进 APK 的真实样本垫场，避免聊天区空着
+ *
+ * 实时消息一到，垫场立刻停 —— 不是混着放，是让位。
  */
-class DanmakuStore(private val context: Context, private val prefs: Prefs) {
+class DanmakuStore(
+    private val context: Context,
+    private val prefs: Prefs,
+    /** 隧道端口（0 = 还没就绪）；由 AppContainer 接到 LiveRepo/内置隧道上 */
+    private val portProvider: () -> Int = { 0 }
+) {
 
     val messages = mutableStateListOf<DmMessage>()
 
+    /** 实时链路的一句话状态，设置页显示用 */
+    var status by mutableStateOf("")
+        private set
+
+    /** 是否已经收到过实时消息（用来判断垫场该不该让位） */
+    var liveCount by mutableStateOf(0)
+        private set
+
     private var job: Job? = null
+    private var roomId: Long = 0L
     private var pool: List<DmMessage> = emptyList()
-    private var loaded = false
+
+    /** 实时消息计数（跨线程只读，用来判断垫场该不该让位） */
+    @Volatile private var seenLive: Int = 0
 
     private companion object {
         const val MAX_KEEP = 200
+        /** 垫场节奏 */
+        const val FILL_MS = 1300L
     }
 
-    fun start(scope: CoroutineScope) {
-        if (job?.isActive == true) return
+    fun start(scope: CoroutineScope, room: Long) {
+        if (job?.isActive == true && roomId == room) return
+        job?.cancel()
+        job = null
+        roomId = room
+        messages.clear()
+        liveCount = 0
+        status = ""
+
         job = scope.launch {
-            if (!loaded) {
-                pool = loadDemo()
-                loaded = true
+            if (!prefs.liveMode) {
+                status = "离线样本"
+                replayDemo()
+                return@launch
             }
-            val list = pool.filter { DmFilter.keep(it.kind, prefs.chatOnly) }
-            if (list.isEmpty()) return@launch
-            if (messages.isEmpty()) {
-                // 先垫几条，进房就有内容
-                list.take(6).forEach { messages.add(it) }
+
+            seenLive = 0
+            // socket 是阻塞 IO，绝不能放在主线程（会直接 ANR）；
+            // 用通道把消息送回主线程再上屏，主线程只做状态更新。
+            val inbox = Channel<DmMessage>(Channel.UNLIMITED)
+            val live = launch(Dispatchers.IO) {
+                LiveDanmaku(prefs).run(
+                    port = portProvider,
+                    roomId = room,
+                    onMessage = { m ->
+                        seenLive++
+                        inbox.trySend(m)
+                    },
+                    onState = { s -> launch(Dispatchers.Main) { status = s } }
+                )
             }
-            var i = 6
-            while (isActive) {
-                messages.add(list[i % list.size])
-                while (messages.size > MAX_KEEP) messages.removeAt(0)
+            val consume = launch {
+                for (m in inbox) {
+                    liveCount++
+                    push(m)
+                }
+            }
+            // 垫场：实时一条都没来之前，用样本把聊天区撑住；实时一到立刻让位。
+            // 前 8 条走正常节奏，之后放慢，避免隧道一直连不上时刷得太假。
+            var i = 0
+            while (isActive && consume.isActive && seenLive == 0) {
+                if (pool.isEmpty()) {
+                    pool = loadDemo().filter { DmFilter.keep(it.kind, prefs.chatOnly) }
+                }
+                if (pool.isEmpty()) break
+                push(pool[i % pool.size])
                 i++
-                delay(1150L + (i % 4) * 240L)
-                if (i % list.size == 0) delay(2600L)
+                delay(if (i < 8) FILL_MS else 2600L)
             }
+            live.join()
         }
     }
 
     fun restart(scope: CoroutineScope) {
+        val r = roomId
         job?.cancel()
         job = null
         messages.clear()
-        start(scope)
+        if (r > 0) {
+            roomId = 0L
+            start(scope, r)
+        }
     }
 
     fun stop() {
         job?.cancel()
         job = null
+    }
+
+    private fun push(m: DmMessage) {
+        messages.add(m)
+        while (messages.size > MAX_KEEP) messages.removeAt(0)
+    }
+
+    /** 离线回放：按接近真人的节奏把样本一条条放出去 */
+    private suspend fun replayDemo() {
+        if (pool.isEmpty()) {
+            pool = loadDemo().filter { DmFilter.keep(it.kind, prefs.chatOnly) }
+        }
+        val list = pool
+        if (list.isEmpty()) return
+        list.take(6).forEach { push(it) }
+        var i = 6
+        while (true) {
+            push(list[i % list.size])
+            i++
+            delay(1150L + (i % 4) * 240L)
+            if (i % list.size == 0) delay(2600L)
+        }
     }
 
     private fun loadDemo(): List<DmMessage> = runCatching {
@@ -172,12 +242,14 @@ class DanmakuStore(private val context: Context, private val prefs: Prefs) {
             val t = o.optString("t")
             if (t.isBlank()) continue
             val typ = if (o.has("typ") && !o.isNull("typ")) o.optInt("typ") else null
-            out.add(DmMessage(
-                kind = o.optString("k").ifBlank { DmFilter.classify(typ, t) },
-                typ = typ ?: 0,
-                nick = o.optString("n").ifBlank { "观众" },
-                text = t
-            ))
+            out.add(
+                DmMessage(
+                    kind = o.optString("k").ifBlank { DmFilter.classify(typ, t) },
+                    typ = typ ?: 0,
+                    nick = o.optString("n").ifBlank { "观众" },
+                    text = t
+                )
+            )
         }
         out
     }.getOrDefault(emptyList())

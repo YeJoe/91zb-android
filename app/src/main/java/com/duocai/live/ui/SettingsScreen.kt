@@ -98,7 +98,11 @@ fun SettingsScreen(c: AppContainer) {
     var advancedOpen by remember { mutableStateOf(false) }
 
     // 直播源（直连源 App 隧道端口）
-    var jwe by remember { mutableStateOf(prefs.jwe) }
+    // JWE 已内置默认值（Prefs.Defaults.JWE），输入框就留空 —— 直接把 330 字符塞进
+    // 单行输入框，用户只会看到一串乱码似的尾巴。要看/改时才自己粘一份进来。
+    var jwe by remember {
+        mutableStateOf(prefs.jwe.takeIf { it != Prefs.Defaults.JWE } ?: "")
+    }
     var port by remember { mutableStateOf(if (prefs.tunnelPort > 0) prefs.tunnelPort.toString() else "") }
 
     // 内置隧道
@@ -288,14 +292,21 @@ fun SettingsScreen(c: AppContainer) {
             OutlinedTextField(
                 value = jwe,
                 onValueChange = { jwe = it; prefs.jwe = it },
-                label = { Text("JWE（只有「关注」用得到）") },
-                placeholder = { Text("源 App prefs 里 MAINUSER_DATA.token 那串，330 字符") },
+                label = { Text("JWE（关注 / 弹幕用，已内置默认）") },
+                placeholder = { Text("留空即用内置凭证；换号时粘一份新的（330 字符）") },
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
                 shape = RoundedCornerShape(12.dp)
             )
             InfoLine(
-                "实测：拉直播间列表**完全不需要凭证**；只有 /user_follow/my_follow 要这个 JWE。" +
+                if (jwe.isBlank()) {
+                    "当前用**内置默认凭证**（随 App 打包），不用填。清空这一栏也等于用内置的。"
+                } else {
+                    "当前用你自己粘贴的凭证（${jwe.trim().length} 字符）。清空则回到内置默认。"
+                }
+            )
+            InfoLine(
+                "拉直播间列表**完全不需要凭证**；`/user_follow/my_follow`（关注）和弹幕 join 要它。" +
                     "填一次长期有效，源 App 重启也不用重填（账号别登出就行）。"
             )
             Spacer(Modifier.height(6.dp))
@@ -546,7 +557,7 @@ fun SettingsScreen(c: AppContainer) {
             Spacer(Modifier.height(4.dp))
             SwitchLine(
                 label = "只显示观众聊天",
-                desc = "过滤下注、开奖、送礼、关注、管理、下单等非聊天消息",
+                desc = "过滤下注、开奖、关注、管理、下单等非聊天消息；礼物始终保留",
                 checked = c.chatOnly,
                 onChange = {
                     c.chatOnly = it
@@ -557,14 +568,20 @@ fun SettingsScreen(c: AppContainer) {
 
         // ---------- 关注 ----------
         Section("关注") {
-            InfoLine("已关注 ${c.followedIds.size} 位 · 存在本机，不依赖账号")
-            InfoLine("服务端关注接口公网不可达（详见 docs/安卓App设计方案.md §3.3），暂不做同步")
+            val jweDesc = if (c.prefs.jwe == Prefs.Defaults.JWE) {
+                "内置默认 JWE（已就绪）"
+            } else {
+                "自定义 JWE（${c.prefs.jwe.length} 字符）"
+            }
+            InfoLine("本地收藏 ${c.followedIds.size} 位 · 服务端关注 ${c.serverFollowIds.size} 位")
+            InfoLine("服务端关注走 `/user_follow/my_follow`，凭证：$jweDesc")
+            InfoLine("两个来源合并展示，「关注」页里在播的排前面，未开播的标「未开播」")
             if (c.followedIds.isNotEmpty()) {
                 Spacer(Modifier.height(6.dp))
                 TextButton(onClick = {
                     c.followedIds.toList().forEach { c.unfollow(it) }
                     toast = "已清空关注"
-                }) { Text("清空关注列表") }
+                }) { Text("清空本地收藏") }
             }
         }
 
@@ -577,12 +594,7 @@ fun SettingsScreen(c: AppContainer) {
                 onSelect = { c.themeMode = it }
             )
             Spacer(Modifier.height(4.dp))
-            SwitchLine(
-                label = "显示推广位",
-                desc = "默认关掉：这类房间基本是博彩导流",
-                checked = c.showAd,
-                onChange = { c.showAd = it }
-            )
+            InfoLine("游戏/棋牌/彩票导流房已在数据入口剔除，没有「显示推广位」这类开关")
             InfoLine(
                 "附近城市：" + (c.nearbyCity.ifBlank { "自动（取房间最多的城市）" })
             )

@@ -152,35 +152,37 @@ fun HomeScreen(c: AppContainer) {
 
     // 四页的列表一次性算好：既给每页用，也给顶部的「N 个直播间」用，
     // 免得滑动过程中反复对 2000 间房做过滤。
+    val q = query.trim()
+    // 搜索是**全局**的：不在当前 tab 的分类/城市里筛，否则站在「舞蹈」分类搜一个
+    // 颜值主播会莫名搜不到，用户会以为搜索坏了。
+    val hits = remember(all, q) { if (q.isEmpty()) emptyList() else searchRooms(all, q) }
+
     val pool: Map<Feed, List<Room>> =
-        remember(all, followIds, activeCity, c.showAd, catMap, query, sortOnline) {
-            feeds.associateWith { f ->
-                // 一级先把池子筛出来
-                var a = when (f) {
-                    Feed.FOLLOW -> all.filter { it.id in followIds }
-                    Feed.HOT -> all
-                    Feed.RECOMMEND -> recommendOrder(all)
-                    Feed.NEARBY ->
-                        if (activeCity.isBlank()) emptyList() else all.filter { it.city == activeCity }
-                }
-                if (!c.showAd) a = a.filter { !it.ad }
-                // 说明：游戏区 / 棋牌推广房已经在 LiveRepo.toRoom 入口就丢掉了，
-                // 这里不用再筛，`ad` 恒为 false。
-                // 二级分类只有「热门」页有：那 8 个（游戏/星秀/女神/颜值/交友/音乐/舞蹈…）
-                // 是热门入口独有的口径，推荐页是算法排出来的混合流，按它筛没有意义。
-                val cat = catMap[f] ?: "全部"
-                if (f == Feed.HOT && cat != "全部") {
-                    a = a.filter { it.cat == cat }
-                }
-                val q = query.trim()
-                if (q.isNotEmpty()) {
-                    a = a.filter {
-                        it.name.contains(q, ignoreCase = true) || it.id.toString().contains(q)
+        remember(all, followIds, activeCity, catMap, q, sortOnline, hits) {
+            if (q.isNotEmpty()) {
+                feeds.associateWith { hits }
+            } else {
+                feeds.associateWith { f ->
+                    // 一级先把池子筛出来
+                    var a = when (f) {
+                        Feed.FOLLOW -> all.filter { it.id in followIds }
+                        Feed.HOT -> all
+                        Feed.RECOMMEND -> recommendOrder(all)
+                        Feed.NEARBY ->
+                            if (activeCity.isBlank()) emptyList() else all.filter { it.city == activeCity }
                     }
+                    // 游戏/棋牌/彩票导流房已经在 LiveRepo.toRoom 入口丢掉了（见 NonHuman），
+                    // 这里不用再筛，`ad` 恒为 false，也没有"显示推广位"这种开关。
+                    // 二级分类只有「热门」页有：那 8 个（游戏/星秀/女神/颜值/交友/音乐/舞蹈…）
+                    // 是热门入口独有的口径，推荐页是算法排出来的混合流，按它筛没有意义。
+                    val cat = catMap[f] ?: "全部"
+                    if (f == Feed.HOT && cat != "全部") {
+                        a = a.filter { it.cat == cat }
+                    }
+                    // 推荐页的顺序是算出来的，别被排序按钮盖回去
+                    if (f == Feed.RECOMMEND) a
+                    else if (sortOnline) a.sortedByDescending { it.online } else a.sortedBy { it.name }
                 }
-                // 推荐页的顺序是算出来的，别被排序按钮盖回去
-                if (f == Feed.RECOMMEND) a
-                else if (sortOnline) a.sortedByDescending { it.online } else a.sortedBy { it.name }
             }
         }
 
@@ -253,7 +255,7 @@ fun HomeScreen(c: AppContainer) {
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 14.dp, vertical = 4.dp),
-                placeholder = { Text("主播名 / 房间号") },
+                placeholder = { Text("主播名 / 主播 ID（房间号）") },
                 singleLine = true,
                 shape = RoundedCornerShape(14.dp),
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
@@ -286,6 +288,9 @@ fun HomeScreen(c: AppContainer) {
                 followIds = followIds,
                 sortOnline = sortOnline,
                 onToggleSort = { sortOnline = !sortOnline },
+                query = q,
+                cols = c.gridCols,
+                onToggleCols = { c.gridCols = if (c.gridCols >= 3) 2 else 3 },
                 onOpen = { list, idx -> c.openPlayer(list, idx) }
             )
         }
@@ -311,6 +316,11 @@ private fun FeedPage(
     followIds: Set<Long>,
     sortOnline: Boolean,
     onToggleSort: () -> Unit,
+    /** 当前搜索词（空 = 没在搜）。搜索结果是全局的，四页共用一份 */
+    query: String,
+    /** 瀑布流列数：3 = 紧凑（默认），2 = 大封面 */
+    cols: Int,
+    onToggleCols: () -> Unit,
     onOpen: (List<Room>, Int) -> Unit
 ) {
     val all = c.rooms
@@ -327,22 +337,35 @@ private fun FeedPage(
     }
 
     Column(Modifier.fillMaxSize()) {
-        when (feed) {
-            Feed.NEARBY -> ChipRow(chips = cityChips, selected = activeCity, onSelect = onCity)
-            Feed.HOT -> ChipRow(chips = catChips, selected = cat, onSelect = onCat)
-            else -> Unit
+        // 搜索结果是全局的，分类/城市 chip 在这时候没有意义，收起来免得看着像"还能再筛"
+        if (query.isEmpty()) {
+            when (feed) {
+                Feed.NEARBY -> ChipRow(chips = cityChips, selected = activeCity, onSelect = onCity)
+                Feed.HOT -> ChipRow(chips = catChips, selected = cat, onSelect = onCat)
+                else -> Unit
+            }
         }
 
         SortBar(
             count = rooms.size,
             recommend = feed == Feed.RECOMMEND,
             sortOnline = sortOnline,
-            onToggleSort = onToggleSort
+            onToggleSort = onToggleSort,
+            query = query,
+            cols = cols,
+            onToggleCols = onToggleCols
         )
 
         Box(Modifier.weight(1f).fillMaxWidth()) {
             val offAir = followIds.size - rooms.size
             when {
+                rooms.isEmpty() && query.isNotEmpty() -> HintBox(
+                    title = "没找到「${query.trim()}」",
+                    desc = "名字里的一段字符、或者房间号（主播 ID）都能搜。\n只搜在播的真人直播间，游戏/棋牌房不参与搜索",
+                    action = null,
+                    onAction = {}
+                )
+
                 rooms.isEmpty() && (c.loading || !c.loadedOnce) -> LoadingBox()
 
                 rooms.isEmpty() && feed == Feed.FOLLOW && followIds.isEmpty() ->
@@ -370,22 +393,33 @@ private fun FeedPage(
 
                 rooms.isEmpty() -> EmptyBox(c)
 
-                else -> LazyVerticalStaggeredGrid(
-                    columns = StaggeredGridCells.Fixed(2),
-                    contentPadding = PaddingValues(start = 14.dp, end = 14.dp, top = 6.dp, bottom = 18.dp),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    verticalItemSpacing = 10.dp
-                ) {
-                    items(rooms, key = { it.id }) { room ->
-                        RoomCard(
-                            c = c,
-                            room = room,
-                            followed = room.id in followIds,
-                            onClick = {
-                                val index = rooms.indexOfFirst { it.id == room.id }
-                                onOpen(rooms, index)
-                            }
-                        )
+                else -> {
+                    // 紧凑档（3 列）连边距一起收：2 列时 14dp 的左右留白在 3 列下太奢侈，
+                    // 每省 4dp 边距就是每格多 2-3dp 封面宽度。
+                    val compact = cols >= 3
+                    LazyVerticalStaggeredGrid(
+                        columns = StaggeredGridCells.Fixed(cols),
+                        contentPadding = PaddingValues(
+                            start = if (compact) 9.dp else 12.dp,
+                            end = if (compact) 9.dp else 12.dp,
+                            top = 4.dp,
+                            bottom = 18.dp
+                        ),
+                        horizontalArrangement = Arrangement.spacedBy(if (compact) 7.dp else 9.dp),
+                        verticalItemSpacing = if (compact) 7.dp else 9.dp
+                    ) {
+                        items(rooms, key = { it.id }) { room ->
+                            RoomCard(
+                                c = c,
+                                room = room,
+                                compact = compact,
+                                followed = room.id in followIds,
+                                onClick = {
+                                    val index = rooms.indexOfFirst { it.id == room.id }
+                                    onOpen(rooms, index)
+                                }
+                            )
+                        }
                     }
                 }
             }
@@ -437,7 +471,10 @@ private fun SortBar(
     count: Int,
     recommend: Boolean,
     sortOnline: Boolean,
-    onToggleSort: () -> Unit
+    onToggleSort: () -> Unit,
+    query: String,
+    cols: Int,
+    onToggleCols: () -> Unit
 ) {
     Row(
         Modifier
@@ -445,30 +482,58 @@ private fun SortBar(
             .padding(horizontal = 16.dp, vertical = 2.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        if (recommend) {
+        if (query.isNotEmpty()) {
+            // 搜索态：这一行只剩"在搜什么、还剩几间"，排序按钮藏起来
+            // （结果按匹配度排，按人气/名字重排只会把命中项挤下去）
             Text(
-                "人气分档 · 智能打散",
-                fontSize = 12.sp,
-                color = MaterialTheme.colorScheme.primary,
-                fontWeight = FontWeight.Medium
-            )
-        } else {
-            Text(
-                if (sortOnline) "按人气" else "按名字",
+                "搜索「$query」",
                 fontSize = 12.sp,
                 color = MaterialTheme.colorScheme.primary,
                 fontWeight = FontWeight.Medium,
-                modifier = Modifier.clickable(onClick = onToggleSort)
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f)
             )
+        } else {
+            if (recommend) {
+                Text(
+                    "人气分档 · 智能打散",
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.primary,
+                    fontWeight = FontWeight.Medium
+                )
+            } else {
+                Text(
+                    if (sortOnline) "按人气" else "按名字",
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.primary,
+                    fontWeight = FontWeight.Medium,
+                    modifier = Modifier.clickable(onClick = onToggleSort)
+                )
+            }
+            Spacer(Modifier.width(12.dp))
+            // 固定文案：游戏/棋牌/彩票导流房已经在数据入口丢掉了，这里没有可切的开关
+            Text(
+                "只看真人",
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(Modifier.weight(1f))
         }
-        Spacer(Modifier.width(12.dp))
-        // 改成固定文案：游戏区/推广房已经在数据入口丢掉了，这里没有可切的开关
+        // 密度开关：点一下在「3 列（紧凑）/ 2 列（大封面）」之间切，选择会记住
         Text(
-            "只看真人",
-            fontSize = 12.sp,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
+            if (cols >= 3) "3 列" else "2 列",
+            fontSize = 11.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            fontWeight = FontWeight.Medium,
+            maxLines = 1,
+            modifier = Modifier
+                .clip(RoundedCornerShape(50))
+                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f))
+                .clickable(onClick = onToggleCols)
+                .padding(horizontal = 8.dp, vertical = 2.dp)
         )
-        Spacer(Modifier.weight(1f))
+        Spacer(Modifier.width(8.dp))
         Text(
             "$count 间",
             fontSize = 11.sp,
@@ -522,6 +587,35 @@ private fun subtitleOf(c: AppContainer, shown: Int): String {
     }
     if (c.error != null && c.rooms.isNotEmpty()) parts.add("刷新失败")
     return parts.joinToString(" · ")
+}
+
+/**
+ * 搜主播：**名字或 ID（房间号）都认**，结果按匹配强度排，同强度再按人气。
+ *
+ * 强度分级而不是简单 filter，是因为 ID 搜索会出现"包含"命中的一堆噪音
+ * （搜 `1006` 能中几百个房间号），只有把「ID 完全相等」「ID 前缀相等」顶到前面，
+ * 输入完整房间号时第一张卡才是要找的那间。
+ */
+private fun searchRooms(all: List<Room>, raw: String): List<Room> {
+    val q = raw.trim()
+    if (q.isEmpty()) return emptyList()
+    val lower = q.lowercase()
+    val asId = q.toLongOrNull()
+    val scored = ArrayList<Pair<Room, Int>>(16)
+    for (r in all) {
+        val idText = r.id.toString()
+        val score = when {
+            asId != null && r.id == asId -> 0          // 房间号完全相等
+            idText.startsWith(q) -> 1                  // 房间号前缀（输一半也能找到）
+            r.name.lowercase().contains(lower) -> 2    // 名字包含
+            idText.contains(q) -> 3                    // 房间号包含
+            else -> -1
+        }
+        if (score >= 0) scored.add(r to score)
+    }
+    return scored
+        .sortedWith(compareBy<Pair<Room, Int>> { it.second }.thenByDescending { it.first.online })
+        .map { it.first }
 }
 
 /**
@@ -610,19 +704,40 @@ private fun EmptyBox(c: AppContainer) {
 }
 
 @Composable
-private fun RoomCard(c: AppContainer, room: Room, followed: Boolean, onClick: () -> Unit) {
-    val ratio = when ((room.id % 5).toInt()) {
-        0 -> 0.72f
-        1 -> 0.90f
-        2 -> 0.78f
-        3 -> 0.84f
-        else -> 0.76f
+private fun RoomCard(
+    c: AppContainer,
+    room: Room,
+    /** 紧凑档（3 列）：整张卡片的所有尺寸一起缩，不是一个比例缩放 */
+    compact: Boolean,
+    followed: Boolean,
+    onClick: () -> Unit
+) {
+    // 错落感保留：每格高度按房间号取固定值，滚动时不会因为重组而跳动。
+    // 紧凑档把波动收窄（0.78~0.92），否则 3 列下长短差太大会留出成片的空洞。
+    val ratio = if (compact) {
+        when ((room.id % 4).toInt()) {
+            0 -> 0.78f
+            1 -> 0.88f
+            2 -> 0.82f
+            else -> 0.92f
+        }
+    } else {
+        when ((room.id % 5).toInt()) {
+            0 -> 0.72f
+            1 -> 0.90f
+            2 -> 0.78f
+            3 -> 0.84f
+            else -> 0.76f
+        }
     }
+    val corner = if (compact) 11.dp else 15.dp
+    val padH = if (compact) 7.dp else 10.dp
+
     Box(
         Modifier
             .fillMaxWidth()
             .aspectRatio(ratio)
-            .clip(RoundedCornerShape(16.dp))
+            .clip(RoundedCornerShape(corner))
             // 兜底底色：图片没加载出来时先是一片渐变，不会闪白
             .background(avBrush(room.id))
             .clickable(onClick = onClick)
@@ -632,16 +747,20 @@ private fun RoomCard(c: AppContainer, room: Room, followed: Boolean, onClick: ()
         Text(
             initialOf(room.name),
             modifier = Modifier.align(Alignment.Center),
-            fontSize = 46.sp,
+            fontSize = if (compact) 26.sp else 42.sp,
             fontWeight = FontWeight.Black,
             color = Color.White.copy(alpha = 0.9f)
         )
         if (room.avatar.isNotEmpty()) {
+            // 列表每轮自动刷新都会重组。请求对象不 remember 的话每轮新建一个，
+            // 就算最终命中内存缓存，也会重走一遍"加载 → 淡入"，看着就是图片在反复加载。
+            // 网格封面属于背景元素，关掉淡入 —— 换图频率极低，淡入只会制造闪动。
+            val ctx = LocalContext.current
+            val req = remember(room.avatar) {
+                ImageRequest.Builder(ctx).data(room.avatar).crossfade(false).build()
+            }
             AsyncImage(
-                model = ImageRequest.Builder(LocalContext.current)
-                    .data(room.avatar)
-                    .crossfade(180)
-                    .build(),
+                model = req,
                 contentDescription = null,
                 contentScale = ContentScale.Crop,
                 modifier = Modifier.fillMaxSize()
@@ -664,28 +783,43 @@ private fun RoomCard(c: AppContainer, room: Room, followed: Boolean, onClick: ()
         Column(
             Modifier
                 .align(Alignment.BottomStart)
-                .padding(start = 10.dp, end = 10.dp, bottom = 9.dp)
+                .padding(start = padH, end = padH, bottom = if (compact) 6.dp else 9.dp)
         ) {
             Text(
                 room.name,
                 color = Color.White,
-                fontSize = 13.sp,
+                fontSize = if (compact) 11.sp else 13.sp,
                 fontWeight = FontWeight.SemiBold,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
-            Spacer(Modifier.height(3.dp))
+            Spacer(Modifier.height(if (compact) 2.dp else 3.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Box(
                     Modifier
-                        .size(5.dp)
+                        .size(if (compact) 4.dp else 5.dp)
                         .background(Color(0xFFFF5C7A), CircleShape)
                 )
-                Spacer(Modifier.width(4.dp))
-                Text(fmtCount(room.online), color = Color.White.copy(alpha = 0.9f), fontSize = 11.sp)
-                Spacer(Modifier.width(6.dp))
-                Text(room.cat, color = Color.White.copy(alpha = 0.7f), fontSize = 11.sp)
-                if (room.city.isNotEmpty()) {
+                Spacer(Modifier.width(if (compact) 3.dp else 4.dp))
+                Text(
+                    fmtCount(room.online),
+                    color = Color.White.copy(alpha = 0.9f),
+                    fontSize = if (compact) 9.5.sp else 11.sp,
+                    maxLines = 1
+                )
+                // 3 列时横向只剩 ~100dp，人气 + 分类已经把一行占满，
+                // 城市再塞进来就会两个都被省略号吃掉，索性只在宽卡片里显示
+                if (room.cat.isNotBlank()) {
+                    Spacer(Modifier.width(if (compact) 4.dp else 6.dp))
+                    Text(
+                        room.cat,
+                        color = Color.White.copy(alpha = 0.7f),
+                        fontSize = if (compact) 9.5.sp else 11.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                if (!compact && room.city.isNotEmpty()) {
                     Spacer(Modifier.width(6.dp))
                     Text(
                         room.city,
@@ -698,26 +832,29 @@ private fun RoomCard(c: AppContainer, room: Room, followed: Boolean, onClick: ()
             }
         }
 
-        if (room.ad) {
-            Text(
-                "推广",
-                fontSize = 10.sp,
-                color = Color(0xFF3A2A00),
-                modifier = Modifier
-                    .align(Alignment.TopStart)
-                    .padding(8.dp)
-                    .clip(RoundedCornerShape(6.dp))
-                    .background(Gold)
-                    .padding(horizontal = 5.dp, vertical = 1.dp)
-            )
-        }
+        // 左上角钉主播 ID（就是房间号，也是关注接口里的 podcast_id）。
+        // 搜索支持按 ID 搜，这里得能看到 ID 才能对照；顺带占住了原来「推广」角标的位置
+        // （`ad` 现在恒为 false，那个角标不会再有）。
+        Text(
+            "ID ${room.id}",
+            fontSize = if (compact) 8.sp else 9.5.sp,
+            color = Color.White.copy(alpha = 0.92f),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier
+                .align(Alignment.TopStart)
+                .padding(if (compact) 5.dp else 7.dp)
+                .clip(RoundedCornerShape(6.dp))
+                .background(Color.Black.copy(alpha = 0.34f))
+                .padding(horizontal = 4.dp, vertical = 1.dp)
+        )
 
         IconButton(
             onClick = { c.toggleFollow(room) },
             modifier = Modifier
                 .align(Alignment.TopEnd)
-                .padding(2.dp)
-                .size(34.dp)
+                .padding(if (compact) 0.dp else 2.dp)
+                .size(if (compact) 26.dp else 32.dp)
                 // 头像底上有深有浅，给星标垫一层半透明黑，否则浅色封面时看不见
                 .clip(CircleShape)
                 .background(Color.Black.copy(alpha = 0.26f))
@@ -726,7 +863,7 @@ private fun RoomCard(c: AppContainer, room: Room, followed: Boolean, onClick: ()
                 Icons.Filled.Star,
                 contentDescription = if (followed) "取消关注" else "关注",
                 tint = if (followed) Gold else Color.White.copy(alpha = 0.55f),
-                modifier = Modifier.size(19.dp)
+                modifier = Modifier.size(if (compact) 13.dp else 17.dp)
             )
         }
     }
