@@ -122,14 +122,28 @@ fun SettingsScreen(c: AppContainer) {
             OutlinedTextField(
                 value = domain,
                 onValueChange = { domain = it; prefs.rtmpDomain = it },
-                label = { Text("RTMP 域名") },
+                label = { Text("流媒体域名") },
                 placeholder = { Text("xxx.hebeisaixin.com") },
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
                 shape = RoundedCornerShape(12.dp),
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri)
             )
-            InfoLine("播放地址 = rtmp://<域名>/live/<房间号>，不需要 token")
+            InfoLine("播放地址 = http://<域名>/live/<房间号>.flv，不需要 token")
+            Spacer(Modifier.height(8.dp))
+            ChipLine(
+                label = "播放通道",
+                options = listOf("自动", "HTTP-FLV", "RTMP"),
+                selected = prefs.streamMode.coerceIn(0, 2),
+                onSelect = { prefs.streamMode = it }
+            )
+            InfoLine(
+                when (prefs.streamMode) {
+                    1 -> "只走 HTTP-FLV：实测最稳，Media3 原生解码"
+                    2 -> "只走 RTMP：librtmp 对该 CDN 兼容性差，一般不用"
+                    else -> "自动：先 HTTP-FLV，失败再换 RTMP"
+                }
+            )
             Spacer(Modifier.height(6.dp))
             OutlinedTextField(
                 value = gateway,

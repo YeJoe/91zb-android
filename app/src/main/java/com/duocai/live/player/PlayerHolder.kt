@@ -28,6 +28,10 @@ class PlayerHolder(private val context: Context) {
     private var currentUrl: String? = null
     private var bufferMs: Int = 1200
 
+    /** 当前房间的候选拉流地址（FLV → RTMP），失败自动换下一个 */
+    private var candidates: List<String> = emptyList()
+    private var candIndex: Int = 0
+
     /** 首帧就绪 —— 决定封面要不要淡出 */
     var ready by mutableStateOf(false)
 
@@ -67,6 +71,12 @@ class PlayerHolder(private val context: Context) {
             }
 
             override fun onPlayerError(e: PlaybackException) {
+                // 还有备选通道就换一个接着试（FLV 不行再试 RTMP）
+                if (candIndex + 1 < candidates.size) {
+                    candIndex++
+                    startUrl(candidates[candIndex], p.playWhenReady)
+                    return
+                }
                 error = describe(e)
                 ready = false
             }
@@ -83,17 +93,28 @@ class PlayerHolder(private val context: Context) {
         bufferMs = ms
     }
 
-    /** 同一个地址重复调用不会重新拉流 —— 切回来时靠这个省一次握手 */
-    fun open(url: String?, autoPlay: Boolean) {
-        if (url.isNullOrBlank()) {
-            error = "没填 RTMP 域名"
+    /**
+     * 打开一个房间。传入按优先级排好的候选地址（见 Room.streamUrls）：
+     * 第一个失败会自动换下一个，全失败才报错。
+     * 同一个房间重复调用不会重新拉流 —— 切回来时靠这个省一次握手。
+     */
+    fun open(urls: List<String>, autoPlay: Boolean) {
+        if (urls.isEmpty()) {
+            error = "没填流域名"
             return
         }
         val p = player()
-        if (url == currentUrl) {
+        if (urls == candidates && currentUrl != null) {
             if (autoPlay) p.play()
             return
         }
+        candidates = urls
+        candIndex = 0
+        startUrl(urls[0], autoPlay)
+    }
+
+    private fun startUrl(url: String, autoPlay: Boolean) {
+        val p = player()
         currentUrl = url
         error = null
         ready = false
@@ -102,19 +123,16 @@ class PlayerHolder(private val context: Context) {
         p.playWhenReady = autoPlay
     }
 
+    /** 手动重试：从第一个候选重新开始 */
+    fun retry() {
+        if (candidates.isEmpty()) return
+        candIndex = 0
+        startUrl(candidates[0], player()?.playWhenReady ?: true)
+    }
+
     fun togglePlay() {
         val p = exo ?: return
         if (p.isPlaying) p.pause() else p.play()
-    }
-
-    fun retry() {
-        val p = exo ?: return
-        val url = currentUrl ?: return
-        error = null
-        ready = false
-        p.setMediaItem(MediaItem.fromUri(url))
-        p.prepare()
-        p.playWhenReady = true
     }
 
     /** 离开播放页：暂停并丢掉画面，但保留实例，回来时秒开 */
@@ -126,6 +144,8 @@ class PlayerHolder(private val context: Context) {
         exo?.release()
         exo = null
         currentUrl = null
+        candidates = emptyList()
+        candIndex = 0
         ready = false
         playing = false
     }
@@ -153,12 +173,19 @@ class PlayerHolder(private val context: Context) {
         val head = when (e.errorCode) {
             PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED -> "连不上服务器"
             PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT -> "连接超时"
-            PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS -> "地址被拒绝"
+            PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS -> "房间不存在或已下播"
+            PlaybackException.ERROR_CODE_IO_NO_PERMISSION -> "没有访问权限"
+            PlaybackException.ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED -> "流格式不支持"
+            PlaybackException.ERROR_CODE_PARSING_MANIFEST_UNSUPPORTED -> "流格式不支持"
             PlaybackException.ERROR_CODE_DECODING_FAILED -> "解码失败"
             PlaybackException.ERROR_CODE_DECODER_INIT_FAILED -> "解码器初始化失败"
             PlaybackException.ERROR_CODE_UNSPECIFIED -> "播放出错"
             else -> "播放出错(${e.errorCode})"
         }
-        return head
+        // 房间快照是静态的，绝大多数"连不上"其实是主播已经下播了 —— 说人话
+        val hint = if (e.errorCode == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS ||
+            e.errorCode == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED
+        ) "（列表是静态快照，这房可能已下播，往下滑换一个）" else ""
+        return head + hint
     }
 }

@@ -3,6 +3,24 @@ package com.duocai.live.data
 import org.json.JSONArray
 import org.json.JSONObject
 
+/** 播放通道。实测下来 HTTP-FLV 最稳，RTMP 只当备选。 */
+enum class StreamMode {
+    /** 自动：先 FLV，失败自动换 RTMP */
+    AUTO,
+    /** 只用 HTTP-FLV（http://域名/live/房间号.flv） */
+    FLV,
+    /** 只用 RTMP（rtmp://域名/live/房间号） */
+    RTMP;
+
+    companion object {
+        fun of(value: Int): StreamMode = when (value) {
+            1 -> FLV
+            2 -> RTMP
+            else -> AUTO
+        }
+    }
+}
+
 /** 一个直播间。字段刻意压到最少 —— 接口里那些 avatar/title/chess/battle 在 App 里都用不上。 */
 data class Room(
     val id: Long,
@@ -13,11 +31,31 @@ data class Room(
     val ad: Boolean,
     val coins: Int
 ) {
-    /** rtmp 流名就是房间号，这一点已用 ffprobe 实测过（见 docs/直播流地址.md） */
-    fun rtmpUrl(domain: String): String? {
-        val d = domain.trim().removePrefix("rtmp://").removePrefix("http://").trimEnd('/')
-        if (d.isEmpty()) return null
-        return "rtmp://$d/live/$id"
+    /**
+     * 拉流地址候选列表（按优先级）。
+     *
+     * 2026-10-29 实测结论：
+     * - **HTTP-FLV 最稳**：`http://域名/live/<房间号>.flv` → 200 + 真 FLV（`FLV\x01` 头），h264 720x1280 + aac。
+     *   同一台服务器上 `.m3u8` 也返回 FLV（nginx 没做 HLS），所以 HLS 这条路不存在。
+     * - **RTMP 裸地址不需要 token**：`rtmp://域名/live/<房间号>` 用 ffprobe 能拉通；
+     *   抓包里的 `?token=…&t=…&liteavToken=…` 是服务端生成的可选参数，不是鉴权必需。
+     * - 但 App 里的 antmedia/librtmp 连这个 CDN 会抛 `RTMP error: -14`（握手不兼容），
+     *   所以默认顺序是 FLV → RTMP，前一个失败自动换下一个。
+     */
+    fun streamUrls(domain: String, mode: StreamMode): List<String> {
+        val raw = domain.trim().trimEnd('/')
+        if (raw.isEmpty()) return emptyList()
+        val scheme = if (raw.startsWith("https://")) "https" else "http"
+        val bare = raw.removePrefix("rtmp://").removePrefix("https://").removePrefix("http://")
+            .trimEnd('/')
+        if (bare.isEmpty()) return emptyList()
+        val flv = "$scheme://$bare/live/$id.flv"
+        val rtmp = "rtmp://$bare/live/$id"
+        return when (mode) {
+            StreamMode.FLV -> listOf(flv)
+            StreamMode.RTMP -> listOf(rtmp)
+            StreamMode.AUTO -> listOf(flv, rtmp)
+        }
     }
 }
 

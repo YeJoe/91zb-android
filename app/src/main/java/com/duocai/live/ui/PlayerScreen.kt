@@ -79,6 +79,7 @@ import com.duocai.live.AppContainer
 import com.duocai.live.R
 import com.duocai.live.data.DmMessage
 import com.duocai.live.data.Room
+import com.duocai.live.data.StreamMode
 import com.duocai.live.ui.theme.Gold
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -149,7 +150,10 @@ fun PlayerScreen(c: AppContainer, startIndex: Int, onClose: () -> Unit) {
         zoom = 1f
         panX = 0f
         panY = 0f
-        holder.open(r.rtmpUrl(c.prefs.rtmpDomain), c.prefs.autoPlay)
+        holder.open(
+            r.streamUrls(c.prefs.rtmpDomain, StreamMode.of(c.prefs.streamMode)),
+            c.prefs.autoPlay
+        )
     }
 
     val playerViewRef = remember { mutableStateOf<PlayerView?>(null) }
@@ -392,12 +396,13 @@ fun PlayerScreen(c: AppContainer, startIndex: Int, onClose: () -> Unit) {
 
         // ---- 出错浮层 ----
         holder.error?.let { err ->
+            val fallbacks = room.streamUrls(c.prefs.rtmpDomain, StreamMode.of(c.prefs.streamMode))
             ErrorOverlay(
                 message = err,
-                url = room.rtmpUrl(c.prefs.rtmpDomain) ?: "",
+                url = fallbacks.firstOrNull() ?: "",
                 onRetry = { holder.retry() },
                 onExternal = {
-                    val u = room.rtmpUrl(c.prefs.rtmpDomain)
+                    val u = fallbacks.firstOrNull()
                     if (u != null) {
                         val intent = Intent(Intent.ACTION_VIEW, Uri.parse(u))
                         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)

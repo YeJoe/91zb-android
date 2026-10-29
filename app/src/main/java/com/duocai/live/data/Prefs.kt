@@ -39,6 +39,14 @@ class Prefs(context: Context) {
         get() = sp.getString(K_HLS_GATEWAY, "") ?: ""
         set(v) = sp.edit().putString(K_HLS_GATEWAY, v.trim()).apply()
 
+    /**
+     * 播放通道：0 自动（HTTP-FLV → RTMP）/ 1 只 FLV / 2 只 RTMP。
+     * 默认 0 —— 实测 FLV 能播、librtmp 连不上，自动降级最省心。
+     */
+    var streamMode: Int
+        get() = sp.getInt(K_STREAM_MODE, 0)
+        set(v) = sp.edit().putInt(K_STREAM_MODE, v).apply()
+
     /** 0 适应 / 1 裁剪 / 2 拉伸 */
     var scaleMode: Int
         get() = sp.getInt(K_SCALE_MODE, 1)
@@ -91,6 +99,7 @@ class Prefs(context: Context) {
         const val K_ROOMS_URL = "rooms_url"
         const val K_RTMP_DOMAIN = "rtmp_domain"
         const val K_HLS_GATEWAY = "hls_gateway"
+        const val K_STREAM_MODE = "stream_mode"
         const val K_SCALE_MODE = "scale_mode"
         const val K_BUFFER_MS = "buffer_ms"
         const val K_AUTOPLAY = "autoplay"
