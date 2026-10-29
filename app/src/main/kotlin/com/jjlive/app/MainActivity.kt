@@ -159,12 +159,11 @@ class MainActivity : AppCompatActivity() {
         // 左右滑动切换分类（在网格区域横向滑动即可切到上一个 / 下一个分类）
         val gd = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
             override fun onFling(
-                e1: MotionEvent?,
-                e2: MotionEvent?,
+                e1: MotionEvent,
+                e2: MotionEvent,
                 velocityX: Float,
                 velocityY: Float
             ): Boolean {
-                if (e1 == null || e2 == null) return false
                 val dx = e2.x - e1.x
                 val dy = e2.y - e1.y
                 if (abs(dx) > abs(dy) && abs(dx) > dp(60)) {
