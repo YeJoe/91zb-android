@@ -76,6 +76,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import com.duocai.live.AppContainer
+import com.duocai.live.MainActivity
 import com.duocai.live.R
 import com.duocai.live.data.DmMessage
 import com.duocai.live.data.Room
@@ -127,8 +128,10 @@ fun PlayerScreen(c: AppContainer, startIndex: Int, onClose: () -> Unit) {
     var chrome by remember { mutableStateOf(true) }
     var entered by remember { mutableStateOf(false) }
     var hintVisible by remember { mutableStateOf(!c.prefs.sawChatSwipeHint) }
+    // 竖滑切换的引导，只在第一次进播放页出现
+    var swipeHint by remember { mutableStateOf(!c.prefs.sawPlayerSwipeHint) }
     // 缩放模式做成局部状态：点一下要立刻看到画面变化，不能等别的原因触发重组
-    var scaleMode by remember { mutableStateOf(c.prefs.scaleMode) }
+    var scaleMode by remember { mutableStateOf(c.scaleMode) }
 
     LaunchedEffect(Unit) {
         entered = true
@@ -137,6 +140,14 @@ fun PlayerScreen(c: AppContainer, startIndex: Int, onClose: () -> Unit) {
             kotlinx.coroutines.delay(4200)
             hintVisible = false
             c.prefs.sawChatSwipeHint = true
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        if (swipeHint) {
+            kotlinx.coroutines.delay(3200)
+            swipeHint = false
+            c.prefs.sawPlayerSwipeHint = true
         }
     }
 
@@ -151,8 +162,8 @@ fun PlayerScreen(c: AppContainer, startIndex: Int, onClose: () -> Unit) {
         panX = 0f
         panY = 0f
         holder.open(
-            r.streamUrls(c.prefs.rtmpDomain, StreamMode.of(c.prefs.streamMode)),
-            c.prefs.autoPlay
+            r.streamUrls(c.prefs.rtmpDomain, StreamMode.of(c.streamMode)),
+            c.autoPlay
         )
     }
 
@@ -174,6 +185,11 @@ fun PlayerScreen(c: AppContainer, startIndex: Int, onClose: () -> Unit) {
         onDispose { window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) }
     }
 
+    // 画中画：进小窗后把顶栏、弹幕、手势层全收起来，只留画面
+    val host = activity as? MainActivity
+    val inPip = host?.inPip == true
+    val pipAvailable = remember(host) { host?.pipSupported() == true }
+
     val enterAlpha by animateFloatAsState(if (entered) 1f else 0f, tween(220), label = "enter")
     val videoAlpha by animateFloatAsState(
         if (holder.ready && holder.error == null) 1f else 0f,
@@ -181,13 +197,13 @@ fun PlayerScreen(c: AppContainer, startIndex: Int, onClose: () -> Unit) {
         label = "video"
     )
     val chromeSwitch by animateFloatAsState(if (chrome) 1f else 0f, tween(200), label = "chrome")
-    val chromeAlpha = chromeSwitch * (1f - min(1f, abs(offset) * 2.2f))
+    val chromeAlpha =
+        if (inPip) 0f else chromeSwitch * (1f - min(1f, abs(offset) * 2.2f))
 
-    val resizeMode = when (scaleMode) {
-        0 -> AspectRatioFrameLayout.RESIZE_MODE_FIT
-        2 -> AspectRatioFrameLayout.RESIZE_MODE_FILL
-        else -> AspectRatioFrameLayout.RESIZE_MODE_ZOOM
-    }
+    // 缩放模式只剩「适应 / 拉伸」两种预设；任意倍率靠双指捏合（1×–3×）
+    val resizeMode =
+        if (scaleMode == 2) AspectRatioFrameLayout.RESIZE_MODE_FILL
+        else AspectRatioFrameLayout.RESIZE_MODE_FIT
 
     Box(
         Modifier
@@ -224,7 +240,7 @@ fun PlayerScreen(c: AppContainer, startIndex: Int, onClose: () -> Unit) {
         VerticalPager(
             state = pager,
             key = { index -> rooms[index].id },
-            userScrollEnabled = zoom <= 1.01f,
+            userScrollEnabled = !inPip && zoom <= 1.01f,
             modifier = Modifier.fillMaxSize()
         ) { page ->
             val r = rooms[page]
@@ -239,7 +255,8 @@ fun PlayerScreen(c: AppContainer, startIndex: Int, onClose: () -> Unit) {
         Box(
             Modifier
                 .fillMaxSize()
-                .pointerInput(Unit) {
+                .pointerInput(inPip) {
+                    if (inPip) return@pointerInput
                     awaitEachGesture {
                         val down = awaitFirstDown(requireUnconsumed = false)
                         var moved = false
@@ -272,7 +289,8 @@ fun PlayerScreen(c: AppContainer, startIndex: Int, onClose: () -> Unit) {
                         }
                     }
                 }
-                .pointerInput(Unit) {
+                .pointerInput(inPip) {
+                    if (inPip) return@pointerInput
                     awaitEachGesture {
                         awaitFirstDown(requireUnconsumed = false)
                         while (true) {
@@ -309,8 +327,8 @@ fun PlayerScreen(c: AppContainer, startIndex: Int, onClose: () -> Unit) {
                 }
         )
 
-        // ---- 顶栏 ----
-        Column(
+        // ---- 顶栏（画中画时整体不渲染，免得小窗里误触返回）----
+        if (!inPip) Column(
             Modifier
                 .fillMaxWidth()
                 .align(Alignment.TopCenter)
@@ -358,10 +376,10 @@ fun PlayerScreen(c: AppContainer, startIndex: Int, onClose: () -> Unit) {
                     )
                 }
                 Text(
-                    when (scaleMode) {
-                        0 -> "适应"
-                        2 -> "拉伸"
-                        else -> "裁剪"
+                    when {
+                        zoom > 1.01f -> "×%.1f".format(zoom)
+                        scaleMode == 2 -> "拉伸"
+                        else -> "适应"
                     },
                     color = Color.White.copy(alpha = 0.85f),
                     fontSize = 11.sp,
@@ -369,17 +387,85 @@ fun PlayerScreen(c: AppContainer, startIndex: Int, onClose: () -> Unit) {
                         .clip(RoundedCornerShape(50))
                         .background(Color.White.copy(alpha = 0.16f))
                         .clickable {
-                            scaleMode = (scaleMode + 1) % 3
-                            c.prefs.scaleMode = scaleMode
+                            if (zoom > 1.01f) {
+                                // 已经捏合放大过：点一下先还原，再点才切适应/拉伸
+                                zoom = 1f
+                                panX = 0f
+                                panY = 0f
+                            } else {
+                                scaleMode = if (scaleMode == 2) 0 else 2
+                                c.scaleMode = scaleMode
+                            }
                         }
                         .padding(horizontal = 10.dp, vertical = 5.dp)
                 )
+                if (pipAvailable) {
+                    Text(
+                        "浮窗",
+                        color = Color.White.copy(alpha = 0.85f),
+                        fontSize = 11.sp,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(50))
+                            .background(Color.White.copy(alpha = 0.16f))
+                            .clickable { host?.enterPip() }
+                            .padding(horizontal = 10.dp, vertical = 5.dp)
+                    )
+                    Spacer(Modifier.width(8.dp))
+                }
                 Spacer(Modifier.width(8.dp))
             }
         }
 
-        // ---- 聊天区：右滑透明 ----
-        ChatPanel(
+        // ---- 右侧：第几间 / 竖滑提示 ----
+        if (rooms.size > 1) {
+            Column(
+                Modifier
+                    .align(Alignment.CenterEnd)
+                    .padding(end = 10.dp)
+                    .graphicsLayer { alpha = chromeAlpha },
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text(
+                    "${settled + 1}/${rooms.size}",
+                    color = Color.White,
+                    fontSize = 10.sp,
+                    style = TextStyle(shadow = textShadow()),
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(50))
+                        .background(Color.Black.copy(alpha = 0.38f))
+                        .padding(horizontal = 7.dp, vertical = 3.dp)
+                )
+                Spacer(Modifier.height(5.dp))
+                Text(
+                    "↑↓",
+                    color = Color.White.copy(alpha = 0.5f),
+                    fontSize = 12.sp,
+                    style = TextStyle(shadow = textShadow())
+                )
+            }
+        }
+
+        // 首次进播放页的竖滑引导（画中画不显示）
+        if (swipeHint && !inPip) {
+            Text(
+                "↑ 上下滑动切换直播间 ↓",
+                color = Color.White,
+                fontSize = 12.sp,
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = 96.dp)
+                    .clip(RoundedCornerShape(50))
+                    .background(Color(0xCC000000))
+                    .clickable {
+                        swipeHint = false
+                        c.prefs.sawPlayerSwipeHint = true
+                    }
+                    .padding(horizontal = 14.dp, vertical = 8.dp)
+            )
+        }
+
+        // ---- 聊天区：右滑透明（画中画时隐藏）----
+        if (!inPip) ChatPanel(
             c = c,
             chat = chat,
             panelAlpha = chromeAlpha,
@@ -396,7 +482,7 @@ fun PlayerScreen(c: AppContainer, startIndex: Int, onClose: () -> Unit) {
 
         // ---- 出错浮层 ----
         holder.error?.let { err ->
-            val fallbacks = room.streamUrls(c.prefs.rtmpDomain, StreamMode.of(c.prefs.streamMode))
+            val fallbacks = room.streamUrls(c.prefs.rtmpDomain, StreamMode.of(c.streamMode))
             ErrorOverlay(
                 message = err,
                 url = fallbacks.firstOrNull() ?: "",
@@ -414,7 +500,7 @@ fun PlayerScreen(c: AppContainer, startIndex: Int, onClose: () -> Unit) {
         }
 
         // ---- 暂停指示 ----
-        if (!holder.playing && holder.ready && holder.error == null) {
+        if (!inPip && !holder.playing && holder.ready && holder.error == null) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Box(
                     Modifier

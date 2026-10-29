@@ -89,7 +89,6 @@ fun SettingsScreen(c: AppContainer) {
     var toast by remember { mutableStateOf<String?>(null) }
 
     // 实时直播源（直连源 App 隧道端口）
-    var liveOn by remember { mutableStateOf(prefs.liveMode) }
     var appToken by remember { mutableStateOf(prefs.appToken) }
     var jwe by remember { mutableStateOf(prefs.jwe) }
     var port by remember { mutableStateOf(if (prefs.tunnelPort > 0) prefs.tunnelPort.toString() else "") }
@@ -159,10 +158,9 @@ fun SettingsScreen(c: AppContainer) {
             SwitchLine(
                 label = "实时模式",
                 desc = "直连源 App 隧道端口，拿到实时在播列表；关闭则拉远程 JSON 快照",
-                checked = liveOn,
+                checked = c.liveMode,
                 onChange = {
-                    liveOn = it
-                    prefs.liveMode = it
+                    c.liveMode = it
                     scope.launch { c.reload() }
                 }
             )
@@ -207,9 +205,9 @@ fun SettingsScreen(c: AppContainer) {
             ChipLine(
                 label = "自动刷新",
                 options = listOf("关", "10s", "20s", "30s"),
-                selected = listOf(0, 10, 20, 30).indexOf(prefs.refreshSec)
+                selected = listOf(0, 10, 20, 30).indexOf(c.refreshSec)
                     .let { if (it < 0) 2 else it },
-                onSelect = { prefs.refreshSec = listOf(0, 10, 20, 30)[it] }
+                onSelect = { c.refreshSec = listOf(0, 10, 20, 30)[it] }
             )
             InfoLine("实时模式下定时重拉列表；0 关闭（只手动下拉刷新）")
             Spacer(Modifier.height(8.dp))
@@ -234,11 +232,11 @@ fun SettingsScreen(c: AppContainer) {
             ChipLine(
                 label = "播放通道",
                 options = listOf("自动", "HTTP-FLV", "RTMP"),
-                selected = prefs.streamMode.coerceIn(0, 2),
-                onSelect = { prefs.streamMode = it }
+                selected = c.streamMode.coerceIn(0, 2),
+                onSelect = { c.streamMode = it }
             )
             InfoLine(
-                when (prefs.streamMode) {
+                when (c.streamMode) {
                     1 -> "只走 HTTP-FLV：实测最稳，Media3 原生解码"
                     2 -> "只走 RTMP：librtmp 对该 CDN 兼容性差，一般不用"
                     else -> "自动：先 HTTP-FLV，失败再换 RTMP"
@@ -257,27 +255,35 @@ fun SettingsScreen(c: AppContainer) {
             )
             InfoLine("指到你 PC 上跑的 tools/gateway.py，RTMP 失败时自动降级")
             Spacer(Modifier.height(10.dp))
+            val scaleValues = listOf(0, 2)
             ChipLine(
                 label = "画面缩放",
-                options = listOf("适应", "裁剪", "拉伸"),
-                selected = prefs.scaleMode,
-                onSelect = { prefs.scaleMode = it }
+                options = listOf("适应", "拉伸"),
+                selected = scaleValues.indexOf(c.scaleMode).let { if (it < 0) 0 else it },
+                onSelect = { c.scaleMode = scaleValues[it] }
             )
+            InfoLine("固定「裁剪」已去掉：播放时双指捏合可 1×–3× 自由放大/拖动，点顶栏胶囊一键还原")
             Spacer(Modifier.height(8.dp))
             val buffers = listOf(800, 1500, 3000)
             ChipLine(
                 label = "缓冲",
                 options = buffers.map { "${it / 1000.0}s" },
-                selected = buffers.indexOf(prefs.bufferMs).let { if (it < 0) 1 else it },
-                onSelect = { prefs.bufferMs = buffers[it]; c.player.setBuffer(buffers[it]) }
+                selected = buffers.indexOf(c.bufferMs).let { if (it < 0) 1 else it },
+                onSelect = { c.bufferMs = buffers[it] }
             )
             InfoLine("缓冲档位下次启动生效（解码器只在创建时读一次）")
             Spacer(Modifier.height(4.dp))
             SwitchLine(
                 label = "进房自动播放",
                 desc = "关掉就先进暂停态，省流量",
-                checked = prefs.autoPlay,
-                onChange = { prefs.autoPlay = it }
+                checked = c.autoPlay,
+                onChange = { c.autoPlay = it }
+            )
+            SwitchLine(
+                label = "切后台自动浮窗",
+                desc = "播放中按 Home 缩成小窗继续看；关掉就只能点播放页顶栏的「浮窗」",
+                checked = c.autoPip,
+                onChange = { c.autoPip = it }
             )
         }
 
@@ -525,6 +531,8 @@ private fun SwitchLine(
             Text(label, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurface)
             Text(desc, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
-        Switch(checked = checked, onCheckedChange = onChange)
+        // onCheckedChange = null：点击统一走整行的 clickable。
+        // 否则 Switch 自己也会派发一次，和整行点击叠在一起就变成「点一下切两次」。
+        Switch(checked = checked, onCheckedChange = null)
     }
 }

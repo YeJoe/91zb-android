@@ -20,6 +20,7 @@
             android:exported="true"
             android:launchMode="singleTop"
             android:screenOrientation="portrait"
+            android:supportsPictureInPicture="true"
             android:theme="@style/Theme.TMLive"
             android:windowSoftInputMode="adjustResize">
             <intent-filter>

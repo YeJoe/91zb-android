@@ -13,12 +13,33 @@
   python tools/tunnel_map.py call <port> <method> <path> [json_body]
 """
 import json
+import os
 import subprocess
 import sys
 import http.client
 
-DEVICE = "127.0.0.1:16384"
 PKG = "com.l95c2450d7.f68bb4e2d5"
+
+
+def _pick_serial():
+    """自动挑第一台 online 设备。写死序列号在换模拟器/换真机后必然失效
+    (之前固定成 127.0.0.1:16384, 设备变成 emulator-5554 后所有 adb 调用都空)。"""
+    env = os.environ.get("ADB_SERIAL")
+    if env:
+        return env
+    try:
+        out = subprocess.run(["adb", "devices"], capture_output=True,
+                             text=True, timeout=15).stdout
+    except (OSError, subprocess.SubprocessError):
+        return "127.0.0.1:16384"
+    for line in out.splitlines():
+        cols = line.split()
+        if len(cols) >= 2 and cols[1] == "device":
+            return cols[0]
+    return "127.0.0.1:16384"
+
+
+DEVICE = _pick_serial()
 
 
 def adb(*args):

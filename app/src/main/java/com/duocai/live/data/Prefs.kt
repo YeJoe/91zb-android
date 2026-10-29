@@ -74,9 +74,14 @@ class Prefs(context: Context) {
         get() = sp.getInt(K_STREAM_MODE, 0)
         set(v) = sp.edit().putInt(K_STREAM_MODE, v).apply()
 
-    /** 0 适应 / 1 裁剪 / 2 拉伸 */
+    /**
+     * 0 适应（FIT）/ 2 拉伸（FILL）。
+     *
+     * 旧的 1=裁剪 已废弃：固定裁切会切掉画面边缘，改成播放页双指自由缩放后不再需要。
+     * 老用户存着 1 的读出来按 0 处理，不用弹迁移。
+     */
     var scaleMode: Int
-        get() = sp.getInt(K_SCALE_MODE, 1)
+        get() = sp.getInt(K_SCALE_MODE, 0).let { if (it == 1) 0 else it }
         set(v) = sp.edit().putInt(K_SCALE_MODE, v).apply()
 
     /** 播放缓冲目标，毫秒 */
@@ -87,6 +92,14 @@ class Prefs(context: Context) {
     var autoPlay: Boolean
         get() = sp.getBoolean(K_AUTOPLAY, true)
         set(v) = sp.edit().putBoolean(K_AUTOPLAY, v).apply()
+
+    /**
+     * 播放页按 Home 时自动缩进画中画。默认开 —— 这是视频类 App 的通行行为；
+     * 嫌它"动不动就浮窗"可以在设置里关掉，此时只能点顶栏「浮窗」手动进。
+     */
+    var autoPip: Boolean
+        get() = sp.getBoolean(K_AUTO_PIP, true)
+        set(v) = sp.edit().putBoolean(K_AUTO_PIP, v).apply()
 
     // ---- 弹幕 ----
     var dmWs: String
@@ -122,6 +135,11 @@ class Prefs(context: Context) {
         get() = sp.getBoolean(K_SAW_SWIPE, false)
         set(v) = sp.edit().putBoolean(K_SAW_SWIPE, v).apply()
 
+    /** 播放页"上下滑动切换直播间"的提示，只弹一次 */
+    var sawPlayerSwipeHint: Boolean
+        get() = sp.getBoolean(K_SAW_PLAYER_SWIPE, false)
+        set(v) = sp.edit().putBoolean(K_SAW_PLAYER_SWIPE, v).apply()
+
     private companion object {
         const val K_ROOMS_URL = "rooms_url"
         const val K_LIVE_MODE = "live_mode"
@@ -135,6 +153,7 @@ class Prefs(context: Context) {
         const val K_SCALE_MODE = "scale_mode"
         const val K_BUFFER_MS = "buffer_ms"
         const val K_AUTOPLAY = "autoplay"
+        const val K_AUTO_PIP = "auto_pip"
         const val K_DM_WS = "dm_ws"
         const val K_DM_TOKEN = "dm_token"
         const val K_CHAT_ONLY = "chat_only"
@@ -142,6 +161,7 @@ class Prefs(context: Context) {
         const val K_SHOW_AD = "show_ad"
         const val K_FOLLOW = "follow_json"
         const val K_SAW_SWIPE = "saw_swipe_hint"
+        const val K_SAW_PLAYER_SWIPE = "saw_player_swipe_hint"
     }
 
     object Defaults {

@@ -1,7 +1,9 @@
 # ---- 运行期凭证：token / JWE 每次启动都会变，绝不入库 ----
 .jwe.txt
 .apptoken.txt
+.apptoken.json
 .session.json
+login_init.json
 .api_port
 .ws_port
 .rtmp_domain.txt
@@ -24,6 +26,9 @@ __pycache__/
 .workbuddy/
 .DS_Store
 Thumbs.db
+
+# ---- 抓包/逆向调试临时产物（含 apk、pcap、so，体积大且敏感）----
+tools/_dbg/
 
 # ---- 安卓构建产物与本地签名 ----
 .gradle/

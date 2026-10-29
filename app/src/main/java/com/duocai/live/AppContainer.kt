@@ -91,6 +91,72 @@ class AppContainer(context: Context) {
             prefs.chatOnly = v
         }
 
+    /**
+     * 下面这几项以前是「UI 直接读 prefs.xxx」—— 那是个普通 getter，
+     * 写进 SharedPreferences 不会触发重组，所以点了开关/选项画面纹丝不动，
+     * 得等别的原因引起重组才"突然生效"。现在统一挂到 mutableStateOf 上。
+     */
+    private var streamModeState by mutableStateOf(prefs.streamMode)
+    /** 0 自动 / 1 只 FLV / 2 只 RTMP */
+    var streamMode: Int
+        get() = streamModeState
+        set(v) {
+            streamModeState = v
+            prefs.streamMode = v
+        }
+
+    private var scaleModeState by mutableStateOf(prefs.scaleMode)
+    /** 0 适应 / 2 拉伸（旧值 1=裁剪 已在 Prefs 里归一到 0） */
+    var scaleMode: Int
+        get() = scaleModeState
+        set(v) {
+            scaleModeState = v
+            prefs.scaleMode = v
+        }
+
+    private var bufferMsState by mutableStateOf(prefs.bufferMs)
+    var bufferMs: Int
+        get() = bufferMsState
+        set(v) {
+            bufferMsState = v
+            prefs.bufferMs = v
+            player.setBuffer(v)
+        }
+
+    private var autoPlayState by mutableStateOf(prefs.autoPlay)
+    var autoPlay: Boolean
+        get() = autoPlayState
+        set(v) {
+            autoPlayState = v
+            prefs.autoPlay = v
+        }
+
+    private var autoPipState by mutableStateOf(prefs.autoPip)
+    /** 播放页按 Home 自动进画中画 */
+    var autoPip: Boolean
+        get() = autoPipState
+        set(v) {
+            autoPipState = v
+            prefs.autoPip = v
+        }
+
+    private var refreshSecState by mutableStateOf(prefs.refreshSec)
+    var refreshSec: Int
+        get() = refreshSecState
+        set(v) {
+            refreshSecState = v
+            prefs.refreshSec = v
+        }
+
+    /** 实时模式开关也放到容器里，避免和设置页的局部 state 打架 */
+    private var liveModeState by mutableStateOf(prefs.liveMode)
+    var liveMode: Boolean
+        get() = liveModeState
+        set(v) {
+            liveModeState = v
+            prefs.liveMode = v
+        }
+
     fun openPlayer(list: List<Room>, index: Int) {
         if (list.isEmpty()) return
         playlist = list
@@ -137,7 +203,7 @@ class AppContainer(context: Context) {
         refreshStarted = true
         scope.launch {
             while (true) {
-                val sec = prefs.refreshSec
+                val sec = refreshSec
                 if (sec <= 0) {
                     delay(2000)
                     continue
@@ -150,21 +216,22 @@ class AppContainer(context: Context) {
     }
 
     suspend fun reload() {
+        if (loading) return
         loading = true
         error = null
 
         // 实时模式：直连隧道端口（拿得到就是最新，拿不到再降级到 JSON）
-        val result = if (prefs.liveMode) live.fetch() else repo.fetch()
+        val result = if (liveMode) live.fetch() else repo.fetch()
 
         loading = false
         result.onSuccess { applyData(it, fromCache = false) }
             .onFailure { e ->
-                // 实时失败 → 退回远程 JSON（旧路径），保证列表不至于空着
-                if (prefs.liveMode) {
+                // 实时失败 → 只有手里没数据时才退回远程 JSON，否则别拿旧快照盖掉实时列表
+                if (liveMode && rooms.isEmpty()) {
                     val fallback = repo.fetch()
                     fallback.onSuccess {
                         applyData(it, fromCache = false)
-                        error = "实时源失败（${e.message}），已降级为 JSON"
+                        error = "实时源失败（${e.message}），已降级为 JSON 快照"
                         return@onFailure
                     }
                 }

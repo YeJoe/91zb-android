@@ -29,7 +29,9 @@ data class Room(
     val online: Int,
     val city: String,
     val ad: Boolean,
-    val coins: Int
+    val coins: Int,
+    /** 服务端分类 id（对应 lobby_menu 表）：101 星秀 / 102 女神 / 103 颜值 / 104 交友 / 105 音乐 / 108 舞蹈 */
+    val menuId: Int = 0
 ) {
     /**
      * 拉流地址候选列表（按优先级）。
