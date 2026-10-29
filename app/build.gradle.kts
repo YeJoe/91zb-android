@@ -25,6 +25,20 @@ android {
         targetSdk = 35
         versionCode = appVersionCode
         versionName = appVersionName
+
+        // 只打包 arm64-v8a。
+        //
+        // 这不是为了省体积 —— APK 里放了 libkiwi.so（云层隧道 SDK），而它只有
+        // arm64 版。APK 一旦同时带 x86_64 的库，PackageManager 会按设备首选 ABI
+        // 把 primaryCpuAbi 选成 x86_64，进程就是 x86_64，`libkiwi.so` 根本不会
+        // 被释放到 nativeLibraryDir，隧道永远起不来。
+        //
+        // 只留 arm64 之后，带 ARM 转译层的 x86 设备（模拟器 ro.dalvik.vm.native.bridge）
+        // 会把进程拉成 arm64 —— 源 App 本来就是这么跑的，实测可用。
+        ndk {
+            abiFilters.clear()
+            abiFilters.add("arm64-v8a")
+        }
     }
 
     signingConfigs {
@@ -56,12 +70,8 @@ android {
         }
     }
 
-    // 不再按 abi 拆包。
-    //
-    // 之前拆成 arm64-v8a 单包，是因为 APK 里本来就没有 native 代码，拆了也无所谓；
-    // 现在 libkiwi.so 改成从 assets 运行时解压（见 KiwiSdk.prepareLib），
-    // APK 依然不含 native 代码，再拆 abi 只会产生一个多余的 "-arm64-v8a" 后缀，
-    // 反而让 x86_64 模拟器装不上，所以整块去掉。
+    // 不做按 abi 的 splits：上面的 abiFilters 已经把包限成 arm64-v8a 单 ABI，
+    // 再 split 只会多出一个 "-arm64-v8a" 后缀的重复包。
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
