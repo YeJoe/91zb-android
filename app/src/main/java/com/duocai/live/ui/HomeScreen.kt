@@ -164,6 +164,8 @@ fun HomeScreen(c: AppContainer) {
                         if (activeCity.isBlank()) emptyList() else all.filter { it.city == activeCity }
                 }
                 if (!c.showAd) a = a.filter { !it.ad }
+                // 说明：游戏区 / 棋牌推广房已经在 LiveRepo.toRoom 入口就丢掉了，
+                // 这里不用再筛，`ad` 恒为 false。
                 // 二级分类只有「热门」页有：那 8 个（游戏/星秀/女神/颜值/交友/音乐/舞蹈…）
                 // 是热门入口独有的口径，推荐页是算法排出来的混合流，按它筛没有意义。
                 val cat = catMap[f] ?: "全部"
@@ -335,9 +337,7 @@ private fun FeedPage(
             count = rooms.size,
             recommend = feed == Feed.RECOMMEND,
             sortOnline = sortOnline,
-            onToggleSort = onToggleSort,
-            showAd = c.showAd,
-            onToggleAd = { c.showAd = !c.showAd }
+            onToggleSort = onToggleSort
         )
 
         Box(Modifier.weight(1f).fillMaxWidth()) {
@@ -431,15 +431,13 @@ private fun FeedTabs(cur: Feed, onSelect: (Feed) -> Unit) {
     }
 }
 
-/** 排序/过滤提示条：人气、是否含推广位、当前页有几间 */
+/** 排序/过滤提示条：人气、过滤口径、当前页有几间 */
 @Composable
 private fun SortBar(
     count: Int,
     recommend: Boolean,
     sortOnline: Boolean,
-    onToggleSort: () -> Unit,
-    showAd: Boolean,
-    onToggleAd: () -> Unit
+    onToggleSort: () -> Unit
 ) {
     Row(
         Modifier
@@ -464,11 +462,11 @@ private fun SortBar(
             )
         }
         Spacer(Modifier.width(12.dp))
+        // 改成固定文案：游戏区/推广房已经在数据入口丢掉了，这里没有可切的开关
         Text(
-            if (showAd) "含推广位" else "只看真人",
+            "只看真人",
             fontSize = 12.sp,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.clickable(onClick = onToggleAd)
+            color = MaterialTheme.colorScheme.onSurfaceVariant
         )
         Spacer(Modifier.weight(1f))
         Text(

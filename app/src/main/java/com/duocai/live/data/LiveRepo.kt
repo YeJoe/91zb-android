@@ -357,14 +357,24 @@ class LiveRepo(private val context: Context, private val prefs: Prefs) {
         if (id <= 0L) return null
         if (r.optInt("on_air", 0) != 1) return null
         val menuId = r.optInt("menu_id", 0)
+
+        // ---- 真人/游戏/广告 的硬过滤（在唯一的入口处丢掉，缓存、列表、关注全都不再出现）----
+        // 之前 `chess_id != 3` 只是打个 ad 标记、由「含推广位」开关决定显示与否，
+        // 一切到"含"整屏就是棋牌推广房；现在按结论直接丢：
+        //   · menu_id == 8             → 游戏区（龙虎、电玩、捕鱼这类），不是真人直播
+        //   · chess_id != 3            → 棋牌/推广位（真人房这个字段恒为 3）
+        // `chess_id` 缺失（0）的老数据同样按推广处理，宁可少几间也不放垃圾进来。
+        if (menuId == 8) return null
+        if (r.optInt("chess_id", 0) != 3) return null
+
         return Room(
             id = id,
             name = r.optString("name").ifBlank { "房间 $id" },
             cat = menuName(menuId),
             online = r.optInt("player_count", 0),
             city = r.optString("city_show").ifBlank { r.optString("city") },
-            // chess_id != 3 的基本是棋牌/游戏/推广房，默认过滤掉
-            ad = r.optInt("chess_id", 0) != 3,
+            // 走到这里的都是真人房，ad 恒为 false；字段留着是为了兼容旧缓存
+            ad = false,
             coins = r.optInt("live_fee", 0),
             menuId = menuId,
             // 缓存文件里直接存完整 URL（键名 avatar）；接口响应里是相对路径

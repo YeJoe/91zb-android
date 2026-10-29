@@ -133,6 +133,9 @@ object SourceParser {
             val r = arr.optJSONObject(i) ?: continue
             val id = r.optLong("id", 0L)
             if (id <= 0L) continue
+            // 游戏区 / 推广位一律不要（口径同 LiveRepo.toRoom：真人房 chess_id 恒为 3、menu_id 不是 8）
+            if (r.optInt("ad", 0) == 1) continue
+            if (r.optString("cat") == "游戏") continue
             out.add(
                 Room(
                     id = id,

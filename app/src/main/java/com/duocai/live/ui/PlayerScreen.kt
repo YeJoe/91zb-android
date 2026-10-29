@@ -252,46 +252,57 @@ fun PlayerScreen(c: AppContainer, startIndex: Int, onClose: () -> Unit) {
 
         GestureLayer(ui, holder, enabled = !inPip)
 
+        // 聊天面板的临时状态提到外面：面板会被整块摘掉（见下面 chromeUp），
+        // 状态放在里面的话每次藏/显背景不透明度都会被重置回 62%
+        val chatState = remember { ChatState() }
+
         if (!inPip) {
-            TopBar(
-                room = room,
-                c = c,
-                ui = ui,
-                alpha = chromeAlpha,
-                pipAvailable = pipAvailable,
-                onEnterPip = { host?.enterPip() },
-                onClose = onClose
-            )
-            Box(Modifier.align(Alignment.CenterEnd)) {
-                SideRail(
+            // **只有面板真的可见时才挂上去**。
+            // 之前是无论 alpha 多少都常驻：藏起来之后 TopBar / ChatPanel 仍然参与命中测试，
+            // 点到下半屏（不可见的聊天区）或左上角（不可见的返回键）全被它们吃掉，
+            // 手势层收不到，于是"面板一藏就再也点不回来"。
+            val chromeUp = chromeAlpha > 0.02f
+            if (chromeUp) {
+                TopBar(
                     room = room,
                     c = c,
-                    pageLabel = if (rooms.size > 1) "${settled + 1}/${rooms.size}" else "",
-                    alpha = chromeAlpha
+                    ui = ui,
+                    alpha = chromeAlpha,
+                    pipAvailable = pipAvailable,
+                    onEnterPip = { host?.enterPip() },
+                    onClose = onClose
+                )
+                Box(Modifier.align(Alignment.CenterEnd)) {
+                    SideRail(
+                        room = room,
+                        c = c,
+                        pageLabel = if (rooms.size > 1) "${settled + 1}/${rooms.size}" else "",
+                        alpha = chromeAlpha
+                    )
+                }
+                if (ui.swipeHint) {
+                    Box(Modifier.align(Alignment.TopCenter)) {
+                        SwipeHint(onDismiss = {
+                            ui.swipeHint = false
+                            c.prefs.sawPlayerSwipeHint = true
+                        })
+                    }
+                }
+                ChatPanel(
+                    c = c,
+                    chat = chatState,
+                    panelAlpha = chromeAlpha,
+                    height = screenHeight * 0.40f,
+                    hintVisible = ui.chatHint,
+                    onDismissHint = {
+                        ui.chatHint = false
+                        c.prefs.sawChatSwipeHint = true
+                    },
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .navigationBarsPadding()
                 )
             }
-            if (ui.swipeHint) {
-                Box(Modifier.align(Alignment.TopCenter)) {
-                    SwipeHint(onDismiss = {
-                        ui.swipeHint = false
-                        c.prefs.sawPlayerSwipeHint = true
-                    })
-                }
-            }
-            ChatPanel(
-                c = c,
-                chat = remember { ChatState() },
-                panelAlpha = chromeAlpha,
-                height = screenHeight * 0.40f,
-                hintVisible = ui.chatHint,
-                onDismissHint = {
-                    ui.chatHint = false
-                    c.prefs.sawChatSwipeHint = true
-                },
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .navigationBarsPadding()
-            )
         }
 
         // 出错浮层
@@ -399,6 +410,13 @@ private fun GestureLayer(ui: PlayerUi, holder: PlayerHolder, enabled: Boolean) {
                         last = change.position
                     }
                     if (moved || pinched) return@awaitEachGesture
+                    // 面板已经藏起来了：**任何一次单击都立刻把它叫回来**。
+                    // 不能还走下面那套"等 260ms 看是不是双击"——用户看到面板消失后
+                    // 往往马上再点一下，那一下会被判成双击（只切暂停），面板就再也回不来了。
+                    if (!ui.chrome) {
+                        ui.chrome = true
+                        return@awaitEachGesture
+                    }
                     if (ui.tapJob?.isActive == true) {
                         // 第二下 = 双击：缩放态先复位，否则就是暂停/继续
                         ui.tapJob?.cancel()
