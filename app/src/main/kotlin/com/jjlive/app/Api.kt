@@ -286,6 +286,20 @@ class Api(private val store: TokenStore) {
         return js?.optInt("code", -1) == 0 && js.optBoolean("success", true)
     }
 
+    /**
+     * 发送弹幕 / 直播间聊天（真实接口）。
+     *
+     * 逆向原版 `Im.sendMessage` 得到：走普通签名 HTTP 管道 POST `/im/sendMsg`，
+     * 业务参数 `authorId`（主播 userId，即直播间的主人）+ `msg`（正文）。
+     * 发送成功后服务端会通过 IM 长连接（type=1002 进房的那条 WS）把这条 evt:5
+     * 广播回来，聊天区会自然显示（见 ChatFilter / handleIm）。
+     */
+    suspend fun sendMsg(authorId: String, msg: String): Boolean {
+        if (authorId.isBlank() || msg.isBlank()) return false
+        val js = call("/im/sendMsg", mapOf("authorId" to authorId, "msg" to msg))
+        return js?.optInt("code", -1) == 0
+    }
+
     /** 当前账号信息，主要取 attenCnt（关注数）。 */
     suspend fun userInfo(host: String? = null, token: String? = null): JSONObject? =
         call("/user/info", emptyMap(), host, token)?.optJSONObject("data")
@@ -427,7 +441,7 @@ object Parser {
         val mf = o.int("moneyFen", def = 0)
         return Room(
             roomId = o.str("roomId"),
-            userId = o.str("userId"),
+            userId = o.str("userId", "anchorId"),
             userName = o.str("userName", "nickname"),
             roomName = o.str("roomName"),
             hot = o.int("currentHot", def = 0),

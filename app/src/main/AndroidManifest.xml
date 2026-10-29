@@ -23,9 +23,10 @@
 
         <activity
             android:name=".PlayerActivity"
-            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize"
             android:exported="false"
             android:screenOrientation="fullSensor"
+            android:supportsPictureInPicture="true"
             android:theme="@style/Theme.JJLive.Player" />
 
         <activity

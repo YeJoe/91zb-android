@@ -16,6 +16,9 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import androidx.swiperefreshlayout.widget.SwipeRefreshLayout
+import android.view.GestureDetector
+import android.view.MotionEvent
+import kotlin.math.abs
 import com.google.android.material.chip.Chip
 import com.google.android.material.chip.ChipGroup
 import kotlinx.coroutines.CoroutineScope
@@ -44,9 +47,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var pages: View
     private lateinit var navBar: View
     private lateinit var pageHome: View
-    private lateinit var pageFollow: View
     private lateinit var pageSettings: View
-    private lateinit var followPage: FollowPage
     private lateinit var settingsPage: SettingsPage
     private var tab = TAB_HOME
     /** 最近一次已知的令牌，用于在 onResume 时侦测「网页登录后令牌变化」。 */
@@ -67,6 +68,7 @@ class MainActivity : AppCompatActivity() {
     private var category = ALL
     private var query = ""
     private var cats: List<Category> = emptyList()
+    private val followRooms = ArrayList<Room>()
     private var filterHits = 0
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -80,15 +82,9 @@ class MainActivity : AppCompatActivity() {
         pages = findViewById(R.id.pages)
         navBar = findViewById(R.id.navBar)
         pageHome = findViewById(R.id.pageHome)
-        pageFollow = findViewById(R.id.pageFollow)
         pageSettings = findViewById(R.id.pageSettings)
 
         setupHome()
-        followPage = FollowPage(this, pageFollow,
-            api = api,
-            scope = scope,
-            onOpen = { list, idx -> PlayerActivity.start(this, list, idx) },
-            onGoHome = { selectTab(TAB_HOME) })
         settingsPage = SettingsPage(
             act = this,
             root = pageSettings,
@@ -155,16 +151,38 @@ class MainActivity : AppCompatActivity() {
         }
 
         findViewById<View>(R.id.navHome).setOnClickListener { selectTab(TAB_HOME) }
-        findViewById<View>(R.id.navFollow).setOnClickListener { selectTab(TAB_FOLLOW) }
         findViewById<View>(R.id.navSettings).setOnClickListener { selectTab(TAB_SETTINGS) }
 
         renderFilterButton()
         buildChips(emptyList())
+
+        // 左右滑动切换分类（在网格区域横向滑动即可切到上一个 / 下一个分类）
+        val gd = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
+            override fun onFling(
+                e1: MotionEvent?,
+                e2: MotionEvent?,
+                velocityX: Float,
+                velocityY: Float
+            ): Boolean {
+                if (e1 == null || e2 == null) return false
+                val dx = e2.x - e1.x
+                val dy = e2.y - e1.y
+                if (abs(dx) > abs(dy) && abs(dx) > dp(60)) {
+                    val order = chipOrder()
+                    val idx = order.indexOf(category).coerceAtLeast(0)
+                    val target = if (dx < 0) idx + 1 else idx - 1
+                    if (target in order.indices) selectCategory(order[target])
+                    return true
+                }
+                return false
+            }
+        })
+        rv.setOnTouchListener { _, ev -> gd.onTouchEvent(ev); false }
     }
 
     private fun selectTab(which: Int, animate: Boolean = true) {
         tab = which
-        val list = arrayOf(pageHome, pageFollow, pageSettings)
+        val list = arrayOf(pageHome, pageSettings)
         list.forEachIndexed { i, v ->
             v.animate().cancel()
             if (i == which) {
@@ -185,7 +203,6 @@ class MainActivity : AppCompatActivity() {
         }
         updateNavColors()
         when (which) {
-            TAB_FOLLOW -> followPage.onShown()
             TAB_SETTINGS -> settingsPage.onShown()
         }
     }
@@ -195,7 +212,6 @@ class MainActivity : AppCompatActivity() {
         val idle = ContextCompat.getColor(this, R.color.nav_idle)
         val tabs = arrayOf(
             Triple(R.id.navHomeIcon, R.id.navHomeText, TAB_HOME),
-            Triple(R.id.navFollowIcon, R.id.navFollowText, TAB_FOLLOW),
             Triple(R.id.navSettingsIcon, R.id.navSettingsText, TAB_SETTINGS)
         )
         for ((iconId, textId, idx) in tabs) {
@@ -272,6 +288,7 @@ class MainActivity : AppCompatActivity() {
             all.clear()
             all.addAll(rooms)
             filter(query)
+            if (category == FOLLOW) loadFollow()
             if (all.isEmpty()) {
                 empty.visibility = View.VISIBLE
                 empty.text = "没有获取到房间\n令牌可能已失效，去「设置」更新域名 / 令牌"
@@ -283,12 +300,13 @@ class MainActivity : AppCompatActivity() {
 
     private fun buildChips(cats: List<Category>) {
         chips.removeAllViews()
+        addChip(FOLLOW)
         addChip(ALL)
         cats.map { it.name }.distinct()
             .filter { !(store.hideJunk && it == "游戏") }
             .forEach { addChip(it) }
 
-        if (category != ALL && chips.findViewWithTag<Chip>(category) == null) category = ALL
+        if (category != ALL && category != FOLLOW && chips.findViewWithTag<Chip>(category) == null) category = ALL
         chips.findViewWithTag<Chip>(category)?.isChecked = true
     }
 
@@ -314,8 +332,7 @@ class MainActivity : AppCompatActivity() {
             chipBackgroundColor = ColorStateList(arrayOf(checked, intArrayOf()), intArrayOf(accent, chipBg))
             setTextColor(ColorStateList(arrayOf(checked, intArrayOf()), intArrayOf(onAccent, chipText)))
             setOnClickListener {
-                category = name
-                filter(query)
+                selectCategory(name)
             }
         }
         chips.addView(chip)
@@ -342,6 +359,26 @@ class MainActivity : AppCompatActivity() {
         val base = if (store.hideJunk) all.filter { !it.isAd && !it.isGame } else all
         filterHits = all.size - base.size
 
+        if (category == FOLLOW) {
+            val fb = if (store.hideJunk) followRooms.filter { !it.isAd && !it.isGame } else followRooms
+            shown.clear()
+            shown.addAll(
+                fb.filter {
+                    key.isEmpty() || it.userName.lowercase().contains(key) ||
+                            it.roomName.lowercase().contains(key) || it.roomId.contains(key)
+                }.sortedByDescending { it.hot }
+            )
+            adapter.notifyDataSetChanged()
+            rv.scrollToPosition(0)
+            if (shown.isEmpty()) {
+                empty.visibility = View.VISIBLE
+                empty.text = if (followRooms.isEmpty()) "正在读取关注列表…\n或你还没有关注任何人"
+                else "关注列表里没有匹配的主播"
+            } else empty.visibility = View.GONE
+            meta.text = "我的关注 · 共 ${followRooms.size} 位"
+            return
+        }
+
         shown.clear()
         shown.addAll(
             base.filter {
@@ -364,10 +401,47 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /** 选中某个分类（含"关注"），同步顶部 chip 高亮，并在首次进入关注时拉取关注列表。 */
+    private fun selectCategory(name: String) {
+        category = name
+        chips.findViewWithTag<Chip>(name)?.isChecked = true
+        if (name == FOLLOW && followRooms.isEmpty()) loadFollow()
+        filter(query)
+    }
+
+    /** 分页拉全关注列表（关注数可能上百，只拉第一页会漏）。 */
+    private fun loadFollow() {
+        scope.launch {
+            val following = withContext(Dispatchers.IO) {
+                val out = ArrayList<Room>()
+                var page = 1
+                while (page <= 10) {
+                    val batch = runCatching { api.attentionList(page, 30) }
+                        .getOrDefault(emptyList())
+                    if (batch.isEmpty()) break
+                    out.addAll(batch)
+                    if (batch.size < 30) break
+                    page++
+                }
+                out
+            }
+            followRooms.clear()
+            followRooms.addAll(following)
+            if (category == FOLLOW) filter(query)
+        }
+    }
+
+    /** 顶部分类的顺序（与 buildChips 一致），供左右滑动切换定位。 */
+    private fun chipOrder(): List<String> {
+        val names = cats.map { it.name }.distinct()
+            .filter { !(store.hideJunk && it == "游戏") }
+        return listOf(FOLLOW, ALL) + names
+    }
+
     companion object {
         private const val ALL = "全部"
+        private const val FOLLOW = "关注"
         private const val TAB_HOME = 0
-        private const val TAB_FOLLOW = 1
-        private const val TAB_SETTINGS = 2
+        private const val TAB_SETTINGS = 1
     }
 }

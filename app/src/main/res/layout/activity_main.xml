@@ -21,11 +21,6 @@
             layout="@layout/page_home" />
 
         <include
-            android:id="@+id/pageFollow"
-            layout="@layout/page_follow"
-            android:visibility="gone" />
-
-        <include
             android:id="@+id/pageSettings"
             layout="@layout/page_settings"
             android:visibility="gone" />
@@ -67,33 +62,6 @@
                 android:layout_marginTop="3dp"
                 android:text="首页"
                 android:textColor="@color/accent"
-                android:textSize="10.5sp" />
-        </LinearLayout>
-
-        <LinearLayout
-            android:id="@+id/navFollow"
-            android:layout_width="0dp"
-            android:layout_height="match_parent"
-            android:layout_weight="1"
-            android:background="?attr/selectableItemBackground"
-            android:gravity="center"
-            android:orientation="vertical">
-
-            <ImageView
-                android:id="@+id/navFollowIcon"
-                android:layout_width="22dp"
-                android:layout_height="22dp"
-                android:contentDescription="关注"
-                android:src="@drawable/ic_heart"
-                app:tint="@color/nav_idle" />
-
-            <TextView
-                android:id="@+id/navFollowText"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="3dp"
-                android:text="关注"
-                android:textColor="@color/nav_idle"
                 android:textSize="10.5sp" />
         </LinearLayout>
 

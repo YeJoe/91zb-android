@@ -9,12 +9,18 @@ import android.graphics.Rect
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.app.PictureInPictureParams
+import android.os.Build
+import android.content.pm.PackageManager
+import android.util.Rational
 import android.util.Log
 import android.view.Gravity
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.view.View
 import android.view.WindowManager
+import android.view.inputmethod.EditorInfo
+import android.view.inputmethod.InputMethodManager
 import android.view.animation.DecelerateInterpolator
 import android.webkit.JavascriptInterface
 import android.webkit.WebResourceRequest
@@ -26,6 +32,8 @@ import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
+import android.widget.EditText
+import androidx.core.content.ContextCompat
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
@@ -99,6 +107,12 @@ class PlayerActivity : AppCompatActivity() {
     private lateinit var videoBox: FrameLayout
     private lateinit var chatPanel: SlideAwayLayout
     private lateinit var btnChat: TextView
+    private lateinit var btnFollow: TextView
+    private lateinit var btnPip: TextView
+    private lateinit var btnRefresh: TextView
+    private lateinit var sendBar: View
+    private lateinit var etDanmu: EditText
+    private lateinit var btnSend: TextView
     private lateinit var bottomBar: LinearLayout
     private lateinit var scrimTop: View
     private lateinit var chat: RecyclerView
@@ -128,6 +142,9 @@ class PlayerActivity : AppCompatActivity() {
 
     private var roomId = ""
     private var roomName = ""
+    private var roomUserId = ""
+    private var isFollowing = false
+    private var sendBarH = 0
 
     private var urls: List<String> = emptyList()
     private var urlIndex = 0
@@ -199,6 +216,12 @@ class PlayerActivity : AppCompatActivity() {
         btnRetry = findViewById(R.id.btnRetry)
         title = findViewById(R.id.title)
         btnChat = findViewById(R.id.btnChat)
+        btnFollow = findViewById(R.id.btnFollow)
+        btnPip = findViewById(R.id.btnPip)
+        btnRefresh = findViewById(R.id.btnRefresh)
+        sendBar = findViewById(R.id.sendBar)
+        etDanmu = findViewById(R.id.etDanmu)
+        btnSend = findViewById(R.id.btnSend)
 
         // 聊天区：从下往上堆
         chat.layoutManager = LinearLayoutManager(this).apply { stackFromEnd = true }
@@ -215,9 +238,14 @@ class PlayerActivity : AppCompatActivity() {
         findViewById<View>(R.id.btnClose).setOnClickListener { finish() }
         btnMode.setOnClickListener { toggleMode() }
         btnChat.setOnClickListener { showChat() }
+        btnFollow.setOnClickListener { doFollow() }
+        btnPip.setOnClickListener { enterPip() }
+        btnRefresh.setOnClickListener { fetchAndPlay() }
+        setupDanmu()
 
-        // 初始形态按设置走（默认半屏，可在「设置 - 播放」里改成直接全屏）
-        fullScreen = store.defaultFull
+        // 默认全屏（按需求取消半屏展示）
+        fullScreen = true
+        sendBarH = dp(48)
         setupChatSwipe()
 
         applyInsets()
@@ -244,6 +272,9 @@ class PlayerActivity : AppCompatActivity() {
             barHeight = dp(40) + sys.bottom
             bottomBar.layoutParams = bottomBar.layoutParams.apply { height = barHeight }
             bottomBar.setPadding(dp(14), 0, dp(14), sys.bottom)
+            val sp = sendBar.layoutParams as FrameLayout.LayoutParams
+            sp.bottomMargin = barHeight
+            sendBar.layoutParams = sp
             applyMode()
             insets
         }
@@ -289,47 +320,31 @@ class PlayerActivity : AppCompatActivity() {
         chatPanel.visibility = View.VISIBLE
         btnChat.visibility = View.GONE
 
-        if (fullScreen) {
-            lp.height = FrameLayout.LayoutParams.MATCH_PARENT
-            cp.gravity = Gravity.BOTTOM
-            cp.topMargin = 0
-            cp.height = dp(248) + insetBottom
-            cp.bottomMargin = barH
-            chatPanel.setBackgroundResource(R.drawable.bg_chat_full)
-            chat.setPadding(dp(16), dp(2), dp(16), dp(6))
-            btnMode.text = "半屏"
-            scrimTop.alpha = 1f
-        } else {
-            val vh = (h * HALF_RATIO).toInt()
-            lp.height = vh
-            cp.gravity = Gravity.TOP
-            cp.topMargin = vh - dp(10)                 // 压住画面 10dp，圆角像卡片扣上去
-            cp.bottomMargin = 0
-            cp.height = (h - vh + dp(10) - barH).coerceAtLeast(dp(140))
-            chatPanel.setBackgroundResource(R.drawable.bg_chat_half)
-            chat.setPadding(dp(16), dp(4), dp(16), dp(8))
-            btnMode.text = "全屏"
-            scrimTop.alpha = 0.9f
-        }
+        // 始终全屏布局（已取消半屏展示）
+        lp.height = FrameLayout.LayoutParams.MATCH_PARENT
+        cp.gravity = Gravity.BOTTOM
+        cp.topMargin = 0
+        cp.height = dp(248) + insetBottom
+        cp.bottomMargin = barH + sendBarH
+        chatPanel.setBackgroundResource(R.drawable.bg_chat_full)
+        chat.setPadding(dp(16), dp(2), dp(16), dp(6))
+        btnMode.text = if (chatHidden) "聊天" else "隐藏"
+        scrimTop.alpha = 1f
         videoBox.layoutParams = lp
         chatPanel.layoutParams = cp
 
         // 切间提示摆在画面正中间
         val sp = swipeHint.layoutParams as FrameLayout.LayoutParams
         sp.gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
-        sp.topMargin = (if (fullScreen) h / 2 else (h * HALF_RATIO).toInt() / 2) - dp(18)
+        sp.topMargin = h / 2 - dp(18)
         swipeHint.layoutParams = sp
 
         videoBox.post { fitVideo(lastVw, lastVh) }
     }
 
+    /** 全屏形态下，「隐藏/聊天」按钮用于收起或叫回聊天区。 */
     private fun toggleMode() {
-        if (chatHidden) { showChat(); return }
-        fullScreen = !fullScreen
-        applyMode()
-        // 只淡化聊天面板：SurfaceView 做 alpha 动画在部分机型会闪一帧黑
-        chatPanel.alpha = 0.55f
-        chatPanel.animate().alpha(1f).setDuration(180).start()
+        if (chatHidden) showChat() else hideChat()
     }
 
     // ─────────── 右滑收起聊天区 ───────────
@@ -501,7 +516,7 @@ class PlayerActivity : AppCompatActivity() {
         // 换房间时把聊天区叫回来（不然新房间一进来就是"没聊天"的状态）
         if (chatHidden) {
             chatHidden = false
-            fullScreen = store.defaultFull
+            fullScreen = true
             chatPanel.resetTransform()
             applyMode()
         }
@@ -865,6 +880,9 @@ class PlayerActivity : AppCompatActivity() {
 
             val data = detail?.optJSONObject("data")
             val room = data?.let { Parser.room(it) }
+            roomUserId = room?.userId ?: ""
+            isFollowing = false
+            ui.post { updateFollowBtn() }
 
             // 默认原画 → 720P → 360P；「设置 - 优先清晰度」可改成 720 或省流优先
             val u0 = room?.url0.orEmpty()
@@ -974,6 +992,133 @@ class PlayerActivity : AppCompatActivity() {
 
     private fun onStatus(msg: String) {
         runOnUiThread { if (!isFinishing) status.text = msg }
+    }
+
+    // ─────────── 关注（真实接口） ───────────
+
+    /** 刷新顶部"关注/已关注"按钮文案与配色。 */
+    private fun updateFollowBtn() {
+        if (roomUserId.isBlank()) {
+            btnFollow.visibility = View.GONE
+            return
+        }
+        btnFollow.visibility = View.VISIBLE
+        if (isFollowing) {
+            btnFollow.text = "已关注"
+            btnFollow.setBackgroundResource(R.drawable.pill_dark)
+            btnFollow.setTextColor(ContextCompat.getColor(this, R.color.text_secondary))
+        } else {
+            btnFollow.text = "关注"
+            btnFollow.setBackgroundResource(R.drawable.bg_btn_accent)
+            btnFollow.setTextColor(ContextCompat.getColor(this, R.color.accent_ink))
+        }
+    }
+
+    /** 点击关注/已关注：真实调用 /user/attention/add|cancel。 */
+    private fun doFollow() {
+        if (roomUserId.isBlank()) return
+        val target = !isFollowing
+        btnFollow.isEnabled = false
+        scope.launch {
+            val ok = withContext(Dispatchers.IO) { api.follow(roomUserId, target) }
+            ui.post {
+                btnFollow.isEnabled = true
+                if (ok) {
+                    isFollowing = target
+                    updateFollowBtn()
+                    Toast.makeText(
+                        this@PlayerActivity,
+                        if (isFollowing) "已关注主播" else "已取消关注",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                } else {
+                    Toast.makeText(this@PlayerActivity, "操作失败，请重试", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+    }
+
+    // ─────────── 发送弹幕（真实接口） ───────────
+
+    private fun setupDanmu() {
+        btnSend.setOnClickListener { sendDanmu() }
+        etDanmu.setOnEditorActionListener { _, actionId, _ ->
+            if (actionId == EditorInfo.IME_ACTION_SEND) {
+                sendDanmu()
+                true
+            } else false
+        }
+    }
+
+    private fun sendDanmu() {
+        val msg = etDanmu.text?.toString()?.trim().orEmpty()
+        if (msg.isEmpty()) return
+        if (roomUserId.isBlank()) {
+            Toast.makeText(this, "直播间信息未就绪", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val toSend = msg
+        etDanmu.setText("")
+        // 收起键盘
+        val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+        imm.hideSoftInputFromWindow(etDanmu.windowToken, 0)
+        scope.launch {
+            val ok = withContext(Dispatchers.IO) { api.sendMsg(roomUserId, toSend) }
+            if (!ok && !isFinishing) {
+                ui.post {
+                    Toast.makeText(this@PlayerActivity, "弹幕发送失败", Toast.LENGTH_SHORT).show()
+                    etDanmu.setText(toSend)
+                }
+            }
+            // 成功时弹幕会通过 IM 长连接广播回来（evt:5），聊天区自动显示，无需本地插入
+        }
+    }
+
+    // ─────────── 画中画 ───────────
+
+    /** 手动点击"画中画"按钮进入。 */
+    private fun enterPip() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+            Toast.makeText(this, "当前系统不支持画中画（需 Android 8.0+）", Toast.LENGTH_SHORT).show()
+            return
+        }
+        if (!packageManager.hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE)) {
+            Toast.makeText(this, "设备不支持画中画", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val w = if (lastVw > 0) lastVw else 16
+        val h = if (lastVh > 0) lastVh else 9
+        val params = PictureInPictureParams.Builder()
+            .setAspectRatio(Rational(w, h))
+            .build()
+        enterPictureInPictureMode(params)
+    }
+
+    override fun onUserLeaveHint() {
+        super.onUserLeaveHint()
+        // 切到后台时自动进入画中画，继续看直播
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && playing) {
+            runCatching { enterPip() }
+        }
+    }
+
+    override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean) {
+        super.onPictureInPictureModeChanged(isInPictureInPictureMode)
+        val topBar = findViewById<View>(R.id.topBar)
+        if (isInPictureInPictureMode) {
+            // 进入画中画：隐藏所有 UI 浮层，只留画面
+            topBar.visibility = View.GONE
+            chatPanel.visibility = View.GONE
+            bottomBar.visibility = View.GONE
+            sendBar.visibility = View.GONE
+            btnChat.visibility = View.GONE
+            swipeHint.visibility = View.GONE
+        } else {
+            topBar.visibility = View.VISIBLE
+            bottomBar.visibility = View.VISIBLE
+            sendBar.visibility = View.VISIBLE
+            applyMode()
+        }
     }
 
     override fun onPause() {

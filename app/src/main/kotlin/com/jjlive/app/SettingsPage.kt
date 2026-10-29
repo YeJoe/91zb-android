@@ -36,7 +36,6 @@ class SettingsPage(
     private val btnSave: TextView = root.findViewById(R.id.btnSave)
     private val btnReset: TextView = root.findViewById(R.id.btnReset)
     private val btnWebLogin: TextView = root.findViewById(R.id.btnWebLogin)
-    private val swFull: MaterialSwitch = root.findViewById(R.id.swFull)
     private val swFilter: MaterialSwitch = root.findViewById(R.id.swFilter)
     private val qAuto: TextView = root.findViewById(R.id.qAuto)
     private val q720: TextView = root.findViewById(R.id.q720)
@@ -95,10 +94,7 @@ class SettingsPage(
     private fun bindSwitches() {
         // 回填时先摘掉监听，避免"设值 → 写回"的无谓写入
         swFilter.setOnCheckedChangeListener(null)
-        swFull.setOnCheckedChangeListener(null)
-        swFull.isChecked = store.defaultFull
         swFilter.isChecked = store.hideJunk
-        swFull.setOnCheckedChangeListener { _, on -> store.defaultFull = on }
         swFilter.setOnCheckedChangeListener { _, on ->
             store.hideJunk = on
             onFilterChanged()
