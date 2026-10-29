@@ -37,6 +37,43 @@
             android:textColor="@color/text_secondary"
             android:textSize="11.5sp" />
 
+        <!-- ───── 网页一键登录 ───── -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:background="@drawable/bg_card"
+            android:orientation="vertical"
+            android:padding="14dp">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="登录"
+                android:textColor="@color/text_primary"
+                android:textSize="14sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="网页一键登录：加载官方登录页，登录后自动抓取令牌写进设置，以后点一下就登录，不用再手动抓包。"
+                android:textColor="@color/text_secondary"
+                android:textSize="11sp" />
+
+            <TextView
+                android:id="@+id/btnWebLogin"
+                android:layout_width="match_parent"
+                android:layout_height="42dp"
+                android:layout_marginTop="12dp"
+                android:background="@drawable/bg_btn_accent"
+                android:gravity="center"
+                android:text="网页一键登录"
+                android:textColor="@color/accent_ink"
+                android:textSize="13sp"
+                android:textStyle="bold" />
+        </LinearLayout>
+
         <!-- ───── 连接 ───── -->
         <LinearLayout
             android:layout_width="match_parent"

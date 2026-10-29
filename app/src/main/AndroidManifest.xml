@@ -28,6 +28,12 @@
             android:screenOrientation="fullSensor"
             android:theme="@style/Theme.JJLive.Player" />
 
+        <activity
+            android:name=".WebLoginActivity"
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:exported="false"
+            android:theme="@style/Theme.JJLive" />
+
     </application>
 
 </manifest>

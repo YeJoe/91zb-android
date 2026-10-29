@@ -24,7 +24,8 @@ class SettingsPage(
     private val api: Api,
     private val scope: CoroutineScope,
     private val onSaved: () -> Unit,
-    private val onFilterChanged: () -> Unit
+    private val onFilterChanged: () -> Unit,
+    private val onWebLogin: () -> Unit
 ) {
 
     private val etHost: EditText = root.findViewById(R.id.etHost)
@@ -34,6 +35,7 @@ class SettingsPage(
     private val btnTest: TextView = root.findViewById(R.id.btnTest)
     private val btnSave: TextView = root.findViewById(R.id.btnSave)
     private val btnReset: TextView = root.findViewById(R.id.btnReset)
+    private val btnWebLogin: TextView = root.findViewById(R.id.btnWebLogin)
     private val swFull: MaterialSwitch = root.findViewById(R.id.swFull)
     private val swFilter: MaterialSwitch = root.findViewById(R.id.swFilter)
     private val qAuto: TextView = root.findViewById(R.id.qAuto)
@@ -47,6 +49,7 @@ class SettingsPage(
         btnSave.setOnClickListener { save() }
         btnTest.setOnClickListener { test() }
         btnReset.setOnClickListener { reset() }
+        btnWebLogin.setOnClickListener { onWebLogin() }
 
         qAuto.setOnClickListener { pickQuality(0) }
         q720.setOnClickListener { pickQuality(1) }
@@ -63,6 +66,19 @@ class SettingsPage(
     /** 别处（首页过滤按钮）改了偏好后回填开关状态。 */
     fun syncSwitches() {
         bindSwitches()
+    }
+
+    /**
+     * 从 WebView 登录页返回后由 MainActivity.onResume 调用：
+     * 若令牌已变化则把新令牌回填进输入框（仅在本页已被填充过时才动）。
+     */
+    fun syncToken() {
+        if (!filled) return
+        val saved = store.token.trim()
+        if (etToken.text.toString().trim() != saved) {
+            etToken.setText(saved)
+            tip("令牌已更新（网页登录已生效）", R.color.good)
+        }
     }
 
     private fun fill() {

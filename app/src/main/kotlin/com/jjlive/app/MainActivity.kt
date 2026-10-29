@@ -1,5 +1,6 @@
 package com.jjlive.app
 
+import android.content.Intent
 import android.content.res.ColorStateList
 import android.os.Bundle
 import android.view.View
@@ -48,6 +49,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var followPage: FollowPage
     private lateinit var settingsPage: SettingsPage
     private var tab = TAB_HOME
+    /** 最近一次已知的令牌，用于在 onResume 时侦测「网页登录后令牌变化」。 */
+    private var lastToken = ""
 
     // 首页
     private lateinit var adapter: RoomAdapter
@@ -72,6 +75,7 @@ class MainActivity : AppCompatActivity() {
 
         store = TokenStore(this)
         api = Api(store)
+        lastToken = store.token
 
         pages = findViewById(R.id.pages)
         navBar = findViewById(R.id.navBar)
@@ -91,8 +95,12 @@ class MainActivity : AppCompatActivity() {
             store = store,
             api = api,
             scope = scope,
-            onSaved = { load(refreshAll = true) },   // 换了域名/令牌：首页重拉
-            onFilterChanged = { onFilterPrefChanged() }
+            onSaved = {
+                lastToken = store.token
+                load(refreshAll = true)   // 换了域名/令牌：首页重拉
+            },
+            onFilterChanged = { onFilterPrefChanged() },
+            onWebLogin = { startActivity(Intent(this, WebLoginActivity::class.java)) }
         )
 
         selectTab(TAB_HOME, animate = false)
@@ -103,6 +111,17 @@ class MainActivity : AppCompatActivity() {
     override fun onDestroy() {
         scope.cancel()
         super.onDestroy()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // 从 WebView 登录页返回后，令牌可能被外部改写；变化时回填设置并刷新数据
+        val t = store.token
+        if (t != lastToken) {
+            lastToken = t
+            settingsPage.syncToken()
+            load(refreshAll = true)
+        }
     }
 
     // ─────────── 底部导航 ───────────
