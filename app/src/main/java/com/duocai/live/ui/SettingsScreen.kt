@@ -42,6 +42,36 @@ import androidx.compose.ui.unit.sp
 import com.duocai.live.AppContainer
 import com.duocai.live.data.Prefs
 import kotlinx.coroutines.launch
+import org.json.JSONObject
+
+/** 解析导出工具给的配置；appToken / jwe 任一有值即视为有效。 */
+private data class RealtimeConfig(
+    val appToken: String?,
+    val jwe: String?,
+    val tunnelPort: Int?
+)
+
+/**
+ * 解析导出工具的配置：先试 JSON（{"appToken":..,"jwe":..,"tunnelPort":..}），
+ * 再退回纯文本标记（含【会话 Token】等）。返回 null = 啥也没解析出来。
+ */
+private fun parseRealtimeConfig(text: String): RealtimeConfig? {
+    val s = text.trim()
+    runCatching { JSONObject(s) }.getOrNull()?.let { j ->
+        val t = j.optString("appToken").takeIf { it.isNotBlank() }
+        val w = j.optString("jwe").takeIf { it.isNotBlank() }
+        val p = j.optInt("tunnelPort", -1).let { if (it > 0) it else null }
+        if (t != null || w != null) return RealtimeConfig(t, w, p)
+    }
+    val t = Regex("""【会话 Token】[^\n]*\n(\S+)""").find(s)?.groupValues?.get(1)
+        ?.takeIf { !it.startsWith("(") }
+    val w = Regex("""【JWE】[^\n]*\n(\S+)""").find(s)?.groupValues?.get(1)
+        ?.takeIf { !it.startsWith("(") }
+    val p = Regex("""【隧道端口】[^\n]*\n(\d{2,5})""").find(s)?.groupValues?.get(1)?.toIntOrNull()
+    if (t == null && w == null) return null
+    return RealtimeConfig(t, w, p)
+}
+
 
 @Composable
 fun SettingsScreen(c: AppContainer) {
@@ -55,6 +85,7 @@ fun SettingsScreen(c: AppContainer) {
     var ws by remember { mutableStateOf(prefs.dmWs) }
     var token by remember { mutableStateOf(prefs.dmToken) }
     var pasteOpen by remember { mutableStateOf(false) }
+    var importOpen by remember { mutableStateOf(false) }
     var toast by remember { mutableStateOf<String?>(null) }
 
     // 实时直播源（直连源 App 隧道端口）
@@ -181,6 +212,9 @@ fun SettingsScreen(c: AppContainer) {
                 onSelect = { prefs.refreshSec = listOf(0, 10, 20, 30)[it] }
             )
             InfoLine("实时模式下定时重拉列表；0 关闭（只手动下拉刷新）")
+            Spacer(Modifier.height(8.dp))
+            TextButton(onClick = { importOpen = true }) { Text("导入配置（从导出工具粘贴）") }
+            InfoLine("把电脑上 token_export.py 导出的整段文本/JSON 粘进来，一键填入上面三栏")
         }
 
         // ---------- 播放 ----------
@@ -362,6 +396,54 @@ fun SettingsScreen(c: AppContainer) {
             },
             dismissButton = {
                 TextButton(onClick = { pasteOpen = false }) { Text("取消") }
+            }
+        )
+    }
+
+    if (importOpen) {
+        var text by remember { mutableStateOf("") }
+        var err by remember { mutableStateOf<String?>(null) }
+        AlertDialog(
+            onDismissRequest = { importOpen = false },
+            title = { Text("导入实时源配置") },
+            text = {
+                Column {
+                    Text(
+                        "把导出工具给的整段文本（含【会话 Token】标记）或 JSON 粘进来，自动填入三个框。",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = text,
+                        onValueChange = { text = it },
+                        modifier = Modifier.fillMaxWidth().height(140.dp),
+                        placeholder = { Text("{ \"appToken\": …, \"jwe\": … }") },
+                        shape = RoundedCornerShape(12.dp)
+                    )
+                    err?.let {
+                        Spacer(Modifier.height(6.dp))
+                        Text(it, fontSize = 11.sp, color = MaterialTheme.colorScheme.error)
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val cfg = parseRealtimeConfig(text)
+                    if (cfg == null) {
+                        err = "没解析出 appToken / jwe，确认粘的是导出工具的完整输出"
+                        return@TextButton
+                    }
+                    cfg.appToken?.let { v -> appToken = v; prefs.appToken = v }
+                    cfg.jwe?.let { v -> jwe = v; prefs.jwe = v }
+                    port = cfg.tunnelPort?.toString() ?: ""
+                    prefs.tunnelPort = cfg.tunnelPort ?: 0
+                    toast = "已导入实时源配置，点「立即拉取」验证"
+                    importOpen = false
+                }) { Text("导入") }
+            },
+            dismissButton = {
+                TextButton(onClick = { importOpen = false }) { Text("取消") }
             }
         )
     }
