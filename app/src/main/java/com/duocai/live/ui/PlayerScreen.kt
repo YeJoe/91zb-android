@@ -991,7 +991,8 @@ private fun ChatPanel(
         if (messages.isEmpty()) {
             val why = when {
                 c.danmaku.status.isBlank() -> "正在连接弹幕…"
-                c.danmaku.status == "已进房" -> "已进房，这个房间现在没人说话"
+                // 状态文案现在带端口（`已进房 :37679`），判前缀不判全等
+                c.danmaku.status.startsWith("已进房") -> "已进房，这个房间现在没人说话"
                 else -> "弹幕未连接 · ${c.danmaku.status}"
             }
             Text(

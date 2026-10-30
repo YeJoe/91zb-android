@@ -41,8 +41,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 DEF_IN = ROOT / "site" / "data.js"
 DEF_OUT = ROOT / "app-data" / "rooms.json"
-DEMO_IN = ROOT / "site" / "dm_samples.js"
-DEMO_OUT = ROOT / "app" / "src" / "main" / "assets" / "danmaku_demo.json"
 
 # App 端只保留这些字段，顺序即输出顺序（短键名省体积）
 KEEP = ("id", "name", "cat", "online", "city", "ad", "coins")
@@ -98,36 +96,6 @@ def slim(rooms: list) -> list:
     return out
 
 
-def build_demo() -> None:
-    """把网页版的弹幕样本搬成 App 离线演示用的 JSON。
-
-    App 没有可用的 WS 端点时，聊天区就用这份样本按原始节奏回放，
-    既能验证过滤规则，也不至于让聊天区空着。
-    """
-    if not DEMO_IN.exists():
-        print("  （跳过弹幕样本：%s 不存在）" % DEMO_IN.name)
-        return
-    src = DEMO_IN.read_text(encoding="utf-8")
-
-    def grab(name: str):
-        m = re.search(r"window\.%s\s*=\s*(.+?);\s*$" % name, src, re.M | re.S)
-        return json.loads(m.group(1)) if m else None
-
-    msgs = grab("DANMAKU") or []
-    payload = {
-        "at": grab("DM_AT") or "",
-        "stats": grab("DM_STATS") or {},
-        "msgs": [{"k": m.get("k"), "typ": m.get("typ"), "n": m.get("n"), "t": m.get("t")}
-                 for m in msgs],
-    }
-    DEMO_OUT.parent.mkdir(parents=True, exist_ok=True)
-    DEMO_OUT.write_text(json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n",
-                        encoding="utf-8")
-    keep = sum(1 for m in msgs if m.get("k") == "chat")
-    print("  弹幕样本 %d 条（可显示聊天 %d 条）→ %s"
-          % (len(msgs), keep, DEMO_OUT.relative_to(ROOT)))
-
-
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("-i", "--input", default=str(DEF_IN))
@@ -164,7 +132,6 @@ def main() -> int:
     print("  房间 %d 个（推广位 %d 个）· 分类 %d 类 · %.1f KB"
           % (len(rooms), len(rooms) - len(real), len(cats), out.stat().st_size / 1024))
     print("  构建时间 %s · 域名 %s" % (data["buildAt"] or "?", data["rtmpDomain"] or "?"))
-    build_demo()
     return 0
 
 

@@ -4,7 +4,8 @@
 > 设备：MuMu（Android 15 / vivo V2245A，KernelSU root）
 > 目标：`com.l95c2450d7.f68bb4e2d5`，versionName **8.5.3**
 > 方法：`am force-stop` → `am start` 冷启动，前后各导一次 `FlutterSharedPreferences.xml`，对比 25 秒内服务端推送造成的状态变化；再用拉流探活交叉验证。
-> 原始数据：`.tmp_analysis/`（prefs_before/after、maps、net_tcp、脚本）
+> 原始数据：冷启动前后的 prefs 导出、`/proc/net/tcp`、探测脚本（2026-10-30 已随临时目录清理，
+> 复现步骤见本文 §1，脚本逻辑仍在 `app/.../data/LiveRepo.kt` 的 `probePlayable()` 里）
 
 ---
 

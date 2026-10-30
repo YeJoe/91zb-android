@@ -374,7 +374,8 @@ class LiveRepo(private val context: Context, private val prefs: Prefs) {
     /**
      * 拉一遍全部已知房间的最新状态。
      *
-     * 分片并发（每片 [batchSize] 个 id），只保留 `on_air=1` 且 `player_count>0` 的，按在线人数降序。
+     * 分片并发（每片 [batchSize] 个 id，再按 3 片一波滚动），只保留 `on_air=1` 的真人房，
+     * 再按 `live_in` 软筛一道，最后按在线人数降序（**不过滤人数**，原因见下面的注释）。
      * 全部失败会强制重新探测一次端口再试 —— 源 App 重启后端口号一定变。
      *
      * @param limit 只拉 id 池的前 N 个。首屏用（池子近 2000 个，全量要 2~4 秒），
@@ -493,9 +494,10 @@ class LiveRepo(private val context: Context, private val prefs: Prefs) {
     /**
      * 批量探活：`http://<域名>/live/<房间号>.flv` 能不能吐出 FLV 头。
      *
-     * 这是**唯一可靠**的「房间此刻真的在播」判据。接口里的 `on_air`、`live_in`、
-     * `player_count` 全是历史残留（实测 on_air 341/342 都是 1，下播后人数也不清零），
-     * 靠它们筛出来的列表里有大量点进去就报错的房 —— 用户看到的就是「90% 不能播放」。
+     * 这也是**唯一可靠**的「房间此刻真的在播」判据。接口里的 `on_air` 恒为 1、
+     * `player_count` 下播后不清零，`live_in` 只是软筛（`get_list_by_ids` 的 600 条样本里
+     * 仅 5 条为 0），靠它们筛出来的列表里有大量点进去就报错的房 —— 用户看到的就是
+     * 「90% 不能播放」。
      *
      * 做法：带 `Range: bytes=0-15` 只读响应头的十几个字节，攒够 `F L V` 三个字母就算通。
      * 下播的房间一律回 `403`（实测 NgxFence 挡的，且是**房间级**：换子域名、绕代理、
