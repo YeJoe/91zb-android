@@ -36,7 +36,8 @@ import org.json.JSONObject
  * 1. **id 池**：`assets/room_ids.txt` 一份种子（从源 App 的本地表导出的 1972 个房间号），
  *    跑起来后落在 `filesDir/room_ids.txt`，之后只增不减。
  * 2. **刷新**：把 id 池按 250 个一批丢给 `/room/get_list_by_ids`，拿回真实的
- *    `on_air / player_count / menu_id / city_show`，只留 `on_air=1`。
+ *    `on_air / player_count / menu_id / city_show`，只留 `on_air=1` 且人数>0 的
+ *    （on_air 常年为 1，已下播的房得靠人数 0 挡掉，见 [dropIdle]）。
  *    这就是"手动刷新拿到最新直播间"——人数、在播状态全是服务端实时值。
  * 3. **端口自动探测**：隧道端口每次源 App 重启都会变，所以不能写死；
  *    拿 `/room/get_list_by_ids` 打一遍监听端口，认 `code` 字段的那个 vhost。
@@ -299,7 +300,7 @@ class LiveRepo(private val context: Context, private val prefs: Prefs) {
     /**
      * 拉一遍全部已知房间的最新状态。
      *
-     * 分片并发（每片 [batchSize] 个 id），只保留 `on_air=1`，按在线人数降序。
+     * 分片并发（每片 [batchSize] 个 id），只保留 `on_air=1` 且 `player_count>0` 的，按在线人数降序。
      * 全部失败会强制重新探测一次端口再试 —— 源 App 重启后端口号一定变。
      *
      * @param limit 只拉 id 池的前 N 个。首屏用（池子近 2000 个，全量要 2~4 秒），
@@ -325,9 +326,13 @@ class LiveRepo(private val context: Context, private val prefs: Prefs) {
                 runCatching { pullAll(port, targets) }.getOrElse { throw first }
             }
 
-            if (rooms.isEmpty()) throw IOException("接口通了，但 1 个在播房间都没有（token 可能属于被封的号）")
+            // 再剔掉「在线人数 0」的：`on_air` 常年是 1（历史实测 on_air=1 的房里约三成
+            // 根本拉不到流），只看 on_air 挡不住已下播的房。卡片上显示的就是 player_count，
+            // 0 人的基本是空房/下播房，用户看到的就是「未开播也列出来了」。
+            val live = dropIdle(rooms)
+            if (live.isEmpty()) throw IOException("接口通了，但此刻没有在播的真人房间")
 
-            val sorted = rooms.sortedWith(
+            val sorted = live.sortedWith(
                 compareByDescending<Room> { it.online }.thenByDescending { it.id }
             )
             val data = SourceData(
@@ -401,6 +406,21 @@ class LiveRepo(private val context: Context, private val prefs: Prefs) {
         // 顺手把这次见到的 id 并回池子（服务端偶尔会回比请求更多的房间）
         mergeIdPool(out.map { it.id })
         out
+    }
+
+    /**
+     * 剔除「在线人数为 0」的房间。
+     *
+     * `/room/get_list_by_ids` 只要 id 存在就返回对象，`on_air` 又常年是 1，
+     * 所以光靠 `on_air` 挡不住已下播的房（历史实测 on_air=1 的房里约三成拉不到流）。
+     * 列表卡片显示的人数就是 `player_count`，0 人的基本是空房/下播房 —— 用它筛最直接。
+     *
+     * **安全阀**：如果整批都是 0（说明这个接口/这个账号压根不填该字段），原样返回。
+     * 宁可多显示几间空房，也不能因为字段缺失把列表整个清空。
+     */
+    private fun dropIdle(rooms: List<Room>): List<Room> {
+        if (rooms.none { it.online > 0 }) return rooms
+        return rooms.filter { it.online > 0 }
     }
 
     /** 只留正在播的、真人房，映射成 UI 用的精简模型 */
@@ -493,9 +513,10 @@ class LiveRepo(private val context: Context, private val prefs: Prefs) {
         for (i in 0 until arr.length()) {
             arr.optJSONObject(i)?.let { toRoom(it)?.let { r -> rooms.add(r) } }
         }
-        if (rooms.isEmpty()) null
+        val live = dropIdle(rooms)
+        if (live.isEmpty()) null
         else SourceData(
-            rooms,
+            live,
             SourceMeta(rtmpDomain = prefs.rtmpDomain, fromCache = true)
         )
     }.getOrNull()
