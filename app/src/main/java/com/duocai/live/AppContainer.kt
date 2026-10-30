@@ -442,6 +442,66 @@ class AppContainer(context: Context) {
             serverFollowIds = live.followIds
             serverFollowNames = live.followNames
         }
+        probeAlive()
+    }
+
+    /** 探活进行中的标志，避免连点刷新叠出好几趟探测 */
+    private var probing = false
+
+    /** 上次探活的时间。5 分钟内不重复探 —— 同一批房间没必要反复拉流 */
+    private var probedAt = 0L
+
+    /**
+     * 最近一次探活的结果，设置页显示用。
+     *
+     * 这一行是排查「列表全是死房」的第一现场：
+     * `可播 132/487` 说明筛得动；`可播 0/487` 说明域名或网络有问题，房间本身没问题。
+     */
+    var probeInfo by mutableStateOf("")
+        private set
+
+    /**
+     * 后台探活：只留下「此刻真的拉得到流」的房间。
+     *
+     * 为什么必须这么做：接口给的 `on_air` / `live_in` / `player_count` 全是历史残留
+     * （实测 on_air 341/342 都是 1，下播后人数也不清零），靠它们筛不出真实的在播状态，
+     * 列表里于是混着大量点进去就报错的房。唯一靠谱的判据就是拉一次流看有没有 `FLV` 头。
+     *
+     * 探完只改内存里的 `rooms`，**不写缓存**：探测受网络影响，脏数据不该落到磁盘。
+     *
+     * 三道安全阀，任一不过就放弃这轮剔除（宁可多显示，也不能把列表清空）：
+     *  1. 房间太少（< 8）—— 多半是刚启动或数据还没到齐
+     *  2. 一个都没探通 —— 说明域名/网络/CDN 有问题，不是房间的问题
+     *  3. 探通比例 < 12% —— 大概率是瞬时抖动，剔除会误杀
+     */
+    private fun probeAlive() {
+        if (probing) return
+        val domain = prefs.rtmpDomain
+        if (domain.isBlank()) return
+        val now = System.currentTimeMillis()
+        if (now - probedAt < 300_000L) return
+
+        probing = true
+        scope.launch {
+            try {
+                val snapshot = rooms
+                if (snapshot.size < 8) return@launch
+                probeInfo = "探活中… ${snapshot.size} 间"
+                val alive = live.probePlayable(snapshot, domain)
+                probedAt = System.currentTimeMillis()
+                probeInfo = "可播 ${alive.size}/${snapshot.size}"
+                if (alive.isEmpty()) return@launch
+                val floor = (snapshot.size * 0.12f).toInt().coerceAtLeast(1)
+                if (alive.size < floor) {
+                    probeInfo = "可播 ${alive.size}/${snapshot.size}（比例过低，本次不剔除）"
+                    return@launch
+                }
+                val keep = rooms.filter { it.id in alive }
+                if (keep.isNotEmpty() && keep.size < rooms.size) rooms = keep
+            } finally {
+                probing = false
+            }
+        }
     }
 
     private companion object {

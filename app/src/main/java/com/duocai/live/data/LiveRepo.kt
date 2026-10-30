@@ -36,8 +36,9 @@ import org.json.JSONObject
  * 1. **id 池**：`assets/room_ids.txt` 一份种子（从源 App 的本地表导出的 1972 个房间号），
  *    跑起来后落在 `filesDir/room_ids.txt`，之后只增不减。
  * 2. **刷新**：把 id 池按 250 个一批丢给 `/room/get_list_by_ids`，拿回真实的
- *    `on_air / player_count / menu_id / city_show`，只留 `on_air=1` 且人数>0 的
- *    （on_air 常年为 1，已下播的房得靠人数 0 挡掉，见 [dropIdle]）。
+ *    `on_air / player_count / menu_id / city_show`，只留 `on_air=1` 的真人房。
+ *    注意 `on_air` / `player_count` 都不可信（前者常年为 1，后者下播后不清零），
+ *    所以「此刻真的在播」交给 [probePlayable] 用拉流探活判定，不在这里筛。
  *    这就是"手动刷新拿到最新直播间"——人数、在播状态全是服务端实时值。
  * 3. **端口自动探测**：隧道端口每次源 App 重启都会变，所以不能写死；
  *    拿 `/room/get_list_by_ids` 打一遍监听端口，认 `code` 字段的那个 vhost。
@@ -106,48 +107,52 @@ class LiveRepo(private val context: Context, private val prefs: Prefs) {
     private var wsVhostsAt = 0L
 
     /**
-     * 找出真的挂 `/websock/…` 的端口。
+     * 找出真的挂 `/websock` 的端口。
      *
-     * 判据照 `tools/live_ws.py` 的 `ws_vhosts()`（2026-10-29 实测坐实）：
-     * 对 `/websock/history_msg` 发**明文 POST**，只有业务 nginx 回 **405**
-     * （它只认 WS 升级）；隧道里其它上游站点一律回 403 / 404。
+     * **判据换过两次，记一下为什么**：
+     *  1. 最早只看「WS 握手能不能 101」——错的。升级发生在隧道网关层，跟 vhost 无关，
+     *     随便一个端口都能 101，但随后的 `/websock/join` 会被那个 nginx 404。
+     *  2. 后来照 `tools/live_ws.py` 用 `/websock/history_msg` 回 405 粗筛 —— 在 PC 上有效，
+     *     搬到手机上实测筛不出（真机上报「试了 3 个端口都 404」，说明一条都没命中）。
+     *  3. 现在直接拿**最终要用的那个请求**去探：明文 POST `/websock/join`，
+     *     只要响应是 JSON（而不是 nginx 的 404 HTML），就说明这个 vhost 认识 `/websock`。
+     *     就算 token 失效回 `{"code":-10000}` 也算命中 —— vhost 对了，问题在凭证，
+     *     这正是我们需要区分的信息。真正进房仍然由 [com.duocai.live.data.LiveDanmaku] 开 WS 做。
      *
-     * 为什么不直接开 WS 去试：握手 + join 每个端口要几百毫秒到 8 秒，
-     * 而明文一次 POST 1.5 秒封顶，还不需要 token / JWE —— 用来粗筛最划算。
-     *
-     * 实测可能有**多个**端口都回 405（不同业务 vhost），所以这里返回列表，
-     * 由 [com.duocai.live.data.LiveDanmaku] 逐个 join，谁回 200 就是谁。
+     * 明文探测 1.5 秒封顶、不需要 token / JWE，比逐个开 WS 便宜得多。
+     * 实测可能有**多个**端口命中（不同业务 vhost），所以返回列表，由 LiveDanmaku 逐个 join。
      */
     fun probeWsVhosts(): List<Int> {
         val now = System.currentTimeMillis()
         if (wsVhosts.isNotEmpty() && now - wsVhostsAt < 60_000L) return wsVhosts
         // 隧道 listener 都落在临时端口段，从大往小扫更容易先命中
-        val hit = listenPorts().sortedDescending().take(MAX_PROBE_PORTS).filter { p ->
-            statusOf(p, "/websock/history_msg", """{"room_id":0,"start_id":0}""") == 405
-        }
+        val hit = listenPorts().sortedDescending().take(MAX_PROBE_PORTS).filter { wsJoinReachable(it) }
         wsVhosts = hit
         wsVhostsAt = now
         return hit
     }
 
-    /** 发一次请求只取状态码：不解析响应体、不抛异常（探测专用） */
-    private fun statusOf(port: Int, path: String, body: String, timeout: Int = 1500): Int =
-        runCatching {
-            val conn =
-                (URL("http://127.0.0.1:$port$path").openConnection() as HttpURLConnection)
-            try {
-                conn.requestMethod = "POST"
-                conn.connectTimeout = timeout
-                conn.readTimeout = timeout
-                conn.doOutput = true
-                conn.setRequestProperty("content-type", "application/json")
-                conn.setRequestProperty("user-agent", "Dart/3.10 (dart:io)")
-                conn.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
-                conn.responseCode
-            } finally {
-                conn.disconnect()
+    /** 明文 POST 一次 `/websock/join`：回 JSON 就说明这个端口挂着 `/websock` */
+    private fun wsJoinReachable(port: Int): Boolean = runCatching {
+        val conn = (URL("http://127.0.0.1:$port/websock/join").openConnection() as HttpURLConnection)
+        try {
+            conn.requestMethod = "POST"
+            conn.connectTimeout = 1500
+            conn.readTimeout = 1500
+            conn.doOutput = true
+            conn.setRequestProperty("content-type", "application/json")
+            conn.setRequestProperty("user-agent", "Dart/3.10 (dart:io)")
+            conn.outputStream.use {
+                it.write("""{"room_id":1,"menu_id":1,"cp_type":3}""".toByteArray(Charsets.UTF_8))
             }
-        }.getOrDefault(-1)
+            if (conn.responseCode !in 200..299) return@runCatching false
+            val text = conn.inputStream.bufferedReader().use { it.readText() }.trimStart()
+            // nginx 的 404 是 HTML；业务网关一定回 JSON（code=0 或 code=-10000 都算）
+            text.startsWith("{") || text.startsWith("[")
+        } finally {
+            conn.disconnect()
+        }
+    }.getOrDefault(false)
 
     /**
      * 找一个真正挂 `/room` 前缀的 vhost（注意：注释里别写斜杠星号，Kotlin 的块注释是可嵌套的，
@@ -326,13 +331,12 @@ class LiveRepo(private val context: Context, private val prefs: Prefs) {
                 runCatching { pullAll(port, targets) }.getOrElse { throw first }
             }
 
-            // 再剔掉「在线人数 0」的：`on_air` 常年是 1（历史实测 on_air=1 的房里约三成
-            // 根本拉不到流），只看 on_air 挡不住已下播的房。卡片上显示的就是 player_count，
-            // 0 人的基本是空房/下播房，用户看到的就是「未开播也列出来了」。
-            val live = dropIdle(rooms)
-            if (live.isEmpty()) throw IOException("接口通了，但此刻没有在播的真人房间")
+            if (rooms.isEmpty()) throw IOException("接口通了，但 1 个在播房间都没有（token 可能属于被封的号）")
 
-            val sorted = live.sortedWith(
+            // 这里**不再**用 player_count 过滤。实测它是残留值：房间下播后人数不清零，
+            // 按它筛既挡不住已下播的房、又可能把列表筛空。真正的判据只有「能不能拉到流」，
+            // 由 [probePlayable] 在后台探活（见 AppContainer.applyData）。
+            val sorted = rooms.sortedWith(
                 compareByDescending<Room> { it.online }.thenByDescending { it.id }
             )
             val data = SourceData(
@@ -409,19 +413,62 @@ class LiveRepo(private val context: Context, private val prefs: Prefs) {
     }
 
     /**
-     * 剔除「在线人数为 0」的房间。
+     * 批量探活：`http://<域名>/live/<房间号>.flv` 能不能吐出 FLV 头。
      *
-     * `/room/get_list_by_ids` 只要 id 存在就返回对象，`on_air` 又常年是 1，
-     * 所以光靠 `on_air` 挡不住已下播的房（历史实测 on_air=1 的房里约三成拉不到流）。
-     * 列表卡片显示的人数就是 `player_count`，0 人的基本是空房/下播房 —— 用它筛最直接。
+     * 这是**唯一可靠**的「房间此刻真的在播」判据。接口里的 `on_air`、`live_in`、
+     * `player_count` 全是历史残留（实测 on_air 341/342 都是 1，下播后人数也不清零），
+     * 靠它们筛出来的列表里有大量点进去就报错的房 —— 用户看到的就是「90% 不能播放」。
      *
-     * **安全阀**：如果整批都是 0（说明这个接口/这个账号压根不填该字段），原样返回。
-     * 宁可多显示几间空房，也不能因为字段缺失把列表整个清空。
+     * 做法：带 `Range: bytes=0-15` 只读响应头的十几个字节，攒够 `F L V` 三个字母就算通。
+     * 下播的房间通常回 404、或者 200 但立刻 EOF，都拿不到头，判为不可播。
+     * 24 路并发、单条 2.5 秒封顶 —— 几百个房间几秒钟就探完，流量可以忽略。
+     *
+     * @return 可播房间的 id 集合（探测本身出错时返回空集，调用方要有安全阀）
      */
-    private fun dropIdle(rooms: List<Room>): List<Room> {
-        if (rooms.none { it.online > 0 }) return rooms
-        return rooms.filter { it.online > 0 }
+    suspend fun probePlayable(
+        list: List<Room>,
+        domain: String,
+        concurrency: Int = 24
+    ): Set<Long> = withContext(Dispatchers.IO) {
+        if (list.isEmpty() || domain.isBlank()) return@withContext emptySet()
+        val ok = java.util.Collections.synchronizedSet(HashSet<Long>())
+        list.chunked(concurrency.coerceAtLeast(1)).forEach { chunk ->
+            coroutineScope {
+                chunk.map { r ->
+                    async {
+                        // 用 Room 自己的地址构造，保证和播放器实际拉的是同一个 URL
+                        val url = r.streamUrls(domain, StreamMode.FLV).firstOrNull() ?: return@async
+                        if (flvAlive(url)) ok.add(r.id)
+                    }
+                }.awaitAll()
+            }
+        }
+        ok.toSet()
     }
+
+    /** 单个 FLV 地址探活：只读前 3 个字节，是 `FLV` 就算在播 */
+    private fun flvAlive(url: String): Boolean = runCatching {
+        val conn = (URL(url).openConnection() as HttpURLConnection)
+        try {
+            conn.connectTimeout = 2500
+            conn.readTimeout = 2500
+            conn.setRequestProperty("Range", "bytes=0-15")
+            conn.setRequestProperty("user-agent", "Dart/3.10 (dart:io)")
+            if (conn.responseCode !in 200..299) return@runCatching false
+            conn.inputStream.use { ins ->
+                val b = ByteArray(3)
+                var n = 0
+                while (n < 3) {
+                    val r = ins.read(b, n, 3 - n)
+                    if (r <= 0) break
+                    n += r
+                }
+                n == 3 && b[0] == 0x46.toByte() && b[1] == 0x4C.toByte() && b[2] == 0x56.toByte()
+            }
+        } finally {
+            conn.disconnect()
+        }
+    }.getOrDefault(false)
 
     /** 只留正在播的、真人房，映射成 UI 用的精简模型 */
     private fun toRoom(r: JSONObject): Room? {
@@ -513,18 +560,21 @@ class LiveRepo(private val context: Context, private val prefs: Prefs) {
         for (i in 0 until arr.length()) {
             arr.optJSONObject(i)?.let { toRoom(it)?.let { r -> rooms.add(r) } }
         }
-        val live = dropIdle(rooms)
-        if (live.isEmpty()) null
+        if (rooms.isEmpty()) null
         else SourceData(
-            live,
+            rooms,
             SourceMeta(rtmpDomain = prefs.rtmpDomain, fromCache = true)
         )
     }.getOrNull()
 
     // ------------------------------------------------------------------ 分类
     companion object {
-        /** 弹幕端口粗筛最多扫多少个监听端口（设备上通常十几个，留点余量） */
-        private const val MAX_PROBE_PORTS = 24
+        /**
+         * 弹幕端口粗筛最多扫多少个监听端口。
+         * 真机上报「试了 3 个端口全 404」说明一条都没筛出来，所以放宽到 64 ——
+         * 本机 LISTEN 端口通常只有十几个，多扫一些代价也就是几十毫秒。
+         */
+        private const val MAX_PROBE_PORTS = 64
 
         /**
          * `lobby_menu` 表里的分类（实测拉取，2026-10-29）。

@@ -216,6 +216,19 @@ private class PlayerPager(initialIndex: Int, private val count: Int) {
         if (!busy && abs(offset) > 0.5f) scope.launch { animTo(0f, 150) }
     }
 
+    /**
+     * 程序化切到第 n 间（自动跳过已下播房用）。
+     *
+     * 和手势切间不同，这里不做两段动画：用户根本没参与滑动，
+     * 播个"滑出再落下"反而突兀，直接落位即可。
+     */
+    fun jumpTo(n: Int) {
+        if (n !in 0 until count) return
+        if (busy) return
+        index = n
+        offset = 0f
+    }
+
     /** 把 [offset] 以 tween 推到目标值。只能在协程里调用（[animate] 是挂起函数） */
     private suspend fun animTo(target: Float, ms: Int) {
         animate(offset, target, animationSpec = tween(ms)) { value, _ -> offset = value }
@@ -282,6 +295,38 @@ fun PlayerScreen(c: AppContainer, startIndex: Int, onClose: () -> Unit) {
         // 弹幕跟着换房走：同一条隧道上重开 WS，打新房间的 /websock/join
         // （房间号 + 分区 id 一起给，之后只收这个房间的实时推送）
         c.danmaku.start(this, r)
+    }
+
+    // ---- 自动跳过播不了的房间 ----
+    // 列表里的在播状态来自接口残留值，难免混着已下播的房：点进去停在错误页很烦。
+    // 这里停 0.8 秒就自动换下一间；连续 8 间都播不了才真的停下 ——
+    // 否则会一路空转把整个列表刷一遍，反而更糟。
+    var autoSkip by remember { mutableIntStateOf(0) }
+    val maxAutoSkip = 8
+
+    // 只要成功起播，就把连败计数清零
+    LaunchedEffect(holder.ready, holder.error) {
+        if (holder.ready && holder.error == null) autoSkip = 0
+    }
+
+    // 报错（含「直播已结束」）→ 换下一间
+    LaunchedEffect(index, holder.error) {
+        if (holder.error == null) return@LaunchedEffect
+        if (autoSkip >= maxAutoSkip) return@LaunchedEffect
+        delay(800)
+        autoSkip++
+        val next = index + 1
+        if (next < rooms.size) pager.jumpTo(next)
+    }
+
+    // 既没报错也迟迟不出画面（卡在缓冲）同样跳过：8 秒足够 FLV 起播了
+    LaunchedEffect(index) {
+        delay(8000)
+        if (!holder.ready && holder.error == null && autoSkip < maxAutoSkip) {
+            autoSkip++
+            val next = index + 1
+            if (next < rooms.size) pager.jumpTo(next)
+        }
     }
 
     LaunchedEffect(Unit) {

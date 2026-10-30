@@ -272,6 +272,10 @@ fun SettingsScreen(c: AppContainer) {
                     if (c.meta.fromCache) " · 本地缓存" else "" +
                     if (c.error != null) " · 上次错误：${c.error}" else ""
             )
+            // 探活结果：判断「列表里全是死房」到底是房间不对还是域名/网络不对
+            if (c.probeInfo.isNotBlank()) {
+                InfoLine("在播探活：${c.probeInfo}")
+            }
             Spacer(Modifier.height(8.dp))
             Button(
                 onClick = {
