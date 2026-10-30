@@ -4,11 +4,12 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 /**
- * 关注 = 本地收藏。
+ * 本地收藏 = 关注的可靠镜像。
  *
- * 服务端的 /relationship/followees/ 接口确实存在，但三道门都过不去：
- * 公网不可达、需要真实登录态、原来的游客 token 也不在了（详见设计方案 §3.3）。
- * 所以关注关系存在本机，拿房间号去当前快照里比对"在不在播"，这条路立刻能用。
+ * 点关注时 `AppContainer.toggleFollow` 会先改这里（界面立刻变金星标），
+ * 再后台去打真实接口 `LiveRepo.syncFollow()`（/user_follow/add）。
+ * 实测本机明文隧道上写接口是空转（见 docs/App实现现状.md §7.2），所以本地收藏
+ * 是"一定生效"的那一份；服务端关注以 `my_follow` 复查结果为准，没确认也不影响本地。
  */
 class FollowStore(private val prefs: Prefs) {
 

@@ -185,6 +185,13 @@ class AppContainer(context: Context) {
     /** 本地收藏 ∪ 服务端关注 —— 「关注」页和首页关注 tab 都用这一个口径 */
     fun followIdSet(): Set<Long> = followedIds + serverFollowIds
 
+    /** 关注写接口回执（null=空闲）。PlayerScreen 用来弹 toast 告知服务端到底有没有确认。 */
+    var followSync by mutableStateOf<String?>(null)
+        private set
+    /** 自增序号：同一条文案连点两次也能让 LaunchedEffect 重新触发 */
+    var followSyncSeq by mutableStateOf(0)
+        private set
+
     // ---- 设置里会被界面直接读的几项，做成可观察 ----
     // 原先这里还有个 showAd（「显示推广位」）。开关连同 Prefs 字段一起删了：
     // 博彩/棋牌房在数据入口就被 NonHuman 过滤，没有"显示"这个选项。
@@ -324,13 +331,27 @@ class AppContainer(context: Context) {
     }
 
     fun toggleFollow(room: Room) {
+        val willFollow = room.id !in followIdSet()
         follows.toggle(room)
         followedIds = follows.ids()
+        scope.launch(Dispatchers.IO) {
+            val ok = runCatching { live.syncFollow(room.id, willFollow) }.getOrDefault(false)
+            followSync = if (willFollow)
+                if (ok) "已同步到服务端关注" else "已本地收藏（服务端未确认：本机隧道写接口为空转）"
+            else
+                if (ok) "已取消关注" else "已取消本地收藏（服务端未确认：本机隧道写接口为空转）"
+            followSyncSeq++
+        }
     }
 
     fun unfollow(id: Long) {
         follows.remove(id)
         followedIds = follows.ids()
+        scope.launch(Dispatchers.IO) {
+            val ok = runCatching { live.syncFollow(id, false) }.getOrDefault(false)
+            followSync = if (ok) "已取消关注" else "已取消本地收藏（服务端未确认：本机隧道写接口为空转）"
+            followSyncSeq++
+        }
     }
 
     fun followedList(): List<Room> {

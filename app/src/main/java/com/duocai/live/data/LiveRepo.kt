@@ -513,6 +513,32 @@ class LiveRepo(private val context: Context, private val prefs: Prefs) {
         out
     }.getOrDefault(emptyMap<Long, String>())
 
+    /**
+     * 真实关注写接口（走明文隧道）。
+     *
+     * 实测结论（2026-10-30）：本机隧道监听上的 `/user_follow/add`、`/user_follow/cancel_follow`
+     * 返回 `{"code":0}` 但**不会落库** —— 读 `my_follow` 能用，写被旁路到源 App 内部的
+     * protobuf 服务路由（`ProtobufHttpTunnelDelegate`），明文 HTTP 通道够不到。
+     * 所以这里**不以 code 为准**，而是写完后复查 `my_follow`：服务端真把状态改了才返回 true，
+     * 否则返回 false，让调用方如实提示「服务端未确认」。
+     *
+     * @param podcastId 房间号（podcast_id 与房间 id 同一命名空间，已实测）
+     * @param wantFollow true=关注 / false=取消关注
+     * @return 服务端关注状态是否确实变成了 [wantFollow]
+     */
+    suspend fun syncFollow(podcastId: Long, wantFollow: Boolean): Boolean = withContext(Dispatchers.IO) {
+        val port = runCatching { probePort(sample = idPool().firstOrNull()) }.getOrDefault(0)
+        if (port <= 0) return@withContext false
+        val path = if (wantFollow) "/user_follow/add" else "/user_follow/cancel_follow"
+        // 即便写接口是空转，这一步也得走——真机上若源 App 会话有效它就可能真的落库
+        runCatching {
+            post(port, path, JSONObject().put("podcast_id", podcastId).toString())
+        }
+        // 复查：服务端真改了才会反映在这里
+        val ids = pullFollows(port).keys
+        (podcastId in ids) == wantFollow
+    }
+
     /** 分片并发拉详情 */
     private suspend fun pullAll(port: Int, ids: List<Long>): List<Room> = coroutineScope {
         val chunks = ids.chunked(batchSize)

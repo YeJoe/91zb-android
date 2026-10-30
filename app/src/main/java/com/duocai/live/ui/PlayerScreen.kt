@@ -281,6 +281,14 @@ fun PlayerScreen(c: AppContainer, startIndex: Int, onClose: () -> Unit) {
         if (host != null && pipAvailable) host.syncPip()
     }
 
+    // 关注写接口回执：点关注后后台把请求打到真实服务、复查 my_follow，结果回这里弹 toast
+    LaunchedEffect(c.followSyncSeq) {
+        if (c.followSyncSeq == 0) return@LaunchedEffect
+        c.followSync?.let { msg ->
+            android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_SHORT).show()
+        }
+    }
+
     val index = pager.index
     val room = rooms.getOrNull(index) ?: rooms[safeStart]
 

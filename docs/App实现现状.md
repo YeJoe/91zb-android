@@ -223,11 +223,28 @@ WS /tunnel/open?z=1  (zlib 明文 JSON)
 
 本地收藏 ∪ 源 App 账号关注。
 
-- 本地收藏：`FollowStore`，点卡片右下角星标；
-- 服务端关注：`POST /user_follow/my_follow`，凭证 JWE（330 字符，`alg=dir/A128CBC-HS256`），
-  **默认内置**一份，设置页可粘贴覆盖；
+- 本地收藏：`FollowStore`，点卡片右下角星标 / 播放页星标 —— 永远可用的镜像；
+- 服务端关注：`POST /user_follow/my_follow`（只读，凭证 JWE，默认内置一份，设置页可覆盖）；
 - `podcast_id` 就是房间号（8/8 命中），所以服务端关注能直接映射成房间卡片；
-- **没有可用的取消关注接口**，服务端那部分只能回源 App 里取消。
+- **点击关注会尝试写真实接口**：`/user_follow/add`（关注）与 `/user_follow/cancel_follow`（取消），
+  带 `podcast_id` + JWE + `?token=会话token`。见 §7.2。
+
+### 7.2 真实关注写接口：实机可用，但本机明文隧道上是空转
+
+写接口存在（不 404），但 2026-10-30 在 emulator-5554 上用 46 个 LISTEN 端口逐一验证：
+
+- `/user_follow/add` 与 `/user_follow/cancel_follow` 都返回 `{"code":0}`；
+- 但写完后复查 `my_follow`，**列表永远不变** —— 无论是已关注 id 做取消、还是未关注 id 做添加；
+- 试过：JSON `podcast_id`、protobuf（field 1 = podcast_id）、`token` header、`?token=会话token` 查询参数，全部空转；
+- 读 `my_follow` 同样这批端口、同样凭证，稳定回 15 位。
+
+**结论**：本机明文隧道只暴露了关注的**读**通道；**写**被旁路到源 App 内部的
+`ProtobufHttpTunnelDelegate` protobuf 服务路由，明文 HTTP 够不到。所以代码里
+`LiveRepo.syncFollow()` 一律以 `my_follow` 复查结果为准 —— 服务端真改了才回 `true`。
+
+**对用户的体验**：点关注 → 本地收藏立刻生效（星标变金）；后台把请求打给真实接口并以
+`my_follow` 复查，回执 toast 显示「已同步到服务端关注」或「已本地收藏（服务端未确认）」。
+真机上若源 App 会话有效、写路由可达，就可能真的落库；本机隧道环境下目前只会是后者。
 
 ### 7.1 凭证矩阵（2026-10-30 20:15 实机实测）
 
