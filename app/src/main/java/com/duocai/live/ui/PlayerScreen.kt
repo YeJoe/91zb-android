@@ -275,9 +275,9 @@ fun PlayerScreen(c: AppContainer, startIndex: Int, onClose: () -> Unit) {
     val inPip = c.inPip
     val pipAvailable = remember(host) { host?.pipSupported() == true }
 
-    // 画中画参数提前设好（进小窗时机在 MainActivity.onUserLeaveHint 手动触发，
-    // 参考源 App 的做法）。
-    LaunchedEffect(host, pipAvailable, c.autoPip) {
+    // 画中画参数提前设好。进小窗只能由用户点顶栏「浮窗」手动触发 ——
+    // 退到桌面不自动缩窗（MainActivity 里 setAutoEnterEnabled(false) 已经把系统的自动进关掉）。
+    LaunchedEffect(host, pipAvailable) {
         if (host != null && pipAvailable) host.syncPip()
     }
 
@@ -383,15 +383,28 @@ fun PlayerScreen(c: AppContainer, startIndex: Int, onClose: () -> Unit) {
                 .fillMaxSize()
                 .graphicsLayer { translationY = pager.offset }
         ) {
-            VideoLayer(holder, ui, videoAlpha, resizeMode)
-            // 封面盖在视频上：视频就绪后淡出，切房瞬间（ready=false）立刻显出来遮住换流的空档
-            CoverPage(room = rooms[index], coverAlpha = 1f - videoAlpha)
+            // 小窗里不淡入：alpha < 1 会给这一层单独开离屏缓冲，模拟器/部分 ROM 上
+            // 这层半透明缓冲会跟 SystemUI 的 PiP 菜单抢合成顺序，看着就像菜单上蒙了层阴影。
+            VideoLayer(holder, ui, if (inPip) 1f else videoAlpha, resizeMode)
+            // 封面盖在视频上：视频就绪后淡出，切房瞬间（ready=false）立刻显出来遮住换流的空档。
+            // 小窗里整块摘掉 —— 尺寸太小（名字挤成一团），而且这层是全屏铺满的，
+            // 少一层全屏绘制，PiP 菜单的按钮就少一层遮挡风险。
+            if (!inPip) {
+                CoverPage(room = rooms[index], coverAlpha = 1f - videoAlpha)
+            }
         }
 
         // 手势层：单指上下滑切间 / 单指点击收显控制栏 / 双击暂停 / 双指缩放。
         // 放在页面之上、控制栏之下 —— 控制栏（按钮、聊天列表）在更上层先拿到事件，
         // 列表能滚就让列表滚，其余情况才由这一层接管竖直拖拽。
-        PlayerGestureLayer(pager, ui, holder, enabled = !inPip)
+        //
+        // 小窗里**整层不挂**：它是一块铺满全屏的 pointerInput。虽然 enabled=false 时
+        // 不消费事件，但 PiP 的输入是 SystemUI 的 pip_input_consumer 统一接的，
+        // 应用侧再压一层全屏手势节点，等于跟系统菜单抢同一次点击。
+        // 小窗里唯一需要点的是底部「还原」，挂在最上层就够。
+        if (!inPip) {
+            PlayerGestureLayer(pager, ui, holder, enabled = true)
+        }
 
         // 聊天面板的临时状态提到外面：面板会被整块摘掉（见下面 chromeUp），
         // 状态放在里面的话每次藏/显背景不透明度都会被重置回 62%
@@ -446,25 +459,36 @@ fun PlayerScreen(c: AppContainer, startIndex: Int, onClose: () -> Unit) {
             }
         }
 
-        // 小窗里系统自带的「展开 / 关闭」控件在部分 ROM 上会失灵（点了完全没反应），
-        // 这里自己画一个还原按钮兜底：点一下直接把任务拉回前台回到全屏。
-        // 放右上角 + 半透明，尽量不挡画面。
+        // 小窗里自己画一个「还原」按钮。
+        //
+        // 位置放在**底部居中**，不是右上角 —— 这是实测踩出来的：
+        // 鼠标悬停到小窗上时，SystemUI 会在小窗顶部铺一条工具条（齿轮 + 关闭 X），
+        // 整块区域变成系统菜单的命中区。原来按钮放右上角，正好压在关闭按钮底下，
+        // 点上去落到系统那层，看着就是「有层阴影挡着，点了没反应」。
+        // 底部这块系统菜单不用，留给我们自己。
         if (inPip) {
-            Box(
+            Row(
                 Modifier
-                    .align(Alignment.TopEnd)
-                    .padding(top = 6.dp, end = 6.dp)
-                    .size(26.dp)
-                    .clip(CircleShape)
-                    .background(Color.Black.copy(alpha = 0.42f))
-                    .clickable { host?.exitPipToFull() },
-                contentAlignment = Alignment.Center
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = 10.dp)
+                    .clip(RoundedCornerShape(50))
+                    .background(Color.Black.copy(alpha = 0.58f))
+                    .clickable { host?.exitPipToFull() }
+                    .padding(horizontal = 12.dp, vertical = 7.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
                 Icon(
                     Icons.Filled.ExitToApp,
                     contentDescription = "还原全屏",
-                    tint = Color.White.copy(alpha = 0.92f),
+                    tint = Color.White,
                     modifier = Modifier.size(15.dp)
+                )
+                Spacer(Modifier.width(5.dp))
+                Text(
+                    "还原",
+                    color = Color.White,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Medium
                 )
             }
         }

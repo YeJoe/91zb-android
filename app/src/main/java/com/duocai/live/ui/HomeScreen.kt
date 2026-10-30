@@ -20,6 +20,7 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.staggeredgrid.LazyVerticalStaggeredGrid
 import androidx.compose.foundation.lazy.staggeredgrid.StaggeredGridCells
 import androidx.compose.foundation.lazy.staggeredgrid.items
+import androidx.compose.foundation.lazy.staggeredgrid.rememberLazyStaggeredGridState
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
@@ -51,6 +52,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -69,6 +71,9 @@ import com.duocai.live.Feed
 import com.duocai.live.Tab
 import com.duocai.live.data.Room
 import com.duocai.live.ui.theme.Gold
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 
 /**
@@ -157,8 +162,15 @@ fun HomeScreen(c: AppContainer) {
     // 颜值主播会莫名搜不到，用户会以为搜索坏了。
     val hits = remember(all, q) { if (q.isEmpty()) emptyList() else searchRooms(all, q) }
 
+    // 探活结果**刻意不放进 remember 的 key**：只有 orderEpoch 变了才重排。
+    // 每探完一批就重排的话，用户滚到一半列表会突然换内容（探活是分批陆续回来的）。
+    // 容器在「用户滑回顶部」时才 +1（见 AppContainer.markPendingOrder）。
+    val epoch = c.orderEpoch
+    val aliveNow = c.aliveIds
+    val deadNow = c.deadIds
+
     val pool: Map<Feed, List<Room>> =
-        remember(all, followIds, activeCity, catMap, q, sortOnline, hits) {
+        remember(all, followIds, activeCity, catMap, q, sortOnline, hits, epoch) {
             if (q.isNotEmpty()) {
                 feeds.associateWith { hits }
             } else {
@@ -180,8 +192,20 @@ fun HomeScreen(c: AppContainer) {
                         a = a.filter { it.cat == cat }
                     }
                     // 推荐页的顺序是算出来的，别被排序按钮盖回去
-                    if (f == Feed.RECOMMEND) a
+                    val base = if (f == Feed.RECOMMEND) a
                     else if (sortOnline) a.sortedByDescending { it.online } else a.sortedBy { it.name }
+
+                    // 最后按探活结果分三档：可播 → 未探 → 探死不播。
+                    // 用 sortedBy（稳定排序）保各档内部原有顺序，房间不会在档内乱跳。
+                    // 只改顺序、不删房间 —— 删房会让列表在手指底下变短。
+                    if (aliveNow.isEmpty() && deadNow.isEmpty()) base
+                    else base.sortedBy { r ->
+                        when {
+                            r.id in aliveNow -> 0
+                            r.id in deadNow -> 2
+                            else -> 1
+                        }
+                    }
                 }
             }
         }
@@ -276,6 +300,7 @@ fun HomeScreen(c: AppContainer) {
             FeedPage(
                 c = c,
                 feed = f,
+                active = f == curFeed,
                 rooms = pool[f].orEmpty(),
                 cat = catMap[f] ?: "全部",
                 onCat = { cats[f] = it },
@@ -307,6 +332,8 @@ fun HomeScreen(c: AppContainer) {
 private fun FeedPage(
     c: AppContainer,
     feed: Feed,
+    /** 是不是「当前这一页」。Pager 会预合成相邻页，探活只该由看得见的那页发起 */
+    active: Boolean,
     rooms: List<Room>,
     cat: String,
     onCat: (String) -> Unit,
@@ -324,6 +351,34 @@ private fun FeedPage(
     onOpen: (List<Room>, Int) -> Unit
 ) {
     val all = c.rooms
+
+    // 瀑布流状态提到外面：要读可见区间上报给探活（见下面的 LaunchedEffect）
+    val gridState = rememberLazyStaggeredGridState()
+
+    /**
+     * 把「现在看得见第几到第几」报给容器，由它决定探哪些房间。
+     *
+     * 几个刻意的选择：
+     *  - 只有 [active] 那页上报 —— 不然四页同时探，等于又变成全量；
+     *  - 停 200ms 再发 —— 快滑时可见区间每帧都变，不去抖会一路滑一路探；
+     *  - [AppContainer.orderEpoch] 变了要重启 —— 排完序可见区间还是那几行，但内容换了。
+     *
+     * 探活请求很轻（只读 3 个字节）且有 20 分钟 TTL（见 AppContainer.ensureProbed），
+     * 滚动来回不会重复打。
+     */
+    LaunchedEffect(active, rooms, c.orderEpoch, c.fgEpoch, c.openIndex) {
+        if (!active) return@LaunchedEffect
+        snapshotFlow {
+            val v = gridState.layoutInfo.visibleItemsInfo
+            if (v.isEmpty()) -1 to -1 else v.minOf { it.index } to v.maxOf { it.index }
+        }
+            .distinctUntilChanged()
+            .collectLatest { (first, last) ->
+                if (first < 0) return@collectLatest
+                delay(200)
+                c.onFeedVisible(rooms, first, last)
+            }
+    }
 
     // 二级 chips：只有「热门」有内容分类（游戏/星秀/女神/颜值/交友/音乐/舞蹈… 共 8 个，
     // 是热门入口独有的口径）；「附近」用城市；「推荐」是算法混合流，「关注」是收藏，都不带分类条。
@@ -399,6 +454,7 @@ private fun FeedPage(
                     val compact = cols >= 3
                     LazyVerticalStaggeredGrid(
                         columns = StaggeredGridCells.Fixed(cols),
+                        state = gridState,
                         contentPadding = PaddingValues(
                             start = if (compact) 9.dp else 12.dp,
                             end = if (compact) 9.dp else 12.dp,
@@ -414,6 +470,9 @@ private fun FeedPage(
                                 room = room,
                                 compact = compact,
                                 followed = room.id in followIds,
+                                // 探活确认拉不到流：压暗沉底，但不从列表里拿掉
+                                // （删了会让列表在手指底下变短，也容易误杀）
+                                dim = room.id in c.deadIds,
                                 onClick = {
                                     val index = rooms.indexOfFirst { it.id == room.id }
                                     onOpen(rooms, index)
@@ -710,6 +769,8 @@ private fun RoomCard(
     /** 紧凑档（3 列）：整张卡片的所有尺寸一起缩，不是一个比例缩放 */
     compact: Boolean,
     followed: Boolean,
+    /** 探活确认「此刻拉不到流」。压暗 + 标「未在播」，但**不移出列表** */
+    dim: Boolean,
     onClick: () -> Unit
 ) {
     // 错落感保留：每格高度按房间号取固定值，滚动时不会因为重组而跳动。
@@ -740,6 +801,8 @@ private fun RoomCard(
             .clip(RoundedCornerShape(corner))
             // 兜底底色：图片没加载出来时先是一片渐变，不会闪白
             .background(avBrush(room.id))
+            // 压暗但不隐藏：alpha 只影响绘制，点击区域、列表位置都不变
+            .alpha(if (dim) 0.38f else 1f)
             .clickable(onClick = onClick)
     ) {
         // 首字永远垫在最底下：图床（CloudFront）在部分网络下整段不可达，
@@ -798,7 +861,8 @@ private fun RoomCard(
                 Box(
                     Modifier
                         .size(if (compact) 4.dp else 5.dp)
-                        .background(Color(0xFFFF5C7A), CircleShape)
+                        // 探活没通的房间，红点转灰：一眼能分辨「没人看」和「没在播」
+                        .background(if (dim) Color(0xFF9E9E9E) else Color(0xFFFF5C7A), CircleShape)
                 )
                 Spacer(Modifier.width(if (compact) 3.dp else 4.dp))
                 Text(
@@ -809,7 +873,15 @@ private fun RoomCard(
                 )
                 // 3 列时横向只剩 ~100dp，人气 + 分类已经把一行占满，
                 // 城市再塞进来就会两个都被省略号吃掉，索性只在宽卡片里显示
-                if (room.cat.isNotBlank()) {
+                if (dim) {
+                    Spacer(Modifier.width(if (compact) 4.dp else 6.dp))
+                    Text(
+                        "未在播",
+                        color = Color.White.copy(alpha = 0.75f),
+                        fontSize = if (compact) 9.5.sp else 11.sp,
+                        maxLines = 1
+                    )
+                } else if (room.cat.isNotBlank()) {
                     Spacer(Modifier.width(if (compact) 4.dp else 6.dp))
                     Text(
                         room.cat,

@@ -78,15 +78,32 @@ class Tunnel(private val context: Context, private val prefs: Prefs) {
     var imPort by mutableStateOf(0)
         private set
 
-    /** 问一次 `kiwi_im` 的端口。失败不影响隧道状态，只让弹幕单独降级。 */
+    /**
+     * 所有能问出端口的组：`组名 -> 本地端口`。
+     *
+     * 为什么不只留 [imPort]：组名是猜的（`kiwi_im` 来自 config 里那个伪域名），
+     * 万一服务端换了组名或者这个组这次没起来，只记一个 `imPort=0` 就等于把弹幕判死。
+     * 把整张表留着，弹幕那层可以对每个端口验一遍 `/websock/join`（判据见
+     * [com.duocai.live.data.LiveRepo.probeWsVhosts]），验通的就是 IM vhost，
+     * 完全不用相信组名。顺序保持 [GROUPS] 的先后，`kiwi_im` 在靠前的位置。
+     */
+    var groupPorts: Map<String, Int> = emptyMap()
+        private set
+
+    /** 问一遍各组端口。失败不影响隧道状态，只让弹幕单独降级。 */
     private fun resolveIm() {
         imPort = 0
         if (!KiwiSdk.abiSupported()) return
+        val m = LinkedHashMap<String, Int>()
         runCatching {
-            if (KiwiSdk.serverToLocal(context, "kiwi_im") == 0 && KiwiSdk.port > 0) {
-                imPort = KiwiSdk.port
+            for (g in GROUPS) {
+                if (KiwiSdk.serverToLocal(context, g) == 0 && KiwiSdk.port > 0) {
+                    m[g] = KiwiSdk.port
+                }
             }
         }
+        groupPorts = m
+        imPort = m["kiwi_im"] ?: 0
     }
 
     /** 最近一次启动的探测明细（每个 group 的返回码），失败时贴给设置页看 */

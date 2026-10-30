@@ -141,14 +141,6 @@ class Prefs(context: Context) {
         get() = sp.getBoolean(K_AUTOPLAY, true)
         set(v) = sp.edit().putBoolean(K_AUTOPLAY, v).apply()
 
-    /**
-     * 播放页按 Home 时自动缩进画中画。默认开 —— 这是视频类 App 的通行行为；
-     * 嫌它"动不动就浮窗"可以在设置里关掉，此时只能点顶栏「浮窗」手动进。
-     */
-    var autoPip: Boolean
-        get() = sp.getBoolean(K_AUTO_PIP, true)
-        set(v) = sp.edit().putBoolean(K_AUTO_PIP, v).apply()
-
     // ---- 弹幕 ----
     var dmWs: String
         get() = sp.getString(K_DM_WS, "") ?: ""
@@ -238,7 +230,6 @@ class Prefs(context: Context) {
         const val K_SCALE_MODE = "scale_mode"
         const val K_BUFFER_MS = "buffer_ms"
         const val K_AUTOPLAY = "autoplay"
-        const val K_AUTO_PIP = "auto_pip"
         const val K_DM_WS = "dm_ws"
         const val K_DM_TOKEN = "dm_token"
         const val K_CHAT_ONLY = "chat_only"

@@ -43,7 +43,18 @@ data class Room(
      *
      * 空串 = 没有图，UI 退回渐变卡 + 名字首字。
      */
-    val avatar: String = ""
+    val avatar: String = "",
+
+    /**
+     * 服务端 `live_in`：此刻是否在推流。
+     *
+     * 这是接口里**唯一会翻转**的状态位（`on_air` 常年为 1、`player_count` 下播不清零）。
+     * 冷启动实测源 App 本地表 2230 间里 662 间是 0 —— 免费的第一道筛，见 LiveRepo.fetch。
+     *
+     * 本地缓存里没存这个字段，所以从缓存读出来一律按 true 处理：
+     * 那一批会照常出现在列表里，再由可见窗口的探活把它们压暗沉底。
+     */
+    val liveIn: Boolean = true
 ) {
     /**
      * 拉流地址候选列表（按优先级）。

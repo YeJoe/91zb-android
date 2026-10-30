@@ -272,9 +272,10 @@ fun SettingsScreen(c: AppContainer) {
                     if (c.meta.fromCache) " · 本地缓存" else "" +
                     if (c.error != null) " · 上次错误：${c.error}" else ""
             )
-            // 探活结果：判断「列表里全是死房」到底是房间不对还是域名/网络不对
+            // 探活结果：判断「列表里全是死房」到底是房间不对还是域名/网络不对。
+            // 只探可见窗口（结果缓存 20 分钟），所以这里的分母是「本轮探了几间」，不是全部房间。
             if (c.probeInfo.isNotBlank()) {
-                InfoLine("在播探活：${c.probeInfo}")
+                InfoLine("在播探活（本屏）：${c.probeInfo}")
             }
             Spacer(Modifier.height(8.dp))
             Button(
@@ -525,12 +526,8 @@ fun SettingsScreen(c: AppContainer) {
                 checked = c.autoPlay,
                 onChange = { c.autoPlay = it }
             )
-            SwitchLine(
-                label = "切后台自动浮窗",
-                desc = "播放中按 Home 缩成小窗继续看；关掉就只能点播放页顶栏的「浮窗」",
-                checked = c.autoPip,
-                onChange = { c.autoPip = it }
-            )
+            Spacer(Modifier.height(4.dp))
+            InfoLine("画中画只在播放页点顶栏「浮窗」时进入，退到桌面不会自动缩窗")
         }
 
         // ---------- 弹幕 ----------

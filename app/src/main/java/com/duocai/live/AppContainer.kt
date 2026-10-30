@@ -73,22 +73,22 @@ class AppContainer(context: Context) {
      * （升级发生在网关层，与 Host 无关），但随后的 `/websock/join` 会被 nginx 404 ——
      * 表现就是「连上了却一条弹幕都收不到」。
      *
-     * 所以候选按可靠度排：
-     *  1. [com.duocai.live.tunnel.Tunnel.imPort] —— 内置隧道问得到 `kiwi_im` 时最准；
-     *  2. [com.duocai.live.data.LiveRepo.probeWsVhosts] —— 明文 POST
-     *     `/websock/history_msg` 回 405 的端口。内置隧道问不出来时（源 App 模式、
-     *     或 `kiwi_im` 组没建立）这是**唯一**可靠的路子；
-     *  3. `tunnel.port` / `live.lastPort` —— 列表那个组，只作最后兜底。
+     * 端口每次冷启动都会重排（2026-10-30 实测：11689 → 34199 → 37679），
+     * 所以候选表必须每轮重连都重新算，不能把端口写死。
      */
     val danmaku = DanmakuStore(prefs) {
         // 候选按「越可能是 IM vhost 越靠前」排：
-        //   1. tunnel.imPort —— 内置隧道问得到 kiwi_im 时最准；
-        //   2. live.probeWsVhosts() —— 明文 POST /websock/history_msg 回 405 的端口。
-        //      内置隧道问不出来（源 App 模式、或 kiwi_im 组没建立）时，这是唯一可靠的路子：
-        //      拿列表那个端口去 join 一定 404，因为 /websock/… 只挂在业务 nginx 上；
-        //   3. tunnel.port / live.lastPort —— 列表用的那个组，只作最后兜底。
+        //   1. tunnel.imPort —— SDK 明确指出的 kiwi_im，最快路径；
+        //   2. tunnel.groupPorts —— SDK 问到的**全部**组端口，逐个验 /websock（405 判据）。
+        //      组名是猜的，万一服务端换了名字或这个组这次没起来，靠这条兜底；
+        //   3. live.probeWsVhosts() —— 扫本机监听端口。内置隧道没起、走源 App 模式时用；
+        //   4. tunnel.port / live.lastPort —— 列表用的那个组，一定会 404，只作最后兜底。
+        //
+        // 2026-10-30 实测：真 IM 端口（源 App 的 37679）上 `/websock/join` 明文 POST 回 405，
+        // 别的 vhost 回 403，凭这个能把端口认准；认准之后 20 秒收到 130 条真实推送。
         buildList {
             if (tunnel.imPort > 0) add(tunnel.imPort)
+            addAll(live.verifyWsPorts(tunnel.groupPorts.values))
             addAll(live.probeWsVhosts())
             if (tunnel.port > 0) add(tunnel.port)
             if (live.lastPort > 0) add(live.lastPort)
@@ -204,15 +204,6 @@ class AppContainer(context: Context) {
         set(v) {
             autoPlayState = v
             prefs.autoPlay = v
-        }
-
-    private var autoPipState by mutableStateOf(prefs.autoPip)
-    /** 播放页按 Home 自动进画中画 */
-    var autoPip: Boolean
-        get() = autoPipState
-        set(v) {
-            autoPipState = v
-            prefs.autoPip = v
         }
 
     private var refreshSecState by mutableStateOf(prefs.refreshSec)
@@ -374,6 +365,10 @@ class AppContainer(context: Context) {
             loading = true
             error = null
 
+            // 手动刷新 = 用户想看「此刻」最新的状态，探活 TTL 得让路。
+            // 自动轮询（force=false）不清，否则每 20 秒重探一遍等于回到全量探活。
+            if (force) clearProbeState()
+
             // 内置隧道就绪时优先用它给的端口，否则 LiveRepo 还是自己去扫监听端口
             live.preferPort = tunnel.port
 
@@ -442,70 +437,183 @@ class AppContainer(context: Context) {
             serverFollowIds = live.followIds
             serverFollowNames = live.followNames
         }
-        probeAlive()
+        // 这里**不再**触发探活：探活改成由列表按「可见窗口」驱动（见 [onFeedVisible]）。
+        // 刷了几轮之后探活表里会攒下大量已经不在列表里的房间，顺手清一次，
+        // 免得进程长活时这张表越堆越大（真的很大才清，平时不影响 TTL 判定的连续性）。
+        if (probeAt.size > rooms.size * 3 + 64) {
+            val keepIds = rooms.mapTo(HashSet()) { it.id }
+            probeAt.keys.retainAll(keepIds)
+            probeResult.keys.retainAll(keepIds)
+            aliveIds = probeResult.filterValues { it }.keys.toSet()
+            deadIds = probeResult.filterValues { !it }.keys.toSet()
+        }
     }
 
-    /** 探活进行中的标志，避免连点刷新叠出好几趟探测 */
-    private var probing = false
+    // ======================= 在播探活（可见窗口 + 20 分钟 TTL） =======================
+    //
+    // 判据：`http://<域名>/live/<房间号>.flv` 能不能攒出 `FLV` 三个字节（见 LiveRepo 的 flvAlive）。
+    // 接口里的 on_air 常年为 1、player_count 下播后不清零，只有这一条靠得住。
+    //
+    // 为什么不再全量探：id 池 1972 间，24 路并发跑完要发近 2000 条 HTTP、射频连打 40 秒，
+    // 每小时最多 12 轮 —— 体感就是「进列表先卡一下」外加掉电快。而卡片是滚着看的，
+    // 没滚到的房间探了也没人看。所以：
+    //   · 只探「可见区间 + 往后 40 张」（[onFeedVisible] 由列表上报）；
+    //   · 同一间房 20 分钟内不重复探（[PROBE_TTL_MS]），滚动来回不重发请求；
+    //   · 只在前台、且没进播放页时探（播放页有自己的拉流和弹幕 WS）。
+    //
+    // 结果**不删房间**，只影响「排序 + 压暗」。删房会让列表在手指底下变短，
+    // 也是上一版「刷新后 0 房间」的成因。
 
-    /** 上次探活的时间。5 分钟内不重复探 —— 同一批房间没必要反复拉流 */
-    private var probedAt = 0L
+    /** 房间 id → 是否可播，只覆盖探过的房间 */
+    private val probeResult = HashMap<Long, Boolean>()
+
+    /** 房间 id → 上次探测时刻（毫秒） */
+    private val probeAt = HashMap<Long, Long>()
+
+    /** 正在探的房间，防止同一间被并发重复探 */
+    private val probeInFlight = HashSet<Long>()
+
+    /** 已确认「此刻拉得到流」的房间 —— 列表置顶用 */
+    var aliveIds by mutableStateOf<Set<Long>>(emptySet())
+        private set
+
+    /** 已确认「拉不到流」的房间 —— 列表沉底 + 压暗，但**不删除** */
+    var deadIds by mutableStateOf<Set<Long>>(emptySet())
+        private set
+
+    /**
+     * 排序版本号。
+     *
+     * 探活结果是陆续到的，如果每批都立刻重排，用户滚到一半列表会突然换内容。
+     * 所以只有「用户停在列表最顶上」时才 +1（见 [markPendingOrder]）：
+     * 滚动中只标脏，等滑回顶部再一次性生效。
+     */
+    var orderEpoch by mutableStateOf(0)
+        private set
+
+    private var pendingOrder = false
+    private var atTop = true
+
+    private var foregroundState by mutableStateOf(true)
+
+    /** App 是否在前台。MainActivity 的 onResume / onPause 维护 */
+    var foreground: Boolean
+        get() = foregroundState
+        set(v) {
+            if (foregroundState == v) return
+            foregroundState = v
+            // 回到前台要补探一轮：列表布局没变，snapshotFlow 不会自己重发
+            if (v) fgEpoch++
+        }
+
+    /** 前后台切换次数，列表拿它当「重新上报可见区间」的触发器 */
+    var fgEpoch by mutableStateOf(0)
+        private set
 
     /**
      * 最近一次探活的结果，设置页显示用。
      *
      * 这一行是排查「列表全是死房」的第一现场：
-     * `可播 132/487` 说明筛得动；`可播 0/487` 说明域名或网络有问题，房间本身没问题。
+     * `本轮 22/60` 说明筛得动；`本轮 0/60` 说明域名或网络有问题，房间本身没问题。
      */
     var probeInfo by mutableStateOf("")
         private set
 
     /**
-     * 后台探活：只留下「此刻真的拉得到流」的房间。
+     * 列表上报「我现在能看到第 [first] 到第 [last] 张」。
      *
-     * 为什么必须这么做：接口给的 `on_air` / `live_in` / `player_count` 全是历史残留
-     * （实测 on_air 341/342 都是 1，下播后人数也不清零），靠它们筛不出真实的在播状态，
-     * 列表里于是混着大量点进去就报错的房。唯一靠谱的判据就是拉一次流看有没有 `FLV` 头。
-     *
-     * 探完只改内存里的 `rooms`，**不写缓存**：探测受网络影响，脏数据不该落到磁盘。
-     *
-     * 三道安全阀，任一不过就放弃这轮剔除（宁可多显示，也不能把列表清空）：
-     *  1. 房间太少（< 8）—— 多半是刚启动或数据还没到齐
-     *  2. 一个都没探通 —— 说明域名/网络/CDN 有问题，不是房间的问题
-     *  3. 探通比例 < 12% —— 大概率是瞬时抖动，剔除会误杀
+     * 这是唯一的探活入口。顺手把「已经滑回顶部」这件事告诉排序逻辑 ——
+     * 攒下的探活结果在这里一次性生效，滚动过程中不动顺序。
      */
-    private fun probeAlive() {
-        if (probing) return
+    fun onFeedVisible(list: List<Room>, first: Int, last: Int) {
+        if (list.isEmpty() || first < 0) return
+        atTop = first <= 1
+        if (pendingOrder && atTop) {
+            pendingOrder = false
+            orderEpoch++
+        }
+        val from = first.coerceIn(0, list.lastIndex)
+        val to = (last + PROBE_PREFETCH).coerceIn(from, list.lastIndex)
+        ensureProbed(list.subList(from, to + 1))
+    }
+
+    /** 探一批。内部再按 TTL 和批量上限裁一次，调用方传整段窗口也不会失控 */
+    private fun ensureProbed(window: List<Room>) {
+        if (window.isEmpty()) return
+        if (!foreground || inPip || openIndex >= 0) return
         val domain = prefs.rtmpDomain
         if (domain.isBlank()) return
-        val now = System.currentTimeMillis()
-        if (now - probedAt < 300_000L) return
 
-        probing = true
+        val now = System.currentTimeMillis()
+        val todo = ArrayList<Room>(window.size)
+        for (r in window) {
+            if (r.id in probeInFlight) continue
+            val at = probeAt[r.id]
+            if (at != null && now - at < PROBE_TTL_MS) continue
+            todo.add(r)
+            if (todo.size >= PROBE_MAX_BATCH) break
+        }
+        if (todo.isEmpty()) return
+
+        val ids = todo.map { it.id }
+        probeInFlight.addAll(ids)
         scope.launch {
             try {
-                val snapshot = rooms
-                if (snapshot.size < 8) return@launch
-                probeInfo = "探活中… ${snapshot.size} 间"
-                val alive = live.probePlayable(snapshot, domain)
-                probedAt = System.currentTimeMillis()
-                probeInfo = "可播 ${alive.size}/${snapshot.size}"
-                if (alive.isEmpty()) return@launch
-                val floor = (snapshot.size * 0.12f).toInt().coerceAtLeast(1)
-                if (alive.size < floor) {
-                    probeInfo = "可播 ${alive.size}/${snapshot.size}（比例过低，本次不剔除）"
+                val alive = live.probePlayable(todo, domain)
+                // 一间都没通 → 多半是网络或流域名的问题。这时候把整屏标成「不在播」
+                // 既误导用户、也误导排查，直接丢弃这轮结果。
+                if (alive.isEmpty()) {
+                    probeInfo = "本轮 0/${todo.size} 可播（网络或流域名异常，结果已丢弃）"
                     return@launch
                 }
-                val keep = rooms.filter { it.id in alive }
-                if (keep.isNotEmpty() && keep.size < rooms.size) rooms = keep
+                val t = System.currentTimeMillis()
+                for (r in todo) {
+                    probeResult[r.id] = r.id in alive
+                    probeAt[r.id] = t
+                }
+                aliveIds = probeResult.filterValues { it }.keys.toSet()
+                deadIds = probeResult.filterValues { !it }.keys.toSet()
+                probeInfo = "本轮 ${alive.size}/${todo.size} · 累计 ${aliveIds.size}/${probeResult.size}"
+                markPendingOrder()
             } finally {
-                probing = false
+                probeInFlight.removeAll(ids.toSet())
             }
         }
+    }
+
+    /** 探完了：人还在顶部就立刻生效，否则等滑回顶部（见 [orderEpoch]） */
+    private fun markPendingOrder() {
+        if (atTop) {
+            pendingOrder = false
+            orderEpoch++
+        } else {
+            pendingOrder = true
+        }
+    }
+
+    /** 清空探活缓存。手动刷新时调用 —— 用户点刷新就是想看「此刻」最新的状态 */
+    private fun clearProbeState() {
+        probeResult.clear()
+        probeAt.clear()
+        probeInFlight.clear()
+        aliveIds = emptySet()
+        deadIds = emptySet()
+        pendingOrder = false
+        probeInfo = ""
+        orderEpoch++
     }
 
     private companion object {
         /** 首屏只拉这么多房间：2 片 × 250，约 0.6~1 秒出画面 */
         const val QUICK_ROOMS = 500
+
+        /** 同一间房的探活结果缓存 20 分钟。滚动来回不会重复发请求 */
+        const val PROBE_TTL_MS = 20 * 60 * 1000L
+
+        /** 可见区间之后再多预取多少张，滑一点点不用等下一轮 */
+        const val PROBE_PREFETCH = 40
+
+        /** 单批探活上限（可见 + 预取）。防止误传整池导致又变成全量探活 */
+        const val PROBE_MAX_BATCH = 160
     }
 }

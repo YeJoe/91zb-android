@@ -48,6 +48,15 @@ class LiveDanmaku(private val prefs: Prefs) {
     @Volatile var lastError: String = ""
         private set
 
+    /**
+     * 上次真正 join 成功的端口，0 = 还没成功过。
+     *
+     * 端口在一次 App 冷启动内是固定的（隧道 listener 由 SDK 在启动时 bind），
+     * 所以认准一次就够用；重连时直接拿它，不必再逐个试。
+     * 全部候选都失败时清 0 —— 那种情况多半是 App 重启过、端口表整体换了一批。
+     */
+    @Volatile private var goodPort: Int = 0
+
     private val rnd = SecureRandom()
 
     /** (nick|text) -> 上次出现的时间戳，用来压掉服务端重复投递 */
@@ -104,8 +113,16 @@ class LiveDanmaku(private val prefs: Prefs) {
         onMessage: (DmMessage) -> Unit,
         onState: (String) -> Unit
     ) {
+        // 上次真正进房成功的端口排最前。
+        // 端口在一轮 App 生命周期里是稳定的（每次冷启动才重排），而重连可能很频繁
+        // （切后台、Wi-Fi 抖动），每次都从候选表头一路试过去纯属浪费。
+        val ordered = if (goodPort > 0 && goodPort in ports) {
+            listOf(goodPort) + ports.filter { it != goodPort }
+        } else {
+            ports
+        }
         var lastWhy = "没有可用端口"
-        for (port in ports) {
+        for (port in ordered) {
             try {
                 pumpPort(port, roomId, menuId, onMessage, onState)
                 return                       // 正常读完了（服务端关连接）
@@ -117,7 +134,9 @@ class LiveDanmaku(private val prefs: Prefs) {
                 lastWhy = ":$port ${e.message ?: e.javaClass.simpleName}"
             }
         }
-        throw IllegalStateException("$lastWhy（试了 ${ports.size} 个端口）")
+        // 全军覆没：端口表大概整体换了（App 重启 / 隧道重连），下次重新认
+        goodPort = 0
+        throw IllegalStateException("$lastWhy（试了 ${ordered.size} 个端口）")
     }
 
     private suspend fun pumpPort(
@@ -149,6 +168,10 @@ class LiveDanmaku(private val prefs: Prefs) {
                 .put("cp_type", 3), 7001)
 
             var entered = false
+            // 连续空转次数：进房后 30 秒一个帧都没有，就当作连接已死。
+            // 不能只靠 TCP：隧道是长连接代理，上游断了它可能既不 FIN 也不 RST，
+            // 表现就是"状态显示已进房、弹幕永远不动" —— 这正是之前最难查的那种。
+            var idle = 0
             val inp = socket.getInputStream()
             while (currentCoroutineContext().isActive) {
                 val frame = try {
@@ -156,8 +179,13 @@ class LiveDanmaku(private val prefs: Prefs) {
                 } catch (e: SocketTimeoutException) {
                     // 8 秒还没等到 join 的应答 → 这个端口不对，别再干等
                     if (!entered) throw BadVhost("join 无应答")
+                    idle++
+                    if (idle >= 3) throw IllegalStateException("90 秒无数据，重连")
+                    // 主动 ping 一次：服务端会回 pong，顺带把死连接探出来
+                    runCatching { writeFrame(out, 0x9, ByteArray(0)) }
                     continue
                 } ?: break
+                idle = 0
 
                 when (frame.opcode) {
                     0x1, 0x2 -> {
@@ -189,9 +217,12 @@ class LiveDanmaku(private val prefs: Prefs) {
                                         )
                                     }
                                     entered = true
+                                    goodPort = port
                                     // 进房判定完就放宽读超时：房间安静时不该被 8 秒截断
                                     runCatching { socket.soTimeout = 30_000 }
-                                    onState("已进房")
+                                    // 带上端口：设置页一眼能看出这轮是靠哪个 vhost 进房的，
+                                    // 排查「又 404 了」时不用再猜
+                                    onState("已进房 :$port")
                                 }
                             }
                         }

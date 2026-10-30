@@ -36,9 +36,11 @@ import org.json.JSONObject
  * 1. **id 池**：`assets/room_ids.txt` 一份种子（从源 App 的本地表导出的 1972 个房间号），
  *    跑起来后落在 `filesDir/room_ids.txt`，之后只增不减。
  * 2. **刷新**：把 id 池按 250 个一批丢给 `/room/get_list_by_ids`，拿回真实的
- *    `on_air / player_count / menu_id / city_show`，只留 `on_air=1` 的真人房。
- *    注意 `on_air` / `player_count` 都不可信（前者常年为 1，后者下播后不清零），
- *    所以「此刻真的在播」交给 [probePlayable] 用拉流探活判定，不在这里筛。
+ *    `on_air / live_in / player_count / menu_id / city_show`，只留 `on_air=1` 的真人房，
+ *    再用 `live_in` 软筛一道（筛完一个不剩就整批放行）。`on_air` 常年为 1、
+ *    `player_count` 下播后不清零，都不可信；`live_in` 是唯一会翻转的那一个，当第一道筛用（免费）。
+ *    剩下的「此刻真的拉得到流吗」交给 [probePlayable]，但它**只探可见窗口**、
+ *    结果缓存 20 分钟（见 AppContainer.ensureProbed），不再全量探。
  *    这就是"手动刷新拿到最新直播间"——人数、在播状态全是服务端实时值。
  * 3. **端口自动探测**：隧道端口每次源 App 重启都会变，所以不能写死；
  *    拿 `/room/get_list_by_ids` 打一遍监听端口，认 `code` 字段的那个 vhost。
@@ -109,46 +111,113 @@ class LiveRepo(private val context: Context, private val prefs: Prefs) {
     /**
      * 找出真的挂 `/websock` 的端口。
      *
-     * **判据换过两次，记一下为什么**：
-     *  1. 最早只看「WS 握手能不能 101」——错的。升级发生在隧道网关层，跟 vhost 无关，
+     * **判据改过三次，前两次都错在哪，记清楚免得再走回头路**：
+     *  1. 只看「WS 握手能不能 101」—— 错。升级发生在隧道网关层，跟 vhost 无关，
      *     随便一个端口都能 101，但随后的 `/websock/join` 会被那个 nginx 404。
-     *  2. 后来照 `tools/live_ws.py` 用 `/websock/history_msg` 回 405 粗筛 —— 在 PC 上有效，
-     *     搬到手机上实测筛不出（真机上报「试了 3 个端口都 404」，说明一条都没命中）。
-     *  3. 现在直接拿**最终要用的那个请求**去探：明文 POST `/websock/join`，
-     *     只要响应是 JSON（而不是 nginx 的 404 HTML），就说明这个 vhost 认识 `/websock`。
-     *     就算 token 失效回 `{"code":-10000}` 也算命中 —— vhost 对了，问题在凭证，
-     *     这正是我们需要区分的信息。真正进房仍然由 [com.duocai.live.data.LiveDanmaku] 开 WS 做。
+     *  2. 改成「明文 POST 回 200..299 且 body 是 JSON」—— 也错，而且是致命的：
+     *     实测真端口回的是 **405**（业务 nginx 只认 WS 升级，明文 POST 在 method 层就被拒），
+     *     这句 `responseCode !in 200..299` 把真端口直接判死，命中列表**永远为空**。
+     *     于是候选只剩 `tunnel.port`（/room 组），表现就是「试了 N 个端口全 404」。
+     *  3. 现在只看 **405**。2026-10-30 实测区分度干净：
+     *
+     *     | 端口            | 明文 POST /websock/join      | 判定 |
+     *     |-----------------|------------------------------|------|
+     *     | 37679（真 kiwi_im）| 405 + `{"code":-10000,...}` | 命中 |
+     *     | 44775 / 14369   | 403 + `{"msg":"设备登陆中"}`  | 排除 |
+     *     | 37783           | 403 + `{"msg":"用户不存在..."}`| 排除 |
+     *
+     *     403 那几个也是 JSON，看着很像命中，但那是别的业务 vhost 的鉴权层回的，
+     *     路由根本不认 `/websock`。所以不能验 body，只验状态码。
      *
      * 明文探测 1.5 秒封顶、不需要 token / JWE，比逐个开 WS 便宜得多。
-     * 实测可能有**多个**端口命中（不同业务 vhost），所以返回列表，由 LiveDanmaku 逐个 join。
+     * 真正进房仍然由 [com.duocai.live.data.LiveDanmaku] 开 WS 做。
      */
+    @Synchronized
     fun probeWsVhosts(): List<Int> {
         val now = System.currentTimeMillis()
-        if (wsVhosts.isNotEmpty() && now - wsVhostsAt < 60_000L) return wsVhosts
-        // 隧道 listener 都落在临时端口段，从大往小扫更容易先命中
-        val hit = listenPorts().sortedDescending().take(MAX_PROBE_PORTS).filter { wsJoinReachable(it) }
-        wsVhosts = hit
+        if (now - wsVhostsAt < 60_000L) return wsVhosts
         wsVhostsAt = now
-        return hit
+        // 隧道 listener 都落在临时端口段，从大往小扫更容易先命中
+        // 走并发版：串行扫 24 个端口要 29 秒，重连根本等不起
+        verifyWsPorts(listenPorts().sortedDescending().take(MAX_PROBE_PORTS))
+        return wsVhosts
     }
 
-    /** 明文 POST 一次 `/websock/join`：回 JSON 就说明这个端口挂着 `/websock` */
+    /** 端口 -> 上次验它的时间。验失败也要记，否则每轮重连都把失败端口再试一遍 */
+    private val wsTriedAt = HashMap<Int, Long>()
+
+    /**
+     * 对指定端口做同一套判据，返回其中真正挂 `/websock` 的那些。
+     *
+     * 存在的理由：`/proc/net/tcp` 在新版 Android 上未必读得到**别的进程**的 listener，
+     * 但内置隧道问出来的端口一定是我们自己进程的，直接验就行，不用绕路。
+     *
+     * 并发验（8 路）：14 个组串行各 1.2 秒要 17 秒，重连时根本等不起。
+     * 60 秒内验过的端口（无论成没成）都不再重验，所以一轮重连只花新端口的钱。
+     */
+    @Synchronized
+    fun verifyWsPorts(candidates: Collection<Int>): List<Int> {
+        val now = System.currentTimeMillis()
+        val list = candidates.filter { it > 0 }.distinct()
+        if (list.isEmpty()) return emptyList()
+        val cached = list.filter { it in wsVhosts }
+        val fresh = list.filter { now - (wsTriedAt[it] ?: 0L) > 60_000L }
+        if (fresh.isEmpty()) return cached
+
+        val pool = java.util.concurrent.Executors.newFixedThreadPool(minOf(8, fresh.size))
+        val hits = try {
+            fresh.map { p ->
+                pool.submit(java.util.concurrent.Callable { p to wsJoinReachable(p) })
+            }.mapNotNull { f ->
+                runCatching { f.get() }.getOrNull()
+            }.filter { it.second }.map { it.first }
+        } catch (e: Exception) {
+            emptyList()
+        } finally {
+            pool.shutdown()
+        }
+        fresh.forEach { wsTriedAt[it] = now }
+        if (hits.isNotEmpty()) {
+            wsVhosts = (hits + cached).distinct()
+        }
+        // 端口表整体换了的时候顺便清一下，别让这张表无限长
+        if (wsTriedAt.size > 128) {
+            wsTriedAt.entries.removeAll { now - it.value > 300_000L }
+        }
+        return (hits + cached).distinct()
+    }
+
+    /**
+     * 明文 POST 一次 `/websock/join`：**405 是主判据**。
+     *
+     * 405 = "这个路由存在，但只接受 WS 升级" —— 正是 `/websock/…` 在业务 nginx 上的指纹。
+     * 403 的端口（`设备登陆中` / `用户不存在或超时`）是别的 vhost 的鉴权层，路由不认
+     * `/websock`，必须排除。
+     *
+     * 保险丝：万一哪天网关把"方法不允许"改成 403，只要 body 里是 token 报错
+     * （`bad token, please login!`）也算命中 —— 那句只可能来自 `/websock` 的鉴权。
+     */
     private fun wsJoinReachable(port: Int): Boolean = runCatching {
         val conn = (URL("http://127.0.0.1:$port/websock/join").openConnection() as HttpURLConnection)
         try {
             conn.requestMethod = "POST"
-            conn.connectTimeout = 1500
-            conn.readTimeout = 1500
+            conn.connectTimeout = 1200
+            conn.readTimeout = 1200
             conn.doOutput = true
             conn.setRequestProperty("content-type", "application/json")
             conn.setRequestProperty("user-agent", "Dart/3.10 (dart:io)")
             conn.outputStream.use {
                 it.write("""{"room_id":1,"menu_id":1,"cp_type":3}""".toByteArray(Charsets.UTF_8))
             }
-            if (conn.responseCode !in 200..299) return@runCatching false
-            val text = conn.inputStream.bufferedReader().use { it.readText() }.trimStart()
-            // nginx 的 404 是 HTML；业务网关一定回 JSON（code=0 或 code=-10000 都算）
-            text.startsWith("{") || text.startsWith("[")
+            val code = conn.responseCode
+            if (code == 405) return@runCatching true
+            if (code == 403) {
+                val body = runCatching {
+                    conn.errorStream?.bufferedReader()?.use { it.readText() }
+                }.getOrNull().orEmpty()
+                return@runCatching body.contains("bad token")
+            }
+            false
         } finally {
             conn.disconnect()
         }
@@ -333,10 +402,19 @@ class LiveRepo(private val context: Context, private val prefs: Prefs) {
 
             if (rooms.isEmpty()) throw IOException("接口通了，但 1 个在播房间都没有（token 可能属于被封的号）")
 
+            // 第一道筛（免费）：`live_in==0` 是服务端明确说「此刻没推流」，实测约占三分之一。
+            // 挡在这里，后面的拉流探活就少发三分之一的请求。
+            //
+            // 但这是**软筛**：筛完一个不剩（比如凌晨全场都没开播、或者服务端把字段改回 0）
+            // 就整批放行 —— 宁可多显示几张能点进去试的卡片，也不能给一张空列表。
+            // 这是上一版「刷新后 0 房间」的直接教训。
+            val onAir = rooms.filter { it.liveIn }
+            val kept = if (onAir.size >= MIN_KEPT_ROOMS) onAir else rooms
+
             // 这里**不再**用 player_count 过滤。实测它是残留值：房间下播后人数不清零，
             // 按它筛既挡不住已下播的房、又可能把列表筛空。真正的判据只有「能不能拉到流」，
-            // 由 [probePlayable] 在后台探活（见 AppContainer.applyData）。
-            val sorted = rooms.sortedWith(
+            // 由 [probePlayable] 探可见窗口（见 AppContainer.ensureProbed）。
+            val sorted = kept.sortedWith(
                 compareByDescending<Room> { it.online }.thenByDescending { it.id }
             )
             val data = SourceData(
@@ -420,8 +498,11 @@ class LiveRepo(private val context: Context, private val prefs: Prefs) {
      * 靠它们筛出来的列表里有大量点进去就报错的房 —— 用户看到的就是「90% 不能播放」。
      *
      * 做法：带 `Range: bytes=0-15` 只读响应头的十几个字节，攒够 `F L V` 三个字母就算通。
-     * 下播的房间通常回 404、或者 200 但立刻 EOF，都拿不到头，判为不可播。
-     * 24 路并发、单条 2.5 秒封顶 —— 几百个房间几秒钟就探完，流量可以忽略。
+     * 下播的房间一律回 `403`（实测 NgxFence 挡的，且是**房间级**：换子域名、绕代理、
+     * 设备内手打 HTTP 结果都一样），拿不到头就判为不可播。
+     *
+     * **调用方一次只传可见窗口**（AppContainer.ensureProbed 会限批），别把整池 1972 间
+     * 丢进来 —— 24 路并发跑全量要 40 秒满功率射频，是上一版「进列表先卡一下」的元凶。
      *
      * @return 可播房间的 id 集合（探测本身出错时返回空集，调用方要有安全阀）
      */
@@ -475,6 +556,12 @@ class LiveRepo(private val context: Context, private val prefs: Prefs) {
         val id = r.optLong("id", 0L)
         if (id <= 0L) return null
         if (r.optInt("on_air", 0) != 1) return null
+
+        // `live_in` = 服务端「此刻是否在推流」，是唯一会翻转的状态位。
+        // 这里只记录、**不丢房间** —— 丢不丢由 fetch 决定（见那里的软筛：筛完一个不剩就不筛）。
+        // 字段缺失按 1 放行：不能把「字段缺失」当「下播」，否则服务端改一次字段名列表就空了。
+        val liveIn = r.optInt("live_in", 1) != 0
+
         val menuId = r.optInt("menu_id", 0)
         val name = r.optString("name").ifBlank { "房间 $id" }
 
@@ -504,7 +591,8 @@ class LiveRepo(private val context: Context, private val prefs: Prefs) {
                             .ifBlank { r.optString("attachment_db_url") }
                     )
                 }
-            )
+            ),
+            liveIn = liveIn
         )
     }
 
@@ -575,6 +663,14 @@ class LiveRepo(private val context: Context, private val prefs: Prefs) {
          * 本机 LISTEN 端口通常只有十几个，多扫一些代价也就是几十毫秒。
          */
         private const val MAX_PROBE_PORTS = 64
+
+        /**
+         * `live_in` 软筛的下限。
+         *
+         * 筛完剩不到这么多，说明要么此刻全场确实没人开播、要么服务端字段口径变了，
+         * 这时候整批放行（让用户还能点进去试），不能给一张空列表。
+         */
+        const val MIN_KEPT_ROOMS = 8
 
         /**
          * `lobby_menu` 表里的分类（实测拉取，2026-10-29）。

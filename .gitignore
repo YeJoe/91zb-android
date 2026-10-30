@@ -36,6 +36,9 @@ tools/_dbg/
 .runs.json
 .arts.json
 
+# ---- 抓包 / 模拟器实测的临时工作目录（pcap、截图、UI dump，不入库）----
+.tmp_*/
+
 # ---- 安卓构建产物与本地签名 ----
 .gradle/
 build/
