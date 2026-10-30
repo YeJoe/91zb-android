@@ -69,8 +69,8 @@ class AppContainer(context: Context) {
      * 弹幕。端口候选按「越可能是 IM vhost 越靠前」排：
      *
      *  1. [com.duocai.live.tunnel.Tunnel.imPort] —— `kiwi_im` 组，**唯一**能跑
-     *     `/websock/*` 的 vhost（源 App 的 `im_url = http://kiwi_im/tunnel/open?z=1`）；
-     *  2. [com.duocai.live.tunnel.Tunnel.port] —— `/room/*` 那个组，留着兜底；
+     *     `/websock/…` 的 vhost（源 App 的 `im_url = http://kiwi_im/tunnel/open?z=1`）；
+     *  2. [com.duocai.live.tunnel.Tunnel.port] —— `/room/…` 那个组，留着兜底；
      *  3. `live.lastPort` —— 没起内置隧道（源 App 模式）时扫到的端口。
      *
      * 以前这里直接给列表用的那个端口，WS 能握手但 `/websock/join` 被 404，

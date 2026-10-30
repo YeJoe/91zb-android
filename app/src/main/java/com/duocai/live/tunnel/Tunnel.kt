@@ -68,7 +68,7 @@ class Tunnel(private val context: Context, private val prefs: Prefs) {
      * 源 App 的 config 里写死了 `im_url = http://kiwi_im/tunnel/open?z=1`：
      * `/tunnel/open` 这条长连接是挂在 `kiwi_im` 这个 vhost 上的，不在拉列表那个组上。
      *
-     * 拿 [port]（`/room/*` 的组）去连 WS 时，隧道网关照样回 101 —— 因为升级发生在网关层，
+     * 拿 [port]（`/room/…` 的组）去连 WS 时，隧道网关照样回 101 —— 因为升级发生在网关层，
      * 跟 Host 无关；但接下来的 `/websock/join` 会被那个 vhost 的 nginx 404 掉。
      * 表现就是"连上了、状态也正常，但一条弹幕都收不到"，然后被垫场样本顶上，
      * 看起来就像"每个房间弹幕都一样、也不是实时"。

@@ -532,9 +532,9 @@ fun SettingsScreen(c: AppContainer) {
         // ---------- 弹幕 ----------
         Section("弹幕") {
             val dmState = c.danmaku.status.ifBlank { "未开始" }
-            InfoLine("走隧道里的 `/websock/*`：join 进房后只收实时 room_msg，不补历史 —— 没人说话就空着")
+            InfoLine("走隧道里的 `/websock/…`：join 进房后只收实时 room_msg，不补历史 —— 没人说话就空着")
             InfoLine("链路：$dmState · 本次已收 ${c.danmaku.liveCount} 条")
-            // 弹幕只能走 IM 那个 vhost；列表用的端口能握手但 /websock/* 会 404
+            // 弹幕只能走 IM 那个 vhost；列表用的端口能握手但 /websock/… 会 404
             InfoLine("端口：im=${c.tunnel.imPort} · 列表=${c.tunnel.port}（为 0 表示隧道没起）")
             Spacer(Modifier.height(4.dp))
             SwitchLine(

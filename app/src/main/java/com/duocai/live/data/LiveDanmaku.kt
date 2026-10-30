@@ -83,7 +83,7 @@ class LiveDanmaku(private val prefs: Prefs) {
         }
     }
 
-    /** 拿到端口但 `/websock/*` 回非 200 —— 这个 Host 不挂弹幕，换下一个候选 */
+    /** 拿到端口但 `/websock/…` 回非 200 —— 这个 Host 不挂弹幕，换下一个候选 */
     private class BadVhost(msg: String) : Exception(msg)
 
     // ---------------------------------------------------------------- 一次连接
