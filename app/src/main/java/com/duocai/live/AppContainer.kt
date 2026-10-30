@@ -86,26 +86,33 @@ class AppContainer(context: Context) {
      * 现在改成：
      *  1. 两个来源都**不信任缓存**（见 [com.duocai.live.data.LiveRepo.verifyWsPorts] 注释），
      *     空结果会立刻重扫；
-     *  2. 显示打开了「源 App 后台隧道」时，把本机所有 LISTEN 端口也纳入候选 ——
-     *     源 App 活着的话，它的 IM vhost 就在里面，405 判据能挑出来；
+     *  2. 本机所有 LISTEN 端口也纳入候选 —— 内置隧道自己的 listener 就在里面，
+     *     405 判据能把它挑出来（实测一台机器上 24 个监听端口里只有 1 个回 405）；
      *  3. 顺序仍然是「最可能是 IM 的在前」，但不是 IM 的端口也会被**验过**再排除，
      *     而不是凭组名直接丢。
      */
     val danmaku = DanmakuStore(prefs) {
-        buildList {
+        fun candidates(force: Boolean): List<Int> = buildList {
             // 1. SDK 明确指出的 kiwi_im
             if (tunnel.imPort > 0) add(tunnel.imPort)
 
             // 2. SDK 问到的全部组端口，逐个过 405 判据
             addAll(live.verifyWsPorts(tunnel.groupPorts.values))
 
-            // 3. 扫本机 listener（内置隧道端口 + 可选源 App 端口）
-            addAll(live.probeWsVhosts())
+            // 3. 扫本机 listener（内置隧道自己的 listener 就在里面）
+            addAll(live.probeWsVhosts(force))
 
             // 4. 最后兜底：列表用的端口（大概率 404，但聊胜于无）
             if (tunnel.port > 0) add(tunnel.port)
             if (live.lastPort > 0) add(live.lastPort)
         }.filter { it > 0 }.distinct()
+
+        // 正常情况下候选表至少是「IM 端口 + 列表端口」，实测一台机器 28 个监听端口里
+        // 只有 1 个回 405，所以 2 个端口意味着这一轮基本没筛出东西（假阴性）。
+        // 假阴性会被 probeWsVhosts 的结果缓存固化 60 秒，表现是「一直只试两三个端口全 404」，
+        // 因此这里强制重扫一次再交给 WS。
+        val first = candidates(false)
+        if (first.size >= 3) first else candidates(true)
     }
 
     val player = PlayerHolder(this.context)

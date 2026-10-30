@@ -137,12 +137,15 @@ class LiveRepo(private val context: Context, private val prefs: Prefs) {
      * 原实现「空结果也缓存 60 秒」是 404 的帮凶：隧道刚 init 时 listener 没 bind 稳，
      * 第一轮必然全失败，于是接下来整整 60 秒 `probeWsVhosts()` 都直接返回空表。
      * 现在改成：**只有拿到结果才缓存，空结果下次立刻重扫**。
+     *
+     * @param force 忽略缓存强制重扫。候选表小到不正常时（见 AppContainer 的弹幕端口块）用，
+     *   否则一次错误的结果会在 60 秒里被反复复用，表现就是「一直只试两三个端口」。
      */
     @Synchronized
-    fun probeWsVhosts(): List<Int> {
+    fun probeWsVhosts(force: Boolean = false): List<Int> {
         val now = System.currentTimeMillis()
         // 只有"上次确实扫出了东西"才允许走缓存；空结果不缓存
-        if (wsVhosts.isNotEmpty() && now - wsVhostsAt < 60_000L) return wsVhosts
+        if (!force && wsVhosts.isNotEmpty() && now - wsVhostsAt < 60_000L) return wsVhosts
 
         val ports = listenPorts()
         // 不再按上限截断候选：真 IM 端口可能落在临时端口段任意位置，
@@ -701,16 +704,27 @@ class LiveRepo(private val context: Context, private val prefs: Prefs) {
     }.getOrNull()
 
     // ------------------------------------------------------------------ 弹幕诊断
+    /** 诊断时单个端口的探测结果 */
+    private data class WsProbeRow(
+        val port: Int,
+        val code: Int,
+        val body: String,
+        val hit: Boolean
+    )
+
     /**
      * 逐个端口跑一遍 405 判据，返回可直接贴给用户看的明细。
      *
      * 存在的理由：判断「为什么 404」时最缺的不是结论，而是**每个端口到底回了什么**。
      * 原实现只有「试了 N 个端口」一句话，看不出是端口没拿到、还是拿到了但判据判错了。
      *
-     * @param ports 要诊断的端口；空则取本机全部 LISTEN 端口 + 隧道组端口
+     * 副作用（有意为之）：**命中的端口会被记进候选表**。诊断本身已经把每个端口都验过一遍，
+     * 不把这个结果留下来，用户还得再等一轮重连去重复同样的探测。
+     *
+     * @param ports 要诊断的端口；空则取优先端口 + 本机全部 LISTEN 端口
      * @param limit 最多验多少个，避免一次诊断拖太久
      */
-    suspend fun diagnoseWs(ports: List<Int> = emptyList(), limit: Int = 24): String =
+    suspend fun diagnoseWs(ports: List<Int> = emptyList(), limit: Int = 32): String =
         withContext(Dispatchers.IO) {
             val candidates = (if (ports.isEmpty()) {
                 (preferPort.takeIf { it > 0 }?.let { listOf(it) } ?: emptyList()) +
@@ -719,53 +733,110 @@ class LiveRepo(private val context: Context, private val prefs: Prefs) {
 
             if (candidates.isEmpty()) return@withContext "没有候选端口（隧道没起来？）"
 
-            val rows = candidates.map { p ->
-                val (code, body) = runCatching {
-                    val conn = (URL("http://127.0.0.1:$p/websock/join")
-                        .openConnection() as HttpURLConnection)
-                    try {
-                        conn.requestMethod = "POST"
-                        conn.connectTimeout = 2500
-                        conn.readTimeout = 2500
-                        conn.doOutput = true
-                        conn.setRequestProperty("content-type", "application/json")
-                        conn.setRequestProperty("user-agent", "Dart/3.10 (dart:io)")
-                        val jwe = prefs.jwe.trim()
-                        if (jwe.isNotEmpty()) conn.setRequestProperty("authorization", "Bearer $jwe")
-                        conn.outputStream.use {
-                            it.write("""{"room_id":1,"menu_id":1,"cp_type":3}""".toByteArray())
-                        }
-                        val c = conn.responseCode
-                        val b = runCatching {
-                            (if (c in 200..299) conn.inputStream else conn.errorStream)
-                                ?.bufferedReader()?.use { it.readText() }
-                        }.getOrNull().orEmpty()
-                        c to b
-                    } finally {
-                        conn.disconnect()
-                    }
-                }.getOrElse { -1 to (it.message ?: it.javaClass.simpleName) }
-
-                val mark = when {
-                    code == 405 -> "✅ IM vhost"
-                    code == 403 && body.contains("bad token") -> "✅ IM vhost(403 兜底)"
-                    code == 403 -> "❌ 别的 vhost 鉴权层"
-                    code == 404 -> "❌ 不挂 /websock"
-                    code == -1 -> "⌛ 超时/连不上"
-                    else -> "？"
-                }
-                "  :$p  HTTP $code  $mark" + if (body.isNotBlank()) {
-                    "  " + body.take(60).replace("\n", " ")
-                } else ""
+            // 并发 8 路：串行扫 24 个、每个 2.5 秒上限，用户等不起
+            val pool = java.util.concurrent.Executors.newFixedThreadPool(minOf(8, candidates.size))
+            val rows = try {
+                candidates
+                    .map { p -> pool.submit(java.util.concurrent.Callable { probeJoin(p) }) }
+                    .mapNotNull { f -> runCatching { f.get() }.getOrNull() }
+                    .sortedBy { it.port }
+            } finally {
+                pool.shutdown()
             }
+
+            val hits = rows.filter { it.hit }.map { it.port }
+            if (hits.isNotEmpty()) {
+                val now = System.currentTimeMillis()
+                wsVhosts = (hits + wsVhosts).distinct()
+                hits.forEach { wsTriedAt[it] = now }
+                wsVhostsAt = now
+            }
+
+            fun fmt(r: WsProbeRow): String {
+                val mark = when {
+                    r.code == 405 -> "✅ IM vhost"
+                    r.code == 403 && r.body.contains("bad token") -> "✅ IM vhost（403 兜底）"
+                    r.code == 403 -> "别的 vhost 鉴权层"
+                    r.code == 404 -> "不挂 /websock"
+                    r.code == -1 -> "超时/连不上"
+                    else -> "未判定"
+                }
+                val brief = briefBody(r.body)
+                return "  :${r.port}  HTTP ${r.code}  $mark" + if (brief.isNotEmpty()) "  $brief" else ""
+            }
+
             buildString {
-                appendLine("弹幕端口诊断（判据：明文 POST /websock/join → 405 才算 IM vhost）")
-                appendLine("共 ${candidates.size} 个端口：")
-                rows.forEach { appendLine(it) }
-                appendLine()
-                appendLine("命中数：${rows.count { it.contains("✅") }}")
+                appendLine("弹幕端口诊断（判据：明文 POST /websock/join 回 405）")
+                appendLine("共 ${rows.size} 个端口，命中 ${hits.size} 个" +
+                    (if (hits.isNotEmpty()) "：" + hits.joinToString(" ") { ":$it" } else ""))
+                if (hits.isNotEmpty()) {
+                    appendLine()
+                    rows.filter { it.hit }.forEach { appendLine(fmt(it)) }
+                    appendLine()
+                    appendLine("其余（都不是 IM vhost）：")
+                    rows.filterNot { it.hit }.forEach { appendLine(fmt(it)) }
+                    appendLine()
+                    appendLine("命中端口已记进候选表 → 点上面的「重连弹幕」直接用它，不用再扫")
+                } else {
+                    appendLine()
+                    rows.forEach { appendLine(fmt(it)) }
+                    appendLine()
+                    appendLine("一个都没命中：多半是隧道还没起稳，等两三秒再诊断一次；")
+                    appendLine("如果一直如此，看「端口」那行的 im 是否为 0（为 0 说明 SDK 没起来）")
+                }
             }.trimEnd()
         }
+
+    /** 诊断用：对一个端口打一发明文 join，返回带判定的结果 */
+    private fun probeJoin(port: Int): WsProbeRow {
+        val pair = runCatching {
+            val conn = (URL("http://127.0.0.1:$port/websock/join")
+                .openConnection() as HttpURLConnection)
+            try {
+                conn.requestMethod = "POST"
+                conn.connectTimeout = 2500
+                conn.readTimeout = 2500
+                conn.doOutput = true
+                conn.setRequestProperty("content-type", "application/json")
+                conn.setRequestProperty("user-agent", "Dart/3.10 (dart:io)")
+                val jwe = prefs.jwe.trim()
+                if (jwe.isNotEmpty()) conn.setRequestProperty("authorization", "Bearer $jwe")
+                conn.outputStream.use {
+                    it.write("""{"room_id":1,"menu_id":1,"cp_type":3}""".toByteArray())
+                }
+                val c = conn.responseCode
+                val b = runCatching {
+                    (if (c in 200..299) conn.inputStream else conn.errorStream)
+                        ?.bufferedReader()?.use { it.readText() }
+                }.getOrNull().orEmpty()
+                c to b
+            } finally {
+                conn.disconnect()
+            }
+        }.getOrElse { -1 to (it.message ?: it.javaClass.simpleName) }
+
+        val (code, body) = pair
+        val hit = code == 405 ||
+            (code in 400..499 && (body.contains("bad token") ||
+                body.contains("method") && body.contains("not allowed")))
+        return WsProbeRow(port, code, body, hit)
+    }
+
+    /**
+     * 诊断输出里的 body 只留有用的一小段。
+     *
+     * HTML 错误页（`<html><head><title>404 Not Found`）占满屏却没有信息量 —— HTTP 码已经说明
+     * 一切；只有 JSON 才值得展示，`{"code":-10000,"msg":"bad token…"}` 这种才看得出是鉴权层。
+     */
+    private fun briefBody(body: String): String {
+        val b = body.trim().replace(Regex("\\s+"), " ")
+        if (b.isEmpty()) return ""
+        return when {
+            b.startsWith("{") || b.startsWith("[") -> b.take(80)
+            b.startsWith("<") || b.contains("<title>") -> ""      // HTML 错误页，噪声
+            else -> b.take(40)
+        }
+    }
 
     // ------------------------------------------------------------------ 分类
     companion object {

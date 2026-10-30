@@ -581,8 +581,12 @@ fun SettingsScreen(c: AppContainer) {
                         wsDiagLoading = true
                         wsDiag = null
                         scope.launch {
-                            wsDiag = runCatching { c.live.diagnoseWs() }
+                            val text = runCatching { c.live.diagnoseWs() }
                                 .getOrElse { "诊断失败：${it.message}" }
+                            wsDiag = text
+                            // 诊断时已经验过每个端口，命中的会记进候选表 —— 顺手重连一次，
+                            // 用户不用再自己点「重连弹幕」去等第二轮扫描
+                            if (text.contains("✅")) c.danmaku.restart(scope)
                             wsDiagLoading = false
                         }
                     }
