@@ -66,20 +66,33 @@ class AppContainer(context: Context) {
     val tunnel = com.duocai.live.tunnel.Tunnel(this.context, prefs)
 
     /**
-     * 弹幕。端口候选按「越可能是 IM vhost 越靠前」排：
+     * 弹幕端口候选。
      *
-     *  1. [com.duocai.live.tunnel.Tunnel.imPort] —— `kiwi_im` 组，**唯一**能跑
-     *     `/websock/…` 的 vhost（源 App 的 `im_url = http://kiwi_im/tunnel/open?z=1`）；
-     *  2. [com.duocai.live.tunnel.Tunnel.port] —— `/room/…` 那个组，留着兜底；
-     *  3. `live.lastPort` —— 没起内置隧道（源 App 模式）时扫到的端口。
+     * 关键前提：`/websock/…` 只挂在**业务 nginx** 那个 vhost 上（源 App 的
+     * `im_url = http://kiwi_im/tunnel/open?z=1`）。拿列表用的那个端口去连 WS 照样回 101
+     * （升级发生在网关层，与 Host 无关），但随后的 `/websock/join` 会被 nginx 404 ——
+     * 表现就是「连上了却一条弹幕都收不到」。
      *
-     * 以前这里直接给列表用的那个端口，WS 能握手但 `/websock/join` 被 404，
-     * 于是永远收不到推送、被垫场样本顶上 —— 就是"每个房间弹幕都一模一样"的原因。
+     * 所以候选按可靠度排：
+     *  1. [com.duocai.live.tunnel.Tunnel.imPort] —— 内置隧道问得到 `kiwi_im` 时最准；
+     *  2. [com.duocai.live.data.LiveRepo.probeWsVhosts] —— 明文 POST
+     *     `/websock/history_msg` 回 405 的端口。内置隧道问不出来时（源 App 模式、
+     *     或 `kiwi_im` 组没建立）这是**唯一**可靠的路子；
+     *  3. `tunnel.port` / `live.lastPort` —— 列表那个组，只作最后兜底。
      */
     val danmaku = DanmakuStore(prefs) {
-        listOf(tunnel.imPort, tunnel.port, live.lastPort)
-            .filter { it > 0 }
-            .distinct()
+        // 候选按「越可能是 IM vhost 越靠前」排：
+        //   1. tunnel.imPort —— 内置隧道问得到 kiwi_im 时最准；
+        //   2. live.probeWsVhosts() —— 明文 POST /websock/history_msg 回 405 的端口。
+        //      内置隧道问不出来（源 App 模式、或 kiwi_im 组没建立）时，这是唯一可靠的路子：
+        //      拿列表那个端口去 join 一定 404，因为 /websock/… 只挂在业务 nginx 上；
+        //   3. tunnel.port / live.lastPort —— 列表用的那个组，只作最后兜底。
+        buildList {
+            if (tunnel.imPort > 0) add(tunnel.imPort)
+            addAll(live.probeWsVhosts())
+            if (tunnel.port > 0) add(tunnel.port)
+            if (live.lastPort > 0) add(live.lastPort)
+        }.filter { it > 0 }.distinct()
     }
 
     val player = PlayerHolder(this.context)

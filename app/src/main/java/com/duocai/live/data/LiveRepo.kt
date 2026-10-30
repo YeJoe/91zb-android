@@ -96,6 +96,58 @@ class LiveRepo(private val context: Context, private val prefs: Prefs) {
         return out.filter { it in 1024..65535 && it != 5555 }.distinct().sorted()
     }
 
+    /** 本机所有 LISTEN 端口（弹幕模块找 IM vhost 用，和列表探测共用一份扫法） */
+    fun localListenPorts(): List<Int> = listenPorts()
+
+    // ------------------------------------------------------ 弹幕 vhost 筛选
+    /** [probeWsVhosts] 的结果缓存：一次连不上会反复重连，不能每次都把端口扫一遍 */
+    private var wsVhosts: List<Int> = emptyList()
+    private var wsVhostsAt = 0L
+
+    /**
+     * 找出真的挂 `/websock/…` 的端口。
+     *
+     * 判据照 `tools/live_ws.py` 的 `ws_vhosts()`（2026-10-29 实测坐实）：
+     * 对 `/websock/history_msg` 发**明文 POST**，只有业务 nginx 回 **405**
+     * （它只认 WS 升级）；隧道里其它上游站点一律回 403 / 404。
+     *
+     * 为什么不直接开 WS 去试：握手 + join 每个端口要几百毫秒到 8 秒，
+     * 而明文一次 POST 1.5 秒封顶，还不需要 token / JWE —— 用来粗筛最划算。
+     *
+     * 实测可能有**多个**端口都回 405（不同业务 vhost），所以这里返回列表，
+     * 由 [com.duocai.live.data.LiveDanmaku] 逐个 join，谁回 200 就是谁。
+     */
+    fun probeWsVhosts(): List<Int> {
+        val now = System.currentTimeMillis()
+        if (wsVhosts.isNotEmpty() && now - wsVhostsAt < 60_000L) return wsVhosts
+        // 隧道 listener 都落在临时端口段，从大往小扫更容易先命中
+        val hit = listenPorts().sortedDescending().take(MAX_PROBE_PORTS).filter { p ->
+            statusOf(p, "/websock/history_msg", """{"room_id":0,"start_id":0}""") == 405
+        }
+        wsVhosts = hit
+        wsVhostsAt = now
+        return hit
+    }
+
+    /** 发一次请求只取状态码：不解析响应体、不抛异常（探测专用） */
+    private fun statusOf(port: Int, path: String, body: String, timeout: Int = 1500): Int =
+        runCatching {
+            val conn =
+                (URL("http://127.0.0.1:$port$path").openConnection() as HttpURLConnection)
+            try {
+                conn.requestMethod = "POST"
+                conn.connectTimeout = timeout
+                conn.readTimeout = timeout
+                conn.doOutput = true
+                conn.setRequestProperty("content-type", "application/json")
+                conn.setRequestProperty("user-agent", "Dart/3.10 (dart:io)")
+                conn.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
+                conn.responseCode
+            } finally {
+                conn.disconnect()
+            }
+        }.getOrDefault(-1)
+
     /**
      * 找一个真正挂 `/room` 前缀的 vhost（注意：注释里别写斜杠星号，Kotlin 的块注释是可嵌套的，
      * 那样会吃掉后面整段代码）。
@@ -450,6 +502,9 @@ class LiveRepo(private val context: Context, private val prefs: Prefs) {
 
     // ------------------------------------------------------------------ 分类
     companion object {
+        /** 弹幕端口粗筛最多扫多少个监听端口（设备上通常十几个，留点余量） */
+        private const val MAX_PROBE_PORTS = 24
+
         /**
          * `lobby_menu` 表里的分类（实测拉取，2026-10-29）。
          * 房间对象的 `menu_id` 就是这张表的 id —— 源 App 切分类就是按这个字段本地过滤。

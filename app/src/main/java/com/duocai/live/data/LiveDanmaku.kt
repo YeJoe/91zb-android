@@ -58,11 +58,14 @@ class LiveDanmaku(private val prefs: Prefs) {
         roomId: Long,
         menuId: Int,
         onMessage: (DmMessage) -> Unit,
-        onState: (String) -> Unit
+        onState: (String) -> Unit,
+        /** 把本轮实际要试的端口候选报出去（设置页诊断用，**只在 IO 线程**回调） */
+        onPorts: (List<Int>) -> Unit = {}
     ) {
         var backoff = 1500L
         while (currentCoroutineContext().isActive) {
             val list = ports().filter { it > 0 }.distinct()
+            runCatching { onPorts(list) }
             if (list.isEmpty()) {
                 onState("等待隧道")
                 delay(3000)
@@ -114,7 +117,7 @@ class LiveDanmaku(private val prefs: Prefs) {
                 lastWhy = ":$port ${e.message ?: e.javaClass.simpleName}"
             }
         }
-        throw IllegalStateException(lastWhy)
+        throw IllegalStateException("$lastWhy（试了 ${ports.size} 个端口）")
     }
 
     private suspend fun pumpPort(
@@ -167,7 +170,14 @@ class LiveDanmaku(private val prefs: Prefs) {
                                 // 只发了 join 一个请求，所以进房前收到的第一个 http 应答就是它：
                                 // random 万一没被回显也能认出来，不至于把"其实成功了"判成端口不对。
                                 if (!entered || d.optInt("random", 0) == 7001) {
-                                    if (st != 200) throw BadVhost("join 回 $st")
+                                    // 404 = 这个端口的上游 vhost 不认 /websock/…（拿成了列表那个组）；
+                                    // 405/403 也说明路由不对。只有 200 才可能是进了房。
+                                    if (st != 200) {
+                                        throw BadVhost(
+                                            if (st == 404) "join 回 404（这个 vhost 不挂 /websock）"
+                                            else "join 回 $st"
+                                        )
+                                    }
                                     // body 里 code != 0 才是真失败（比如 token 失效会回
                                     // -10000 "bad token, please login!"）。只看 HTTP 200
                                     // 会把"鉴权没过"当成"已进房"，然后干等一条消息都不来。

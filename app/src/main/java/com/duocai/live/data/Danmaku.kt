@@ -126,6 +126,15 @@ class DanmakuStore(
     var liveCount by mutableStateOf(0)
         private set
 
+    /**
+     * 最近一次连接尝试用的端口候选（设置页诊断用；空 = 还没开始）。
+     *
+     * 排查「join 404」时最有用：只有 1 个端口说明根本没筛出 `/websock` 的 vhost
+     * （内置隧道没问到 kiwi_im、明文 405 探测也没命中），多个端口却全 404 则是另一类问题。
+     */
+    var ports by mutableStateOf<List<Int>>(emptyList())
+        private set
+
     private var job: Job? = null
     private var roomId: Long = 0L
     private var menuId: Int = 1
@@ -146,6 +155,7 @@ class DanmakuStore(
         messages.clear()
         liveCount = 0
         status = ""
+        ports = emptyList()
 
         job = scope.launch {
             if (!prefs.liveMode) {
@@ -162,7 +172,8 @@ class DanmakuStore(
                     roomId = room,
                     menuId = menuId,
                     onMessage = { m -> inbox.trySend(m) },
-                    onState = { s -> launch(Dispatchers.Main) { status = s } }
+                    onState = { s -> launch(Dispatchers.Main) { status = s } },
+                    onPorts = { l -> launch(Dispatchers.Main) { ports = l } }
                 )
             }
             launch {
