@@ -541,6 +541,13 @@ fun SettingsScreen(c: AppContainer) {
             InfoLine("链路：$dmState · 本次已收 ${c.danmaku.liveCount} 条")
             // 弹幕只能走业务 nginx 那个 vhost；列表用的端口能握手但 /websock/… 会 404
             InfoLine("端口：im=${c.tunnel.imPort} · 列表=${c.tunnel.port}（为 0 表示隧道没起）")
+            // 进房失败经常是凭证没就位（appToken 由 SDK 运行时吐，JWE 内置）——
+            // 这一行能一眼排除「连上了但没身份」这类原因
+            val tok = c.prefs.appToken.trim()
+            InfoLine(
+                "凭证：appToken=" + (if (tok.isEmpty()) "空（握手会缺 token）" else "${tok.length} 字符") +
+                    " · JWE=" + (if (c.prefs.jwe.trim().isEmpty()) "空" else "有")
+            )
             val tried = c.danmaku.ports
             InfoLine(
                 if (tried.isEmpty()) "弹幕候选端口：还没开始试"

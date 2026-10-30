@@ -121,7 +121,9 @@ class LiveDanmaku(private val prefs: Prefs) {
         } else {
             ports
         }
-        var lastWhy = "没有可用端口"
+        // 每个端口失败的原因都要留下 —— 只报最后一个会误导：真端口往往排在最前，
+        // 它的失败原因被后面那个「兜底端口」的 404 覆盖掉，看起来就像"全是 404"。
+        val reasons = ArrayList<String>(ordered.size)
         for (port in ordered) {
             try {
                 pumpPort(port, roomId, menuId, onMessage, onState)
@@ -129,14 +131,15 @@ class LiveDanmaku(private val prefs: Prefs) {
             } catch (e: CancellationException) {
                 throw e
             } catch (e: BadVhost) {
-                lastWhy = ":$port ${e.message}"
+                reasons += ":$port ${e.message}"
             } catch (e: Exception) {
-                lastWhy = ":$port ${e.message ?: e.javaClass.simpleName}"
+                reasons += ":$port ${e.message ?: e.javaClass.simpleName}"
             }
         }
         // 全军覆没：端口表大概整体换了（App 重启 / 隧道重连），下次重新认
         goodPort = 0
-        throw IllegalStateException("$lastWhy（试了 ${ordered.size} 个端口）")
+        val detail = if (reasons.isEmpty()) "没有可用端口" else reasons.joinToString(" / ")
+        throw IllegalStateException("$detail（试了 ${ordered.size} 个端口）")
     }
 
     private suspend fun pumpPort(
@@ -200,11 +203,17 @@ class LiveDanmaku(private val prefs: Prefs) {
                                 if (!entered || d.optInt("random", 0) == 7001) {
                                     // 404 = 这个端口的上游 vhost 不认 /websock/…（拿成了列表那个组）；
                                     // 405/403 也说明路由不对。只有 200 才可能是进了房。
+                                    // 失败时把 body 里那句话带上：nginx 的 404 是 HTML，
+                                    // 而 `{"code":404,"message":"路由未找到"}` 是业务网关的 404，
+                                    // 两者对应的病完全不同，只报状态码会看不出区别。
                                     if (st != 200) {
-                                        throw BadVhost(
-                                            if (st == 404) "join 回 404（这个 vhost 不挂 /websock）"
-                                            else "join 回 $st"
-                                        )
+                                        val b = asObject(d.opt("body"))
+                                        val why = b?.optString("msg").orEmpty()
+                                            .ifEmpty { b?.optString("message").orEmpty() }
+                                        val tail = if (why.isNotEmpty()) " · $why"
+                                        else if (st == 404) "（这个 vhost 不挂 /websock）"
+                                        else ""
+                                        throw BadVhost("join 回 $st$tail")
                                     }
                                     // body 里 code != 0 才是真失败（比如 token 失效会回
                                     // -10000 "bad token, please login!"）。只看 HTTP 200
