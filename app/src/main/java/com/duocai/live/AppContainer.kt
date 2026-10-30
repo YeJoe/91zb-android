@@ -75,21 +75,34 @@ class AppContainer(context: Context) {
      *
      * 端口每次冷启动都会重排（2026-10-30 实测：11689 → 34199 → 37679），
      * 所以候选表必须每轮重连都重新算，不能把端口写死。
+     *
+     * ## 2026-10-30 修「一直 404」
+     *
+     * 原候选表有个致命顺序问题：先把 `verifyWsPorts(groupPorts)` 的结果拼进来，
+     * 再拼 `probeWsVhosts()`。而这两个方法都依赖**同一时刻**的端口状态 ——
+     * 隧道刚 init 完、listener 还没 bind 稳时，两者都为空的概率很高，
+     * 于是候选表只剩 `tunnel.port`（`/room` 组），join 必然 404。
+     *
+     * 现在改成：
+     *  1. 两个来源都**不信任缓存**（见 [com.duocai.live.data.LiveRepo.verifyWsPorts] 注释），
+     *     空结果会立刻重扫；
+     *  2. 显示打开了「源 App 后台隧道」时，把本机所有 LISTEN 端口也纳入候选 ——
+     *     源 App 活着的话，它的 IM vhost 就在里面，405 判据能挑出来；
+     *  3. 顺序仍然是「最可能是 IM 的在前」，但不是 IM 的端口也会被**验过**再排除，
+     *     而不是凭组名直接丢。
      */
     val danmaku = DanmakuStore(prefs) {
-        // 候选按「越可能是 IM vhost 越靠前」排：
-        //   1. tunnel.imPort —— SDK 明确指出的 kiwi_im，最快路径；
-        //   2. tunnel.groupPorts —— SDK 问到的**全部**组端口，逐个验 /websock（405 判据）。
-        //      组名是猜的，万一服务端换了名字或这个组这次没起来，靠这条兜底；
-        //   3. live.probeWsVhosts() —— 扫本机监听端口。内置隧道没起、走源 App 模式时用；
-        //   4. tunnel.port / live.lastPort —— 列表用的那个组，一定会 404，只作最后兜底。
-        //
-        // 2026-10-30 实测：真 IM 端口（源 App 的 37679）上 `/websock/join` 明文 POST 回 405，
-        // 别的 vhost 回 403，凭这个能把端口认准；认准之后 20 秒收到 130 条真实推送。
         buildList {
+            // 1. SDK 明确指出的 kiwi_im
             if (tunnel.imPort > 0) add(tunnel.imPort)
+
+            // 2. SDK 问到的全部组端口，逐个过 405 判据
             addAll(live.verifyWsPorts(tunnel.groupPorts.values))
+
+            // 3. 扫本机 listener（内置隧道端口 + 可选源 App 端口）
             addAll(live.probeWsVhosts())
+
+            // 4. 最后兜底：列表用的端口（大概率 404，但聊胜于无）
             if (tunnel.port > 0) add(tunnel.port)
             if (live.lastPort > 0) add(live.lastPort)
         }.filter { it > 0 }.distinct()

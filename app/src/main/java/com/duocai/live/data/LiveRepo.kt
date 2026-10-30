@@ -131,16 +131,25 @@ class LiveRepo(private val context: Context, private val prefs: Prefs) {
      *
      * 明文探测 1.5 秒封顶、不需要 token / JWE，比逐个开 WS 便宜得多。
      * 真正进房仍然由 [com.duocai.live.data.LiveDanmaku] 开 WS 做。
+     *
+     * ## 缓存策略（2026-10-30 修）
+     *
+     * 原实现「空结果也缓存 60 秒」是 404 的帮凶：隧道刚 init 时 listener 没 bind 稳，
+     * 第一轮必然全失败，于是接下来整整 60 秒 `probeWsVhosts()` 都直接返回空表。
+     * 现在改成：**只有拿到结果才缓存，空结果下次立刻重扫**。
      */
     @Synchronized
     fun probeWsVhosts(): List<Int> {
         val now = System.currentTimeMillis()
-        if (now - wsVhostsAt < 60_000L) return wsVhosts
-        wsVhostsAt = now
-        // 隧道 listener 都落在临时端口段，从大往小扫更容易先命中
-        // 走并发版：串行扫 24 个端口要 29 秒，重连根本等不起
-        verifyWsPorts(listenPorts().sortedDescending().take(MAX_PROBE_PORTS))
-        return wsVhosts
+        // 只有"上次确实扫出了东西"才允许走缓存；空结果不缓存
+        if (wsVhosts.isNotEmpty() && now - wsVhostsAt < 60_000L) return wsVhosts
+
+        val ports = listenPorts()
+        // 不再按上限截断候选：真 IM 端口可能落在临时端口段任意位置，
+        // 截断会把正确答案切掉。按并发验，多试几个也就多一两秒。
+        val result = verifyWsPorts(ports.sortedDescending())
+        if (result.isNotEmpty()) wsVhostsAt = now
+        return result
     }
 
     /** 端口 -> 上次验它的时间。验失败也要记，否则每轮重连都把失败端口再试一遍 */
@@ -153,15 +162,33 @@ class LiveRepo(private val context: Context, private val prefs: Prefs) {
      * 但内置隧道问出来的端口一定是我们自己进程的，直接验就行，不用绕路。
      *
      * 并发验（8 路）：14 个组串行各 1.2 秒要 17 秒，重连时根本等不起。
-     * 60 秒内验过的端口（无论成没成）都不再重验，所以一轮重连只花新端口的钱。
+     *
+     * ## 「一直 404」的两个真实成因（2026-10-30 修）
+     *
+     * 1. **失败缓存把正确端口毒化了**。原实现里 `wsTriedAt[port]` 写入后 60 秒内不再重验，
+     *    而 `wsVhosts` 只在 `hits.isNotEmpty()` 时才更新。于是：
+     *    隧道刚 init 完、listener 还没 bind 稳 → 第一次验全部失败 → `wsVhosts` 恒空
+     *    → 接下来 60 秒里哪怕隧道已经好了，`verifyWsPorts` 也只会从缓存里返回空表
+     *    → 候选表退化成 `tunnel.port`（`/room` 组）→ join 必然 404。
+     *    修法：**失败不再写缓存**（只缓存成功），失败的下轮立刻重试。
+     *    代价是隧道没起来时每次重连多花 1.2 秒，但这比"端口明明对却判死"便宜得多。
+     *
+     * 2. **端口表变了、成功缓存没失效**。冷启动端口会重排（11689→34199→37679），
+     *    旧的成功端口留在 `wsVhosts` 里，新一轮 `cached` 会把它当成"已验证"直接返回，
+     *    而它此刻可能已经被别的服务占用。修法：每轮用**本轮的候选集**去交集，
+     *    自然把过期的挤出去。
      */
     @Synchronized
     fun verifyWsPorts(candidates: Collection<Int>): List<Int> {
         val now = System.currentTimeMillis()
         val list = candidates.filter { it > 0 }.distinct()
         if (list.isEmpty()) return emptyList()
+
+        // 只认本轮候选集里的成功记录，端口表换了自动失效
         val cached = list.filter { it in wsVhosts }
-        val fresh = list.filter { now - (wsTriedAt[it] ?: 0L) > 60_000L }
+        // 只跳过**成功过**的端口；失败的下轮立刻重试（见上面注释 1）
+        val fresh = list.filter { p -> p !in wsVhosts }
+
         if (fresh.isEmpty()) return cached
 
         val pool = java.util.concurrent.Executors.newFixedThreadPool(minOf(8, fresh.size))
@@ -176,15 +203,16 @@ class LiveRepo(private val context: Context, private val prefs: Prefs) {
         } finally {
             pool.shutdown()
         }
-        fresh.forEach { wsTriedAt[it] = now }
-        if (hits.isNotEmpty()) {
-            wsVhosts = (hits + cached).distinct()
-        }
-        // 端口表整体换了的时候顺便清一下，别让这张表无限长
+
+        // 成功才记时间戳；失败不记，保证下轮重验
+        fresh.forEach { p -> if (p in hits) wsTriedAt[p] = now }
+        // 成功集也要以本轮候选为界，避免无限增长
+        wsVhosts = (hits + cached).distinct().filter { it in list }
+
         if (wsTriedAt.size > 128) {
             wsTriedAt.entries.removeAll { now - it.value > 300_000L }
         }
-        return (hits + cached).distinct()
+        return wsVhosts
     }
 
     /**
@@ -196,26 +224,41 @@ class LiveRepo(private val context: Context, private val prefs: Prefs) {
      *
      * 保险丝：万一哪天网关把"方法不允许"改成 403，只要 body 里是 token 报错
      * （`bad token, please login!`）也算命中 —— 那句只可能来自 `/websock` 的鉴权。
+     *
+     * ## 超时为什么从 1200ms 提到 2500ms（2026-10-30）
+     *
+     * 隧道是「本地 listener → 网关 → 远端 nginx」，首包要走完整条链路。
+     * 实测隧道刚 init 完的头几秒，同一个端口 1.2 秒连不回是常态；
+     * 被判成 false 之后端口就进不了候选表，于是表现成「一直 404」。
+     * 2500ms 仍远低于用户可感知的等待，但足够覆盖冷启动抖动。
+     * 并发 8 路时最坏一轮约 2.5 秒，比"判错然后永远 404"划算。
      */
     private fun wsJoinReachable(port: Int): Boolean = runCatching {
         val conn = (URL("http://127.0.0.1:$port/websock/join").openConnection() as HttpURLConnection)
         try {
             conn.requestMethod = "POST"
-            conn.connectTimeout = 1200
-            conn.readTimeout = 1200
+            conn.connectTimeout = 2500
+            conn.readTimeout = 2500
             conn.doOutput = true
             conn.setRequestProperty("content-type", "application/json")
             conn.setRequestProperty("user-agent", "Dart/3.10 (dart:io)")
+            // 带上 JWE 更接近真实请求：部分 vhost 的鉴权层会先看这个头再决定回 405 还是 403
+            val jwe = prefs.jwe.trim()
+            if (jwe.isNotEmpty()) conn.setRequestProperty("authorization", "Bearer $jwe")
             conn.outputStream.use {
                 it.write("""{"room_id":1,"menu_id":1,"cp_type":3}""".toByteArray(Charsets.UTF_8))
             }
             val code = conn.responseCode
             if (code == 405) return@runCatching true
-            if (code == 403) {
+            // 405 之外的 4xx 也可能是「路由在、但被鉴权先拦」，读 body 兜底
+            if (code in 400..499) {
                 val body = runCatching {
                     conn.errorStream?.bufferedReader()?.use { it.readText() }
                 }.getOrNull().orEmpty()
-                return@runCatching body.contains("bad token")
+                // 这几句只可能来自 /websock 的鉴权层
+                if (body.contains("bad token") || body.contains("method") && body.contains("not allowed")) {
+                    return@runCatching true
+                }
             }
             false
         } finally {
@@ -657,15 +700,75 @@ class LiveRepo(private val context: Context, private val prefs: Prefs) {
         )
     }.getOrNull()
 
+    // ------------------------------------------------------------------ 弹幕诊断
+    /**
+     * 逐个端口跑一遍 405 判据，返回可直接贴给用户看的明细。
+     *
+     * 存在的理由：判断「为什么 404」时最缺的不是结论，而是**每个端口到底回了什么**。
+     * 原实现只有「试了 N 个端口」一句话，看不出是端口没拿到、还是拿到了但判据判错了。
+     *
+     * @param ports 要诊断的端口；空则取本机全部 LISTEN 端口 + 隧道组端口
+     * @param limit 最多验多少个，避免一次诊断拖太久
+     */
+    suspend fun diagnoseWs(ports: List<Int> = emptyList(), limit: Int = 24): String =
+        withContext(Dispatchers.IO) {
+            val candidates = (if (ports.isEmpty()) {
+                (preferPort.takeIf { it > 0 }?.let { listOf(it) } ?: emptyList()) +
+                    listenPorts()
+            } else ports).filter { it > 0 }.distinct().take(limit)
+
+            if (candidates.isEmpty()) return@withContext "没有候选端口（隧道没起来？）"
+
+            val rows = candidates.map { p ->
+                val (code, body) = runCatching {
+                    val conn = (URL("http://127.0.0.1:$p/websock/join")
+                        .openConnection() as HttpURLConnection)
+                    try {
+                        conn.requestMethod = "POST"
+                        conn.connectTimeout = 2500
+                        conn.readTimeout = 2500
+                        conn.doOutput = true
+                        conn.setRequestProperty("content-type", "application/json")
+                        conn.setRequestProperty("user-agent", "Dart/3.10 (dart:io)")
+                        val jwe = prefs.jwe.trim()
+                        if (jwe.isNotEmpty()) conn.setRequestProperty("authorization", "Bearer $jwe")
+                        conn.outputStream.use {
+                            it.write("""{"room_id":1,"menu_id":1,"cp_type":3}""".toByteArray())
+                        }
+                        val c = conn.responseCode
+                        val b = runCatching {
+                            (if (c in 200..299) conn.inputStream else conn.errorStream)
+                                ?.bufferedReader()?.use { it.readText() }
+                        }.getOrNull().orEmpty()
+                        c to b
+                    } finally {
+                        conn.disconnect()
+                    }
+                }.getOrElse { -1 to (it.message ?: it.javaClass.simpleName) }
+
+                val mark = when {
+                    code == 405 -> "✅ IM vhost"
+                    code == 403 && body.contains("bad token") -> "✅ IM vhost(403 兜底)"
+                    code == 403 -> "❌ 别的 vhost 鉴权层"
+                    code == 404 -> "❌ 不挂 /websock"
+                    code == -1 -> "⌛ 超时/连不上"
+                    else -> "？"
+                }
+                "  :$p  HTTP $code  $mark" + if (body.isNotBlank()) {
+                    "  " + body.take(60).replace("\n", " ")
+                } else ""
+            }
+            buildString {
+                appendLine("弹幕端口诊断（判据：明文 POST /websock/join → 405 才算 IM vhost）")
+                appendLine("共 ${candidates.size} 个端口：")
+                rows.forEach { appendLine(it) }
+                appendLine()
+                appendLine("命中数：${rows.count { it.contains("✅") }}")
+            }.trimEnd()
+        }
+
     // ------------------------------------------------------------------ 分类
     companion object {
-        /**
-         * 弹幕端口粗筛最多扫多少个监听端口。
-         * 真机上报「试了 3 个端口全 404」说明一条都没筛出来，所以放宽到 64 ——
-         * 本机 LISTEN 端口通常只有十几个，多扫一些代价也就是几十毫秒。
-         */
-        private const val MAX_PROBE_PORTS = 64
-
         /**
          * `live_in` 软筛的下限。
          *

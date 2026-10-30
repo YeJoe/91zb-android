@@ -95,6 +95,10 @@ fun SettingsScreen(c: AppContainer) {
     /** 「备用数据源」默认收起：实时源正常时这组根本不用碰 */
     var advancedOpen by remember { mutableStateOf(false) }
 
+    // 弹幕端口诊断（点「诊断端口」后填充）
+    var wsDiagLoading by remember { mutableStateOf(false) }
+    var wsDiag by remember { mutableStateOf<String?>(null) }
+
     // 直播源（直连源 App 隧道端口）
     // JWE 已内置默认值（Prefs.Defaults.JWE），输入框就留空 —— 直接把 330 字符塞进
     // 单行输入框，用户只会看到一串乱码似的尾巴。要看/改时才自己粘一份进来。
@@ -563,6 +567,41 @@ fun SettingsScreen(c: AppContainer) {
                     .clickable { c.danmaku.restart(scope) }
                     .padding(horizontal = 12.dp, vertical = 6.dp)
             )
+            Spacer(Modifier.height(4.dp))
+            // 诊断：逐个端口打一发明文 join，直接看到每个端口回了什么。
+            // 排查「一直 404」时不用再靠猜 —— 一眼能分出是端口没拿到、还是判据判错。
+            Text(
+                if (wsDiagLoading) "诊断中…" else "诊断端口",
+                color = MaterialTheme.colorScheme.primary,
+                fontSize = 12.sp,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(50))
+                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f))
+                    .clickable(enabled = !wsDiagLoading) {
+                        wsDiagLoading = true
+                        wsDiag = null
+                        scope.launch {
+                            wsDiag = runCatching { c.live.diagnoseWs() }
+                                .getOrElse { "诊断失败：${it.message}" }
+                            wsDiagLoading = false
+                        }
+                    }
+                    .padding(horizontal = 12.dp, vertical = 6.dp)
+            )
+            if (wsDiag != null) {
+                Text(
+                    wsDiag!!,
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 6.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f))
+                        .padding(8.dp)
+                )
+            }
         }
 
         // ---------- 关注 ----------
