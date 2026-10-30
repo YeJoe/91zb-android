@@ -7,7 +7,7 @@ import android.content.Intent
 import android.net.Uri
 import android.view.LayoutInflater
 import android.view.WindowManager
-import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.animate
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
@@ -152,15 +152,23 @@ private class PlayerUi {
  * scrollable 的手势仲裁。
  */
 private class PlayerPager(initialIndex: Int, private val count: Int) {
-    private val indexState = mutableIntStateOf(initialIndex)
+    private var indexState by mutableIntStateOf(initialIndex)
     var index: Int
-        get() = indexState.intValue
+        get() = indexState
         set(v) {
-            indexState.intValue = v
+            indexState = v
         }
 
-    /** 整页竖直位移（px），正 = 往下拖 */
-    val offset = Animatable(0f)
+    /**
+     * 整页竖直位移（px），正 = 往下拖。
+     *
+     * 这里刻意用普通 Float 状态，而不是 `Animatable`：`Animatable.snapTo` 是挂起函数，
+     * 而拖动回调跑在 `awaitPointerEventScope` 这个**受限**协程作用域里 —— 那里不允许
+     * 调用外部挂起函数，否则编译期直接报
+     * 「Restricted suspending functions can invoke … only on their restricted coroutine scope」。
+     * 拖动本身只需要同步赋值，补间动画交给 [finish] / [cancelDrag] 里的协程做。
+     */
+    var offset by mutableFloatStateOf(0f)
 
     /** 一屏高度（px），onSizeChanged 时写入 */
     var pageHeight by mutableFloatStateOf(1f)
@@ -168,15 +176,14 @@ private class PlayerPager(initialIndex: Int, private val count: Int) {
     private var busy = false
 
     /** 0~1，拖了多少（控制栏跟着淡出用） */
-    fun progress(): Float = (abs(offset.value) / pageHeight.coerceAtLeast(1f)).coerceIn(0f, 1f)
+    fun progress(): Float = (abs(offset) / pageHeight.coerceAtLeast(1f)).coerceIn(0f, 1f)
 
     /** 拖动中：1:1 跟手；到边界加 0.2 阻力，明确告诉用户没有下一间了 */
-    suspend fun drag(dy: Float) {
+    fun drag(dy: Float) {
         if (busy) return
         val h = pageHeight.coerceAtLeast(1f)
         val atEdge = (index == 0 && dy > 0) || (index == count - 1 && dy < 0)
-        val ty = (if (atEdge) dy * 0.2f else dy).coerceIn(-h * 1.1f, h * 1.1f)
-        offset.snapTo(ty)
+        offset = (if (atEdge) dy * 0.2f else dy).coerceIn(-h * 1.1f, h * 1.1f)
     }
 
     /** 松手：位移过 14% 屏高或速度够快就切间，否则回弹。两段动画和源 App 一致 */
@@ -188,25 +195,30 @@ private class PlayerPager(initialIndex: Int, private val count: Int) {
         val delta = if (dy < 0) 1 else -1
         val next = index + delta
         if ((!far && !fast) || next !in 0 until count) {
-            scope.launch { offset.animateTo(0f, tween(190)) }
+            scope.launch { animTo(0f, 190) }
             return
         }
         busy = true
         scope.launch {
             // 1) 旧屏整页滑出
-            offset.animateTo(if (delta > 0) -h else h, tween(150))
+            animTo(if (delta > 0) -h else h, 150)
             // 2) 换到新一间，新屏从对面小幅落位（不是整屏推入，更干脆）
             index = next
-            offset.snapTo(if (delta > 0) h * 0.16f else -h * 0.16f)
+            offset = if (delta > 0) h * 0.16f else -h * 0.16f
             // 3) 落位
-            offset.animateTo(0f, tween(210))
+            animTo(0f, 210)
             busy = false
         }
     }
 
     /** 双指捏合打断了单指拖拽：把残余位移复位 */
     fun cancelDrag(scope: CoroutineScope) {
-        if (!busy && abs(offset.value) > 0.5f) scope.launch { offset.animateTo(0f, tween(150)) }
+        if (!busy && abs(offset) > 0.5f) scope.launch { animTo(0f, 150) }
+    }
+
+    /** 把 [offset] 以 tween 推到目标值。只能在协程里调用（[animate] 是挂起函数） */
+    private suspend fun animTo(target: Float, ms: Int) {
+        animate(offset, target, animationSpec = tween(ms)) { value, _ -> offset = value }
     }
 }
 
@@ -324,7 +336,7 @@ fun PlayerScreen(c: AppContainer, startIndex: Int, onClose: () -> Unit) {
         Box(
             Modifier
                 .fillMaxSize()
-                .graphicsLayer { translationY = pager.offset.value }
+                .graphicsLayer { translationY = pager.offset }
         ) {
             VideoLayer(holder, ui, videoAlpha, resizeMode)
             // 封面盖在视频上：视频就绪后淡出，切房瞬间（ready=false）立刻显出来遮住换流的空档
