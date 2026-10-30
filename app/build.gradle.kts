@@ -11,8 +11,8 @@ android {
         applicationId = "com.jjlive.app"
         minSdk = 23
         targetSdk = 34
-        versionCode = 14
-        versionName = "1.13-cats"
+        versionCode = 15
+        versionName = "1.14-pip"
     }
 
     // 固定签名：CI 每次重新生成 debug keystore 会导致签名变化，

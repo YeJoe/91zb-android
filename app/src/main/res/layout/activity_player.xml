@@ -222,12 +222,12 @@
             android:textSize="11.5sp"
             android:visibility="gone" />
 
-        <!-- 底部信息条：清晰度 / 码率 -->
+        <!-- 清晰度 / 码率信息条：贴顶栏（导航栏）区域，具体位置由 placeInfoRow() 按顶栏高度设置 -->
         <LinearLayout
             android:id="@+id/bottomBar"
             android:layout_width="match_parent"
             android:layout_height="40dp"
-            android:layout_gravity="bottom"
+            android:layout_gravity="top"
             android:gravity="center_vertical"
             android:orientation="horizontal"
             android:paddingLeft="14dp"

@@ -113,6 +113,7 @@ class PlayerActivity : AppCompatActivity() {
     private lateinit var sendBar: View
     private lateinit var etDanmu: EditText
     private lateinit var btnSend: TextView
+    private lateinit var topBar: LinearLayout
     private lateinit var bottomBar: LinearLayout
     private lateinit var scrimTop: View
     private lateinit var chat: RecyclerView
@@ -164,10 +165,15 @@ class PlayerActivity : AppCompatActivity() {
 
     /** 聊天区是否被右滑甩走了（此时画面铺满，只留一个"聊天"胶囊）。 */
     private var chatHidden = false
+    /** 是否处于画中画。画中画里只允许显示画面，任何浮层都不能盖上去。 */
+    private var inPip = false
+    /** 进画中画前加载遮罩是否可见，退出时还原，避免连接中的提示被永久吞掉。 */
+    private var overlayWasShown = false
     /** 甩走之前的形态，叫回聊天区时恢复。 */
     private var modeBeforeHide = false
     private var barHeight = 0
     private var insetBottom = 0
+    private var insetTop = 0
     private var lastVw = 0
     private var lastVh = 0
     private var fitting = false
@@ -222,6 +228,7 @@ class PlayerActivity : AppCompatActivity() {
         sendBar = findViewById(R.id.sendBar)
         etDanmu = findViewById(R.id.etDanmu)
         btnSend = findViewById(R.id.btnSend)
+        topBar = findViewById(R.id.topBar)
 
         // 聊天区：从下往上堆
         chat.layoutManager = LinearLayoutManager(this).apply { stackFromEnd = true }
@@ -264,10 +271,10 @@ class PlayerActivity : AppCompatActivity() {
 
     /** 沉浸式下避开状态栏 / 导航栏，避免标题和关闭按钮被系统图标压住。 */
     private fun applyInsets() {
-        val topBar = findViewById<View>(R.id.topBar)
         ViewCompat.setOnApplyWindowInsetsListener(page) { _, insets ->
             val sys = insets.getInsets(WindowInsetsCompat.Type.systemBars())
             insetBottom = sys.bottom
+            insetTop = sys.top
             topBar.setPadding(dp(14), sys.top + dp(8), dp(14), dp(10))
 
             // 发送栏常驻屏幕最底部：高度把系统手势条也算进去，内边距留出来，
@@ -279,15 +286,34 @@ class PlayerActivity : AppCompatActivity() {
             sendBar.layoutParams = sp
             sendBar.setPadding(dp(12), 0, dp(12), sys.bottom)
 
-            // 清晰度 / 码率条不再占底部一栏，改成浮在聊天区正上方
+            // 清晰度 / 码率条已挪到顶栏区域，跟着顶栏走，不再占底部
             barHeight = dp(40)
             bottomBar.layoutParams = bottomBar.layoutParams.apply { height = barHeight }
             bottomBar.setPadding(dp(14), 0, dp(14), 0)
 
             applyMode()
+            // 顶栏刚改完 padding，这一帧量到的还是旧高度；等下一次布局再定位一次信息行，
+            // 保证「1080X1920 / 已播 xx s」不会压到顶栏标题上。
+            page.post { applyMode() }
             insets
         }
         ViewCompat.requestApplyInsets(page)
+    }
+
+    /**
+     * 「1080X1920 / 已播 xx s · 码率」这一行贴到顶栏下方（顶部导航栏区域）。
+     * 顶栏高度会随状态栏 inset 变化，所以按它实测的底边定位，量不到时用 inset 估算。
+     */
+    private fun placeInfoRow() {
+        val stp = bottomBar.layoutParams as FrameLayout.LayoutParams
+        stp.gravity = Gravity.TOP or Gravity.START
+        stp.bottomMargin = 0
+        stp.topMargin = if (topBar.height > 0 && topBar.bottom > 0) {
+            topBar.bottom + dp(2)
+        } else {
+            insetTop + dp(54)
+        }
+        bottomBar.layoutParams = stp
     }
 
     // ─────────── 半屏 / 全屏 ───────────
@@ -297,6 +323,16 @@ class PlayerActivity : AppCompatActivity() {
      * 全屏：画面铺满，聊天区变成压底的渐隐层。
      */
     private fun applyMode() {
+        // 画中画必须最先拦下来：进小窗会伴随窗口尺寸变化，onConfigurationChanged 与
+        // 窗口 inset 回包都会再调一次 applyMode，若不拦住，下面的全屏布局会把聊天区
+        // 重新摆回底部（248dp 高），在小窗里直接盖住画面。
+        if (inPip) {
+            applyPipLayout()
+            return
+        }
+        // 回到普通形态：还原被画中画藏起来的常驻浮层
+        restoreChrome()
+
         val h = page.height
         if (h <= 0) {
             if (!fitPosted) {
@@ -321,10 +357,8 @@ class PlayerActivity : AppCompatActivity() {
                 btnChat.layoutParams = bp
             }
             btnChat.visibility = View.VISIBLE
-            // 码率条浮在发送栏上方
-            val stp = bottomBar.layoutParams as FrameLayout.LayoutParams
-            stp.bottomMargin = sendBarH + dp(8)
-            bottomBar.layoutParams = stp
+            // 清晰度/码率行固定在顶栏下方，和聊天区是否收起无关
+            placeInfoRow()
             scrimTop.alpha = 1f
             videoBox.post { fitVideo(lastVw, lastVh) }
             return
@@ -345,10 +379,8 @@ class PlayerActivity : AppCompatActivity() {
         videoBox.layoutParams = lp
         chatPanel.layoutParams = cp
 
-        // 清晰度 / 码率条挪到聊天区正上方，避免压住发送栏
-        val stp = bottomBar.layoutParams as FrameLayout.LayoutParams
-        stp.bottomMargin = sendBarH + cp.height + dp(6)
-        bottomBar.layoutParams = stp
+        // 清晰度 / 码率行贴在顶栏下方，不再压着聊天区和发送栏
+        placeInfoRow()
 
         // 切间提示摆在画面正中间
         val sp = swipeHint.layoutParams as FrameLayout.LayoutParams
@@ -357,6 +389,58 @@ class PlayerActivity : AppCompatActivity() {
         swipeHint.layoutParams = sp
 
         videoBox.post { fitVideo(lastVw, lastVh) }
+    }
+
+    /**
+     * 画中画形态：只留画面。
+     *
+     * PiP 窗口很小（常见 16:9 的 240dp 左右），任何一层浮层都会把画面吃掉大半。
+     * 这里把顶栏、聊天区、发送栏、码率条、滑动提示、渐变遮罩、加载遮罩全部隐藏，
+     * 画面容器撑满窗口，并按视频比例重新居中等比缩放。
+     */
+    private fun applyPipLayout() {
+        topBar.visibility = View.GONE
+        scrimTop.visibility = View.GONE
+        chatPanel.visibility = View.GONE
+        btnChat.visibility = View.GONE
+        bottomBar.visibility = View.GONE
+        sendBar.visibility = View.GONE
+        swipeHint.visibility = View.GONE
+        overlay.visibility = View.GONE
+
+        val lp = videoBox.layoutParams as FrameLayout.LayoutParams
+        if (lp.height != FrameLayout.LayoutParams.MATCH_PARENT) {
+            lp.height = FrameLayout.LayoutParams.MATCH_PARENT
+            videoBox.layoutParams = lp
+        }
+        videoBox.post { fitVideo(lastVw, lastVh) }
+    }
+
+    /**
+     * 显示加载/错误遮罩。画中画里一律不显示：那层是 #CC000000 的整屏黑罩，
+     * 在小窗里会把画面整个吞掉（刷新直播间、切清晰度时尤其明显）。
+     */
+    private fun showOverlay() {
+        overlayWasShown = true
+        if (!inPip) overlay.visibility = View.VISIBLE
+    }
+
+    /** 隐藏加载/错误遮罩（起播成功、切到 WebView 等）。同时清掉"待还原"标记。 */
+    private fun hideOverlay() {
+        overlayWasShown = false
+        overlay.visibility = View.GONE
+    }
+
+    /** 退出画中画：还原被 [applyPipLayout] 藏起来的常驻浮层（其余交给 applyMode）。 */
+    private fun restoreChrome() {
+        topBar.visibility = View.VISIBLE
+        scrimTop.visibility = View.VISIBLE
+        bottomBar.visibility = View.VISIBLE
+        sendBar.visibility = View.VISIBLE
+        if (overlayWasShown) {
+            overlayWasShown = false
+            overlay.visibility = View.VISIBLE
+        }
     }
 
     /** 全屏形态下，「隐藏/聊天」按钮用于收起或叫回聊天区。 */
@@ -541,7 +625,7 @@ class PlayerActivity : AppCompatActivity() {
         title.text = roomName
         resolution.text = ""
         stats.text = ""
-        overlay.visibility = View.VISIBLE
+        showOverlay()
         btnRetry.visibility = View.GONE
         onStatus("正在获取播放地址…")
     }
@@ -622,7 +706,7 @@ class PlayerActivity : AppCompatActivity() {
                     if (player !== p || isFinishing) return@post
                     playing = true
                     playStartAt = System.currentTimeMillis()
-                    overlay.visibility = View.GONE
+                    hideOverlay()
                     btnRetry.visibility = View.GONE
                     status.text = "播放中 · 硬解"
                     ui.removeCallbacks(firstFrameWatchdog)
@@ -718,7 +802,7 @@ class PlayerActivity : AppCompatActivity() {
     private fun switchToWeb(reason: String) {
         if (useWeb) {
             onStatus("播放失败：$reason")
-            overlay.visibility = View.VISIBLE
+            showOverlay()
             btnRetry.visibility = View.VISIBLE
             return
         }
@@ -843,7 +927,7 @@ class PlayerActivity : AppCompatActivity() {
                 playing = true
                 playStartAt = System.currentTimeMillis()
                 playedSeconds = 0
-                overlay.visibility = View.GONE
+                hideOverlay()
                 btnRetry.visibility = View.GONE
                 status.text = "播放中 · 软解"
                 showSwipeHintOnce()
@@ -884,7 +968,7 @@ class PlayerActivity : AppCompatActivity() {
     private fun fetchAndPlay() {
         val my = ++reqSeq
         playing = false
-        overlay.visibility = View.VISIBLE
+        showOverlay()
         onStatus("正在获取播放地址…")
         urls = emptyList()
         urlIndex = 0
@@ -1118,6 +1202,14 @@ class PlayerActivity : AppCompatActivity() {
             Toast.makeText(this, "设备不支持画中画", Toast.LENGTH_SHORT).show()
             return
         }
+        // 小窗里放不下输入法，进画中画前先把弹幕键盘收起来
+        if (etDanmu.hasFocus()) {
+            runCatching {
+                (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager)
+                    .hideSoftInputFromWindow(etDanmu.windowToken, 0)
+            }
+            etDanmu.clearFocus()
+        }
         val w = if (lastVw > 0) lastVw else 16
         val h = if (lastVh > 0) lastVh else 9
         val params = PictureInPictureParams.Builder()
@@ -1126,39 +1218,25 @@ class PlayerActivity : AppCompatActivity() {
         enterPictureInPictureMode(params)
     }
 
-    override fun onUserLeaveHint() {
-        super.onUserLeaveHint()
-        // 切到后台时自动进入画中画，继续看直播
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && playing) {
-            runCatching { enterPip() }
-        }
-    }
-
     override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean) {
         super.onPictureInPictureModeChanged(isInPictureInPictureMode)
-        val topBar = findViewById<View>(R.id.topBar)
-        if (isInPictureInPictureMode) {
-            // 进入画中画：隐藏所有 UI 浮层，只留画面
-            topBar.visibility = View.GONE
-            chatPanel.visibility = View.GONE
-            bottomBar.visibility = View.GONE
-            sendBar.visibility = View.GONE
-            btnChat.visibility = View.GONE
-            swipeHint.visibility = View.GONE
-        } else {
-            topBar.visibility = View.VISIBLE
-            bottomBar.visibility = View.VISIBLE
-            sendBar.visibility = View.VISIBLE
-            applyMode()
+        inPip = isInPictureInPictureMode
+        if (inPip) {
+            // 记下加载遮罩此刻是否可见，退出小窗时再还原，免得"连接中"提示被永久吞掉
+            overlayWasShown = overlay.visibility == View.VISIBLE
         }
+        // 进出小窗都伴随窗口尺寸变化（还会再触发 onConfigurationChanged），
+        // 统一交给 applyMode 按 inPip 分流：进小窗只留画面，退出则恢复完整布局。
+        page.post { applyMode() }
     }
 
     override fun onPause() {
         super.onPause()
         // 离开页面就撤掉常亮，别在后台白白耗电
         window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        // WebView 软解很吃 CPU，页面不可见时暂停；原生解码保持拉流（回前台立刻有画面）
-        if (useWeb) runCatching { web?.onPause() }
+        // WebView 软解很吃 CPU，页面不可见时暂停；原生解码保持拉流（回前台立刻有画面）。
+        // 画中画里窗口仍然可见，不能暂停，否则小窗只剩静止画面。
+        if (useWeb && !inPip) runCatching { web?.onPause() }
     }
 
     override fun onResume() {
