@@ -302,7 +302,8 @@ class DanmakuStore(
                 )
             }
         }
-        first
+        // 块体函数不会隐式返回最后一行，必须显式 return
+        return first
     }
 
     private fun push(m: DmMessage) {
