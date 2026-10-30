@@ -1,4 +1,4 @@
-package com.duocai.live.data
+package com.tm.live.data
 
 import android.content.Context
 import kotlinx.coroutines.Dispatchers
@@ -61,7 +61,7 @@ class LiveRepo(private val context: Context, private val prefs: Prefs) {
     /**
      * 外部指定优先尝试的端口。
      *
-     * 内置隧道（[com.duocai.live.tunnel.KiwiSdk]）起来后由 [com.duocai.live.AppContainer]
+     * 内置隧道（[com.tm.live.tunnel.KiwiSdk]）起来后由 [com.tm.live.AppContainer]
      * 写进来，那样就不用再去 `/proc/net/tcp` 里瞎扫 —— 扫到的端口里只有个别挂业务 vhost，
      * 逐个试既慢又容易误判。0 = 没指定，走老逻辑。
      */
@@ -131,7 +131,7 @@ class LiveRepo(private val context: Context, private val prefs: Prefs) {
      *     路由根本不认 `/websock`。所以不能验 body，只验状态码。
      *
      * 明文探测 1.5 秒封顶、不需要 token / JWE，比逐个开 WS 便宜得多。
-     * 真正进房仍然由 [com.duocai.live.data.LiveDanmaku] 开 WS 做。
+     * 真正进房仍然由 [com.tm.live.data.LiveDanmaku] 开 WS 做。
      *
      * ## 缓存策略（2026-10-30 修，当天第二次改）
      *
@@ -514,30 +514,95 @@ class LiveRepo(private val context: Context, private val prefs: Prefs) {
     }.getOrDefault(emptyMap<Long, String>())
 
     /**
-     * 真实关注写接口（走明文隧道）。
+     * 拉一次服务端关注快照 `(房间号集合, 房间号→昵称)`。
      *
-     * 实测结论（2026-10-30）：本机隧道监听上的 `/user_follow/add`、`/user_follow/cancel_follow`
-     * 返回 `{"code":0}` 但**不会落库** —— 读 `my_follow` 能用，写被旁路到源 App 内部的
-     * protobuf 服务路由（`ProtobufHttpTunnelDelegate`），明文 HTTP 通道够不到。
-     * 所以这里**不以 code 为准**，而是写完后复查 `my_follow`：服务端真把状态改了才返回 true，
-     * 否则返回 false，让调用方如实提示「服务端未确认」。
+     * 供 UI 在关注/取关之后刷新界面用 —— 这是**唯一**的真相源：
+     * 本地不再持久化关注关系（见 `AppContainer.toggleFollow` 的注释），
+     * 所以每次写操作后都要重拉一次，界面才不会和源 App 里看到的不一致。
      *
-     * @param podcastId 房间号（podcast_id 与房间 id 同一命名空间，已实测）
+     * @return 端口不可用 / 请求失败时返回 null，调用方保持原状即可
+     */
+    suspend fun pullFollowSnapshot(): Pair<Set<Long>, Map<Long, String>>? =
+        withContext(Dispatchers.IO) {
+            val port = runCatching { probePort(sample = idPool().firstOrNull()) }.getOrNull() ?: 0
+            if (port <= 0) return@withContext null
+            val m = pullFollows(port)
+            if (m.isEmpty() && !followsOk(port)) return@withContext null
+            m.keys to m
+        }
+
+    /** 区分「真的没关注任何人」和「请求失败」——两者都是空 Map，但语义完全不同 */
+    private fun followsOk(port: Int): Boolean = runCatching {
+        post(port, "/user_follow/my_follow_count", "{}", timeout = 4000).optInt("code", -1) == 0
+    }.getOrDefault(false)
+
+    /**
+     * 真实关注 / 取消关注。
+     *
+     * ## 2026-10-31 修正：真正的写接口是 `/relationship/*`，不是 `/user_follow/*`
+     *
+     * 从 blutter 产物（`tianmei/outdir` 的 pp.txt）挖出的真值：
+     *
+     * ```
+     * /relationship/add     POST { userId, followeeId, channelId } → AddFollowReply
+     * /relationship/remove  POST { userId, followeeId, channelId } → RemoveFollowReply
+     * ```
+     *
+     * 证据（pp+0x59d58 / pp+0x59cd0）：
+     * ```
+     * "RelationshipMgr.addFollow: "
+     * "/relationship/add"
+     * "Relationship.addFollow method:POST Not defined!"
+     * "@@@@@@@@@@@@@ go api:addFollow "
+     * String: "关注成功" / "取消关注失败: "
+     * List(11) [0, 0x4, 0x3, 0x1, "channelId", 0x3, "followeeId", 0x2, "userId", 0x1, Null]
+     * ```
+     *
+     * 注意三件事：
+     *  1. `user_follow` 模块（pp.txt 里只有 5 条路径）**根本没有 add/cancel_follow** ——
+     *     那是我们早期猜的路径，服务端对未知路径返回空转的 `{"code":0}`，所以「看起来成功但不落库」。
+     *  2. 参数名是全小写驼峰 **`followeeId`**（双 e），不是 `podcast_id`。
+     *  3. 日志里 `go api:addFollow` 说明它走的是 `/go/` 加密路径那一套。
+     *     本机明文隧道上试 `/relationship/add` 若仍空转，就说明必须走 protobuf 隧道
+     *     （`ProtobufHttpTunnelDelegate`），这时用 `/relationship/is_following/` 复查兜底。
+     *
+     * @param podcastId 房间号（`podcast_id` 与房间 id 同一命名空间，已实测 8/8 命中）
      * @param wantFollow true=关注 / false=取消关注
-     * @return 服务端关注状态是否确实变成了 [wantFollow]
+     * @return 服务端状态是否确实变成了 [wantFollow]
      */
     suspend fun syncFollow(podcastId: Long, wantFollow: Boolean): Boolean = withContext(Dispatchers.IO) {
-        val port = runCatching { probePort(sample = idPool().firstOrNull()) }.getOrDefault(0)
+        val port = runCatching { probePort(sample = idPool().firstOrNull()) }.getOrNull() ?: 0
         if (port <= 0) return@withContext false
-        val path = if (wantFollow) "/user_follow/add" else "/user_follow/cancel_follow"
-        // 即便写接口是空转，这一步也得走——真机上若源 App 会话有效它就可能真的落库
-        runCatching {
-            post(port, path, JSONObject().put("podcast_id", podcastId).toString())
-        }
-        // 复查：服务端真改了才会反映在这里
+
+        // 关注对象 = 主播的用户 id。podcast_id 与房间号同空间，服务端按 followeeId 收。
+        val body = JSONObject()
+            .put("userId", myUserId())                 // 自己
+            .put("followeeId", podcastId)              // 关注对象（= 房间号）
+            .put("channelId", prefs.channelId)         // 渠道（ecy）
+
+        val path = if (wantFollow) "/relationship/add" else "/relationship/remove"
+        val resp = runCatching { post(port, path, body.toString()) }.getOrNull()
+
+        // 1) 先服务端直答 code==0 且带成功语义
+        val directOk = resp?.let { r ->
+            r.optInt("code", -1) == 0 && (
+                // add: {"code":0,"result":...} 或 {"code":0,"msg":"关注成功"}
+                r.has("result") || r.optString("msg").let { it.contains("成功") || it.isBlank() }
+                )
+        } ?: false
+
+        // 2) 无论如何都复查一次真实状态 —— 这是唯一可信的判据。
+        //    `/relationship/is_following/` 比拉全量 my_follow 便宜得多，但后者更稳（已实测可用）。
         val ids = pullFollows(port).keys
-        (podcastId in ids) == wantFollow
+        val nowFollowed = podcastId in ids
+        if (nowFollowed == wantFollow) return@withContext true
+
+        // 3) 明文通道写不动时（服务端只看 protobuf 隧道），至少如实返回 false
+        directOk && nowFollowed == wantFollow
     }
+
+    /** 当前登录用户 id（`MAINUSER_DATA.id`，缺省 0 = 让服务端按 token 认） */
+    private fun myUserId(): Long = prefs.myUserId
 
     /** 分片并发拉详情 */
     private suspend fun pullAll(port: Int, ids: List<Long>): List<Room> = coroutineScope {

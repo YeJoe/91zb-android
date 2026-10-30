@@ -1,4 +1,4 @@
-package com.duocai.live
+package com.tm.live
 
 import android.app.Application
 import android.content.Context

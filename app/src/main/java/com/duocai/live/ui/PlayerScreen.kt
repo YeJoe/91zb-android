@@ -1,4 +1,4 @@
-package com.duocai.live.ui
+package com.tm.live.ui
 
 import android.app.Activity
 import android.content.Context
@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -33,6 +34,9 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.ExitToApp
@@ -61,16 +65,20 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shadow
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInteropFilter
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
@@ -78,14 +86,14 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
-import com.duocai.live.AppContainer
-import com.duocai.live.MainActivity
-import com.duocai.live.R
-import com.duocai.live.data.DmMessage
-import com.duocai.live.data.Room
-import com.duocai.live.data.StreamMode
-import com.duocai.live.player.PlayerHolder
-import com.duocai.live.ui.theme.Gold
+import com.tm.live.AppContainer
+import com.tm.live.MainActivity
+import com.tm.live.R
+import com.tm.live.data.DmMessage
+import com.tm.live.data.Room
+import com.tm.live.data.StreamMode
+import com.tm.live.player.PlayerHolder
+import com.tm.live.ui.theme.Gold
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -282,10 +290,21 @@ fun PlayerScreen(c: AppContainer, startIndex: Int, onClose: () -> Unit) {
     }
 
     // 关注写接口回执：点关注后后台把请求打到真实服务、复查 my_follow，结果回这里弹 toast
+    //
+    // 只在**用户真的点了关注**之后弹，不能进页面就弹。
+    // 原来直接 LaunchedEffect(c.followSyncSeq) 有两个坑：
+    //   1. Compose 首次组合时 effect 一定会跑一次，此时 seq 是历史值（非 0）、
+    //      followSync 还残留着上一次的文案 → 进任意直播间立刻弹「服务端未确认」；
+    //   2. followSync 从不清空，残留会一直存在，换个房间又弹一次。
+    // 现在用「进页面时的 seq 基线」做门槛，并让容器在消费后清空。
+    val seqBaseline = remember { mutableStateOf(c.followSyncSeq) }
     LaunchedEffect(c.followSyncSeq) {
-        if (c.followSyncSeq == 0) return@LaunchedEffect
+        // 首次组合：把当前 seq 记为基线，不弹任何东西
+        if (c.followSyncSeq == seqBaseline.value) return@LaunchedEffect
+        seqBaseline.value = c.followSyncSeq
         c.followSync?.let { msg ->
             android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_SHORT).show()
+            c.consumeFollowSync()
         }
     }
 
@@ -393,7 +412,8 @@ fun PlayerScreen(c: AppContainer, startIndex: Int, onClose: () -> Unit) {
         ) {
             // 小窗里不淡入：alpha < 1 会给这一层单独开离屏缓冲，模拟器/部分 ROM 上
             // 这层半透明缓冲会跟 SystemUI 的 PiP 菜单抢合成顺序，看着就像菜单上蒙了层阴影。
-            VideoLayer(holder, ui, if (inPip) 1f else videoAlpha, resizeMode)
+            // blockTouch=inPip：PiP 下播放器不接触摸，否则会吃掉底部「还原」的点击。
+            VideoLayer(holder, ui, if (inPip) 1f else videoAlpha, resizeMode, blockTouch = inPip)
             // 封面盖在视频上：视频就绪后淡出，切房瞬间（ready=false）立刻显出来遮住换流的空档。
             // 小窗里整块摘掉 —— 尺寸太小（名字挤成一团），而且这层是全屏铺满的，
             // 少一层全屏绘制，PiP 菜单的按钮就少一层遮挡风险。
@@ -463,6 +483,8 @@ fun PlayerScreen(c: AppContainer, startIndex: Int, onClose: () -> Unit) {
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
                         .navigationBarsPadding()
+                        // 输入框要能跟着键盘抬起来，否则打字时被输入法整个盖住
+                        .imePadding()
                 )
             }
         }
@@ -529,7 +551,13 @@ fun PlayerScreen(c: AppContainer, startIndex: Int, onClose: () -> Unit) {
  * 缩放/平移（双指捏合），两层互不干扰。
  */
 @Composable
-private fun VideoLayer(holder: PlayerHolder, ui: PlayerUi, alpha: Float, resizeMode: Int) {
+private fun VideoLayer(
+    holder: PlayerHolder,
+    ui: PlayerUi,
+    alpha: Float,
+    resizeMode: Int,
+    blockTouch: Boolean = false
+) {
     AndroidView(
         factory = { ctx ->
             val view = LayoutInflater.from(ctx)
@@ -554,6 +582,17 @@ private fun VideoLayer(holder: PlayerHolder, ui: PlayerUi, alpha: Float, resizeM
                 translationX = ui.panX
                 translationY = ui.panY
             }
+            // 画中画里必须把触摸让出去。
+            //
+            // PlayerView 是平台 View，挂在 Compose 里时**它的触摸优先级高于同级的 Compose 节点**：
+            // 铺满全屏的 PlayerView 会先把 DOWN 事件吃掉，导致叠在上面的 Compose 按钮
+            // （底部「还原」）永远收不到点击 —— 表现就是「有一层透明遮罩，点不到放大按钮」。
+            // PiP 下播放器本身不需要任何触摸（系统菜单接管），所以整块拦掉最干净。
+            .then(
+                if (blockTouch) {
+                    Modifier.pointerInteropFilter { false } // 消费掉，不再往下传
+                } else Modifier
+            )
     )
 }
 
@@ -1026,7 +1065,7 @@ private fun ChatPanel(
             items(messages) { m -> ChatLine(m) }
         }
 
-        ChatInputBar(bg = bg)
+        ChatInputBar(c = c, bg = bg)
     }
 }
 
@@ -1097,28 +1136,94 @@ private fun ChatHeader(
 }
 
 @Composable
-private fun ChatInputBar(bg: Float) {
-    Row(
+private fun ChatInputBar(c: AppContainer, bg: Float) {
+    var text by remember { mutableStateOf("") }
+    var busy by remember { mutableStateOf(false) }
+    var err by remember { mutableStateOf("") }
+    val scope = rememberCoroutineScope()
+    val focus = LocalFocusManager.current
+
+    fun fire() {
+        val t = text.trim()
+        if (t.isEmpty() || busy) return
+        busy = true
+        err = ""
+        scope.launch {
+            val r = c.danmaku.send(t)
+            busy = false
+            r.onSuccess {
+                text = ""
+                focus.clearFocus()
+            }.onFailure { err = it.message ?: it.javaClass.simpleName }
+        }
+    }
+
+    Column(
         Modifier
             .fillMaxWidth()
             .padding(start = 12.dp, end = 12.dp, bottom = 8.dp, top = 2.dp)
-            .clip(RoundedCornerShape(50))
-            .background(Color.White.copy(alpha = 0.12f * (0.35f + bg)))
-            .padding(horizontal = 14.dp, vertical = 9.dp),
-        verticalAlignment = Alignment.CenterVertically
     ) {
-        Text(
-            "说点什么…（只读，发弹幕要先解决写接口鉴权）",
-            color = Color.White.copy(alpha = 0.55f),
-            fontSize = 12.sp,
-            modifier = Modifier.weight(1f)
-        )
-        Icon(
-            Icons.Filled.Send,
-            contentDescription = null,
-            tint = Color.White.copy(alpha = 0.35f),
-            modifier = Modifier.size(16.dp)
-        )
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(50))
+                .background(Color.White.copy(alpha = 0.12f * (0.35f + bg)))
+                .padding(start = 14.dp, end = 6.dp, top = 2.dp, bottom = 2.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(Modifier.weight(1f)) {
+                if (text.isEmpty()) {
+                    Text(
+                        "说点什么…",
+                        color = Color.White.copy(alpha = 0.55f),
+                        fontSize = 12.sp
+                    )
+                }
+                BasicTextField(
+                    value = text,
+                    onValueChange = {
+                        text = it
+                        if (err.isNotEmpty()) err = ""
+                    },
+                    singleLine = true,
+                    textStyle = TextStyle(color = Color.White, fontSize = 12.sp),
+                    cursorBrush = SolidColor(Color.White),
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                    keyboardActions = KeyboardActions(onSend = { fire() }),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 9.dp)
+                )
+            }
+            // 发送键：忙的时候压暗并禁点，避免连点发出好几条一样的
+            Box(
+                Modifier
+                    .size(30.dp)
+                    .clip(CircleShape)
+                    .background(
+                        if (busy) Color.White.copy(alpha = 0.08f)
+                        else Gold.copy(alpha = 0.22f)
+                    )
+                    .clickable(enabled = !busy) { fire() },
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    Icons.Filled.Send,
+                    contentDescription = "发送弹幕",
+                    tint = if (busy) Color.White.copy(alpha = 0.3f) else Gold,
+                    modifier = Modifier.size(15.dp)
+                )
+            }
+        }
+        if (err.isNotEmpty()) {
+            Text(
+                "发送失败 · $err",
+                color = Color(0xFFFF8F6B),
+                fontSize = 10.sp,
+                modifier = Modifier.padding(start = 14.dp, top = 4.dp),
+                style = TextStyle(shadow = textShadow())
+            )
+        }
     }
 }
 

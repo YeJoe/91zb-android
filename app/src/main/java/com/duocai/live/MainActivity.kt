@@ -1,4 +1,4 @@
-package com.duocai.live
+package com.tm.live
 
 import android.app.ActivityManager
 import android.app.PictureInPictureParams
@@ -13,8 +13,8 @@ import android.util.Rational
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import com.duocai.live.ui.RootScreen
-import com.duocai.live.ui.theme.TmTheme
+import com.tm.live.ui.RootScreen
+import com.tm.live.ui.theme.TmTheme
 
 class MainActivity : ComponentActivity() {
 
@@ -140,7 +140,7 @@ class MainActivity : ComponentActivity() {
      * 前后台标记。
      *
      * 列表的在播探活要发几百条 HTTP，退到后台还跑就是白烧电，所以容器拿这个
-     * 标记当闸门（[com.duocai.live.AppContainer.foreground]）。回到前台时容器会
+     * 标记当闸门（[com.tm.live.AppContainer.foreground]）。回到前台时容器会
      * 让列表重新上报一次可见区间，补探一轮。
      */
     override fun onResume() {

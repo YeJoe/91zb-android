@@ -1,18 +1,18 @@
-package com.duocai.live
+package com.tm.live
 
 import android.content.Context
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
-import com.duocai.live.data.DanmakuStore
-import com.duocai.live.data.FollowStore
-import com.duocai.live.data.LiveRepo
-import com.duocai.live.data.Prefs
-import com.duocai.live.data.Room
-import com.duocai.live.data.RoomRepo
-import com.duocai.live.data.SourceData
-import com.duocai.live.data.SourceMeta
-import com.duocai.live.player.PlayerHolder
+import com.tm.live.data.DanmakuStore
+import com.tm.live.data.FollowStore
+import com.tm.live.data.LiveRepo
+import com.tm.live.data.Prefs
+import com.tm.live.data.Room
+import com.tm.live.data.RoomRepo
+import com.tm.live.data.SourceData
+import com.tm.live.data.SourceMeta
+import com.tm.live.player.PlayerHolder
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -63,7 +63,7 @@ class AppContainer(context: Context) {
      * 通了就完全不需要源 App 常驻；没通（appKey 失效 / so 加载失败 / 设备 abi 不支持）
      * 会自动退回老行为 —— 扫本机监听端口去"借"源 App 起好的隧道。
      */
-    val tunnel = com.duocai.live.tunnel.Tunnel(this.context, prefs)
+    val tunnel = com.tm.live.tunnel.Tunnel(this.context, prefs)
 
     /**
      * 弹幕端口候选。
@@ -84,7 +84,7 @@ class AppContainer(context: Context) {
      * 于是候选表只剩 `tunnel.port`（`/room` 组），join 必然 404。
      *
      * 现在改成：
-     *  1. 两个来源都**不信任缓存**（见 [com.duocai.live.data.LiveRepo.verifyWsPorts] 注释），
+     *  1. 两个来源都**不信任缓存**（见 [com.tm.live.data.LiveRepo.verifyWsPorts] 注释），
      *     空结果会立刻重扫；
      *  2. 本机所有 LISTEN 端口也纳入候选 —— 内置隧道自己的 listener 就在里面，
      *     405 判据能把它挑出来（实测一台机器上 24 个监听端口里只有 1 个回 405）；
@@ -176,14 +176,35 @@ class AppContainer(context: Context) {
      */
     var inPip by mutableStateOf(false)
 
-    // ---- 关注（ids 是快照，供 Compose 观察）----
-    var followedIds by mutableStateOf<Set<Long>>(emptySet())
+    // ---- 关注：服务端是唯一真相源 ----
+    /**
+     * 服务端确认的关注集合（`/user_follow/my_follow` 的 `podcast_id`）。
+     *
+     * 2026-10-31 改为**单一真相源**：`/relationship/add` `/relationship/remove` 能真正落库之后，
+     * 本地收藏（SharedPreferences 里那份 JSON）就成了第二套状态 ——
+     * 两份不一致时界面反复横跳，还会在进房时误弹「服务端未确认」。
+     * 所以本地那份已彻底删除，只在 [pendingFollows] 里保留短暂的乐观值。
+     */
+
     /** 源 App 账号在服务端关注的人（`podcast_id` 就是房间号）。实时刷新时更新。 */
     var serverFollowIds by mutableStateOf<Set<Long>>(emptySet())
     var serverFollowNames by mutableStateOf<Map<Long, String>>(emptyMap())
 
-    /** 本地收藏 ∪ 服务端关注 —— 「关注」页和首页关注 tab 都用这一个口径 */
-    fun followIdSet(): Set<Long> = followedIds + serverFollowIds
+    /**
+     * 正在同步中的关注操作（房间号 → 期望状态）。
+     *
+     * 只影响显示，不落盘：点下去立刻变星标，服务端回执后由
+     * [applyFollowSnapshot] 覆盖；失败则回滚。
+     */
+    private var pendingFollows by mutableStateOf<Map<Long, Boolean>>(emptyMap())
+
+    /** 「关注」页和首页关注 tab 的统一口径：服务端 ∪ 正在乐观更新的 */
+    fun followIdSet(): Set<Long> {
+        if (pendingFollows.isEmpty()) return serverFollowIds
+        val out = serverFollowIds.toMutableSet()
+        pendingFollows.forEach { (id, want) -> if (want) out.add(id) else out.remove(id) }
+        return out
+    }
 
     /** 关注写接口回执（null=空闲）。PlayerScreen 用来弹 toast 告知服务端到底有没有确认。 */
     var followSync by mutableStateOf<String?>(null)
@@ -191,6 +212,32 @@ class AppContainer(context: Context) {
     /** 自增序号：同一条文案连点两次也能让 LaunchedEffect 重新触发 */
     var followSyncSeq by mutableStateOf(0)
         private set
+
+    /**
+     * 消费掉关注回执（弹完 toast 后调用）。
+     *
+     * 不清空的话，`followSync` 会一直留着上一条文案；播放页重新组合时
+     * 就会把「上一次」的关注结果当成新事件再弹一遍 —— 表现就是
+     * 「随便点个直播间、没点关注，却弹出服务端未确认」。
+     */
+    fun consumeFollowSync() {
+        followSync = null
+    }
+
+    /**
+     * 用服务端快照覆盖关注状态，并清掉已完成的乐观更新。
+     *
+     * @param ids   服务端当前关注集合
+     * @param names 房间号 → 昵称（用作「关注」页的副标题）
+     */
+    fun applyFollowSnapshot(ids: Set<Long>, names: Map<Long, String>) {
+        serverFollowIds = ids
+        serverFollowNames = names
+        // 服务端已经反映的期待状态，就不用再挂着乐观值了
+        if (pendingFollows.isNotEmpty()) {
+            pendingFollows = pendingFollows.filter { (id, want) -> (id in ids) != want }
+        }
+    }
 
     // ---- 设置里会被界面直接读的几项，做成可观察 ----
     // 原先这里还有个 showAd（「显示推广位」）。开关连同 Prefs 字段一起删了：
@@ -297,7 +344,7 @@ class AppContainer(context: Context) {
             prefs.imgProxy = v
             // 立刻重建 Coil 的 loader，改完不用重启
             runCatching {
-                (context.applicationContext as? com.duocai.live.App)?.reloadImageLoader()
+                (context.applicationContext as? com.tm.live.App)?.reloadImageLoader()
             }
         }
 
@@ -330,40 +377,77 @@ class AppContainer(context: Context) {
         player.pause()
     }
 
+    /**
+     * 关注 / 取消关注 —— **只打服务端，不再写本地收藏**。
+     *
+     * ## 为什么砍掉本地层（2026-10-31）
+     *
+     * `/relationship/add` `/relationship/remove` 打通之后，服务端就是唯一真相：
+     * 本地再存一份只会制造「本地有、服务端没有」这种半同步状态，
+     * 表现为进房自动关注、取消后又复活、toast 反复弹。
+     *
+     * 现在的模型：
+     * ```
+     * 点击 → pendingFollows 乐观翻转（界面立刻变）
+     *      → 打 /relationship/*
+     *      → 拉一次 my_follow 快照
+     *         ├─ 与期望一致 → 清掉 pending，界面以服务端为准
+     *         └─ 不一致     → 清掉 pending，界面回滚，toast 报失败
+     * ```
+     */
     fun toggleFollow(room: Room) {
         val willFollow = room.id !in followIdSet()
-        follows.toggle(room)
-        followedIds = follows.ids()
+
+        // 乐观更新：立刻变星标，服务端回执后覆盖
+        pendingFollows = pendingFollows + (room.id to willFollow)
+
         scope.launch(Dispatchers.IO) {
             val ok = runCatching { live.syncFollow(room.id, willFollow) }.getOrDefault(false)
+            if (ok) {
+                // 用服务端快照覆盖，顺便把 pending 清干净
+                runCatching { live.pullFollowSnapshot() }.getOrNull()?.let { (ids, names) ->
+                    applyFollowSnapshot(ids, names)
+                } ?: run {
+                    pendingFollows = pendingFollows - room.id
+                }
+            } else {
+                // 失败：撤掉乐观值，界面回到服务端真实状态
+                pendingFollows = pendingFollows - room.id
+            }
             followSync = if (willFollow)
-                if (ok) "已同步到服务端关注" else "已本地收藏（服务端未确认：本机隧道写接口为空转）"
+                if (ok) "已关注" else "关注失败"
             else
-                if (ok) "已取消关注" else "已取消本地收藏（服务端未确认：本机隧道写接口为空转）"
+                if (ok) "已取消关注" else "取消关注失败"
             followSyncSeq++
         }
     }
 
     fun unfollow(id: Long) {
-        follows.remove(id)
-        followedIds = follows.ids()
+        pendingFollows = pendingFollows + (id to false)
         scope.launch(Dispatchers.IO) {
             val ok = runCatching { live.syncFollow(id, false) }.getOrDefault(false)
-            followSync = if (ok) "已取消关注" else "已取消本地收藏（服务端未确认：本机隧道写接口为空转）"
+            if (ok) {
+                runCatching { live.pullFollowSnapshot() }.getOrNull()?.let { (ids, names) ->
+                    applyFollowSnapshot(ids, names)
+                } ?: run { pendingFollows = pendingFollows - id }
+            } else {
+                pendingFollows = pendingFollows - id
+            }
+            followSync = if (ok) "已取消关注" else "取消关注失败"
             followSyncSeq++
         }
     }
 
+    /** 「关注」页用：服务端关注里、当前列表能对上的房间 */
     fun followedList(): List<Room> {
         val byId = rooms.associateBy { it.id }
-        return follows.all().mapNotNull { byId[it.id] }
+        return followIdSet().mapNotNull { byId[it] }
     }
 
     /** 冷启动：先出缓存，再拉网络 */
     suspend fun bootstrap() {
         if (loadedOnce) return
         loadedOnce = true
-        followedIds = follows.ids()
         (live.loadCache() ?: repo.loadCache())?.let { applyData(it, fromCache = true) }
 
         // 内置隧道单独起一条协程：握手要几秒，不能挡住列表首屏。
@@ -372,7 +456,7 @@ class AppContainer(context: Context) {
         // 架构门禁放在这里而不是只放 Tunnel 里：x86 设备上一旦进到 dlopen，
         // 加固库的 JNI_OnLoad 会 abort 整个进程，连 catch 的机会都没有。
         if (kiwiAuto && prefs.kiwiAppKey.isNotBlank() &&
-            com.duocai.live.tunnel.KiwiSdk.abiSupported()
+            com.tm.live.tunnel.KiwiSdk.abiSupported()
         ) {
             scope.launch {
                 if (tunnel.start()) {

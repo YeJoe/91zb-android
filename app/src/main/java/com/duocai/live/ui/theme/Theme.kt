@@ -1,4 +1,4 @@
-package com.duocai.live.ui.theme
+package com.tm.live.ui.theme
 
 import android.os.Build
 import androidx.compose.foundation.isSystemInDarkTheme

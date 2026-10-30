@@ -1,4 +1,4 @@
-package com.duocai.live.data
+package com.tm.live.data
 
 /**
  * 图床 URL 归一化。

@@ -1,4 +1,4 @@
-package com.duocai.live.data
+package com.tm.live.data
 
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
@@ -141,6 +141,13 @@ class DanmakuStore(
         private set
 
     private var job: Job? = null
+    /**
+     * 当前这条接收连接的持有者。
+     *
+     * 发送要复用它拿到的"已进房端口"（[com.tm.live.data.LiveDanmaku.enteredPort]），
+     * 所以不能再像以前那样 `LiveDanmaku(prefs)` 建完就丢在 launch 里。
+     */
+    private var live: LiveDanmaku? = null
     private var roomId: Long = 0L
     private var menuId: Int = 1
 
@@ -171,8 +178,10 @@ class DanmakuStore(
             // socket 是阻塞 IO，绝不能放在主线程（会直接 ANR）；
             // 用通道把消息送回主线程再上屏，主线程只做状态更新。
             val inbox = Channel<DmMessage>(Channel.UNLIMITED)
-            val live = launch(Dispatchers.IO) {
-                LiveDanmaku(prefs).run(
+            val dm = LiveDanmaku(prefs)
+            live = dm
+            val link = launch(Dispatchers.IO) {
+                dm.run(
                     ports = portsProvider,
                     roomId = room,
                     menuId = menuId,
@@ -188,7 +197,7 @@ class DanmakuStore(
                     push(m)
                 }
             }
-            live.join()
+            link.join()
         }
     }
 
@@ -207,6 +216,28 @@ class DanmakuStore(
     fun stop() {
         job?.cancel()
         job = null
+        live = null
+    }
+
+    /**
+     * 发一条弹幕。
+     *
+     * 成功后**本地直接上屏**：服务端不会把用户自己发的消息回推给同一条连接
+     * （2026-10-30 实测：发完 watch 12 秒收不到，但 history_msg 能拉到），
+     * 不回显的话用户会以为没发出去。
+     *
+     * 昵称写「我」而不是真名：prefs 里只有 token/JWE，没有会话里的房间昵称，
+     * 与其显示一串占位 id，不如明确标成自己发的。
+     */
+    suspend fun send(text: String): Result<Long> {
+        val t = text.trim()
+        if (t.isEmpty()) return Result.failure(IllegalArgumentException("内容不能为空"))
+        val rid = roomId
+        if (rid <= 0L) return Result.failure(IllegalStateException("还没进房"))
+        val dm = live ?: return Result.failure(IllegalStateException("弹幕通道还没连上"))
+
+        return runCatching { dm.send(rid, menuId, t) { quickPortsProvider() } }
+            .onSuccess { push(DmMessage("chat", 32, "我", t)) }
     }
 
     private fun push(m: DmMessage) {

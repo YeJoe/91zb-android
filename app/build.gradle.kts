@@ -16,11 +16,11 @@ val appVersionCode: Int = (System.getenv("APP_VERSION_CODE") ?: "1").toIntOrNull
 val keystorePath: String? = System.getenv("KEYSTORE_FILE")
 
 android {
-    namespace = "com.duocai.live"
+    namespace = "com.tm.live"
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "com.duocai.live"
+        applicationId = "com.tm.live"
         minSdk = 24
         targetSdk = 35
         versionCode = appVersionCode
@@ -54,7 +54,12 @@ android {
 
     buildTypes {
         debug {
-            applicationIdSuffix = ".debug"
+            // **不要**加 applicationIdSuffix。
+            //
+            // 原来这里是 `applicationIdSuffix = ".debug"`，包名会变成
+            // `com.tm.live.debug` —— 与已装的 `com.tm.live` 是两个不同应用，
+            // `adb install -r` 必然报 INSTALL_FAILED_UPDATE_INCOMPATIBLE，只能先卸载。
+            // 目标是「新包直接覆盖旧包」，所以 debug 与 release 必须同包名同签名。
             versionNameSuffix = "-debug"
         }
         release {

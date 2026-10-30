@@ -1,4 +1,4 @@
-package com.duocai.live.ui
+package com.tm.live.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -43,9 +43,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
-import com.duocai.live.AppContainer
-import com.duocai.live.data.Room
-import com.duocai.live.ui.theme.Gold
+import com.tm.live.AppContainer
+import com.tm.live.data.Room
+import com.tm.live.ui.theme.Gold
 import kotlinx.coroutines.launch
 
 /**
@@ -59,9 +59,8 @@ fun FollowScreen(c: AppContainer) {
     val scope = androidx.compose.runtime.rememberCoroutineScope()
     val ctx = LocalContext.current
 
-    // 本地收藏 ∪ 源 App 账号在服务端关注的人（podcast_id 就是房间号）
-    val followIds = remember(c.followedIds, c.serverFollowIds) { c.followedIds + c.serverFollowIds }
-    val localById = remember(c.followedIds) { c.follows.all().associateBy { it.id } }
+    // 关注关系以服务端为唯一真相源（本地不再持久化）
+    val followIds = remember(c.serverFollowIds) { c.followIdSet() }
     val byId = remember(c.rooms) { c.rooms.associateBy { it.id } }
 
     LaunchedEffect(c.toast) {
@@ -77,12 +76,13 @@ fun FollowScreen(c: AppContainer) {
         if (hit != null && !hit.ad) {
             live.add(hit)
         } else {
-            val local = localById[id]
+            // 列表里没有这个房间（人在别处开播/还没被拉到详情）：
+            // 用服务端返回的昵称兜底，名字不会有歧义。
             offline.add(
                 hit ?: Room(
                     id,
-                    local?.name ?: c.serverFollowNames[id] ?: "房间 $id",
-                    local?.cat ?: "",
+                    c.serverFollowNames[id] ?: "房间 $id",
+                    "",
                     0,
                     "",
                     false,
@@ -176,13 +176,13 @@ fun FollowScreen(c: AppContainer) {
             if (live.isNotEmpty()) {
                 item { SectionTitle("正在直播 · ${live.size}", true) }
                 items(live, key = { "live-${it.id}" }) { room ->
-                    FollowRow(c, room, true, room.id in c.followedIds) { onPlay(c, live, room) }
+                    FollowRow(c, room, true, room.id in followIds) { onPlay(c, live, room) }
                 }
             }
             if (offline.isNotEmpty()) {
                 item { SectionTitle("未开播 · ${offline.size}", false) }
                 items(offline, key = { "off-${it.id}" }) { room ->
-                    FollowRow(c, room, false, room.id in c.followedIds) { }
+                    FollowRow(c, room, false, room.id in followIds) { }
                 }
             }
         }

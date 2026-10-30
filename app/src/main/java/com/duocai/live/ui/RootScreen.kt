@@ -1,4 +1,4 @@
-package com.duocai.live.ui
+package com.tm.live.ui
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.Crossfade
@@ -23,8 +23,8 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
-import com.duocai.live.AppContainer
-import com.duocai.live.Tab
+import com.tm.live.AppContainer
+import com.tm.live.Tab
 
 @Composable
 fun RootScreen(c: AppContainer) {

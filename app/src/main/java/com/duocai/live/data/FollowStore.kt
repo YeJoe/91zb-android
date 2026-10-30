@@ -1,4 +1,4 @@
-package com.duocai.live.data
+package com.tm.live.data
 
 import org.json.JSONArray
 import org.json.JSONObject
@@ -66,6 +66,23 @@ class FollowStore(private val prefs: Prefs) {
         }
         save()
         return !existed
+    }
+
+    /**
+     * 显式设置关注状态（幂等）。
+     *
+     * 为什么不用 [toggle]：`toggleFollow` 的语义是「把状态设成 X」，
+     * 而 toggle 是「翻转」。两者在「服务端已关注、本地没收藏」这种
+     * 半同步状态下会算出相反结果 —— 用户点一下本该取消，toggle 却会再加一条。
+     * 服务端复查失败回滚时也要用它精确恢复，不能靠再 toggle 一次。
+     */
+    fun setFollowed(room: Room, followed: Boolean) {
+        if (followed) {
+            map[room.id] = Follow(room.id, room.name, room.cat, System.currentTimeMillis())
+        } else {
+            map.remove(room.id)
+        }
+        save()
     }
 
     fun remove(id: Long) {

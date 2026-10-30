@@ -1,4 +1,4 @@
-package com.duocai.live.ui
+package com.tm.live.ui
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
@@ -50,8 +50,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.duocai.live.AppContainer
-import com.duocai.live.data.Prefs
+import com.tm.live.AppContainer
+import com.tm.live.data.Prefs
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.json.JSONObject
@@ -137,16 +137,16 @@ fun SettingsScreen(c: AppContainer) {
 
     // 主页摘要全是实时值：隧道/房间数/弹幕链路变了一眼就能看见，不用挨个点进去
     val liveSummary = when (c.tunnel.state) {
-        com.duocai.live.tunnel.Tunnel.State.READY -> "隧道在线"
-        com.duocai.live.tunnel.Tunnel.State.STARTING -> "隧道启动中"
-        com.duocai.live.tunnel.Tunnel.State.FAILED -> "隧道失败"
+        com.tm.live.tunnel.Tunnel.State.READY -> "隧道在线"
+        com.tm.live.tunnel.Tunnel.State.STARTING -> "隧道启动中"
+        com.tm.live.tunnel.Tunnel.State.FAILED -> "隧道失败"
         else -> "隧道未启动"
     } + " · " + c.rooms.size + " 个直播间 · 端口 " +
         (if (c.tunnel.port > 0) c.tunnel.port.toString() else "自动")
     val playSummary = listOf("自动", "HTTP-FLV", "RTMP")[c.streamMode.coerceIn(0, 2)] +
         " · 缓冲 " + c.bufferMs / 1000.0 + "s"
     val dmSummary = c.danmaku.status.ifBlank { "未开始" } + " · 已收 " + c.danmaku.liveCount + " 条"
-    val followSummary = "本地 " + c.followedIds.size + " · 服务端 " + c.serverFollowIds.size
+    val followSummary = "服务端 " + c.serverFollowIds.size
     val themeSummary = listOf("跟随系统", "深色", "浅色")[c.themeMode.coerceIn(0, 2)]
 
     Box(Modifier.fillMaxSize()) {
@@ -210,9 +210,9 @@ fun SettingsScreen(c: AppContainer) {
                     Section("内置隧道（不再需要源 App）") {
                         val t = c.tunnel
                         val dot = when (t.state) {
-                            com.duocai.live.tunnel.Tunnel.State.READY -> Color(0xFF35D07F)
-                            com.duocai.live.tunnel.Tunnel.State.STARTING -> Color(0xFFFFC24B)
-                            com.duocai.live.tunnel.Tunnel.State.FAILED -> Color(0xFFFF5C7A)
+                            com.tm.live.tunnel.Tunnel.State.READY -> Color(0xFF35D07F)
+                            com.tm.live.tunnel.Tunnel.State.STARTING -> Color(0xFFFFC24B)
+                            com.tm.live.tunnel.Tunnel.State.FAILED -> Color(0xFFFF5C7A)
                             else -> Color(0xFF9AA0A6)
                         }
                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -254,12 +254,12 @@ fun SettingsScreen(c: AppContainer) {
                                     }
                                 },
                                 shape = RoundedCornerShape(12.dp),
-                                enabled = t.state != com.duocai.live.tunnel.Tunnel.State.STARTING
+                                enabled = t.state != com.tm.live.tunnel.Tunnel.State.STARTING
                             ) {
                                 Text(
                                     when (t.state) {
-                                        com.duocai.live.tunnel.Tunnel.State.STARTING -> "握手…"
-                                        com.duocai.live.tunnel.Tunnel.State.READY -> "已就绪"
+                                        com.tm.live.tunnel.Tunnel.State.STARTING -> "握手…"
+                                        com.tm.live.tunnel.Tunnel.State.READY -> "已就绪"
                                         else -> "启动内置隧道"
                                     }
                                 )
@@ -274,7 +274,7 @@ fun SettingsScreen(c: AppContainer) {
                                     }
                                 },
                                 shape = RoundedCornerShape(12.dp),
-                                enabled = t.state != com.duocai.live.tunnel.Tunnel.State.STARTING
+                                enabled = t.state != com.tm.live.tunnel.Tunnel.State.STARTING
                             ) { Text("重来") }
                             OutlinedButton(
                                 onClick = {
@@ -286,7 +286,7 @@ fun SettingsScreen(c: AppContainer) {
                                     }
                                 },
                                 shape = RoundedCornerShape(12.dp),
-                                enabled = t.state != com.duocai.live.tunnel.Tunnel.State.STARTING
+                                enabled = t.state != com.tm.live.tunnel.Tunnel.State.STARTING
                             ) { Text("试候选 key") }
                         }
                         Spacer(Modifier.height(8.dp))
@@ -759,15 +759,15 @@ fun SettingsScreen(c: AppContainer) {
                         } else {
                             "自定义 JWE（${c.prefs.jwe.length} 字符）"
                         }
-                        InfoLine("本地收藏 ${c.followedIds.size} 位 · 服务端关注 ${c.serverFollowIds.size} 位")
-                        InfoLine("服务端关注走 `/user_follow/my_follow`，凭证：$jweDesc")
-                        InfoLine("两个来源合并展示，「关注」页里在播的排前面，未开播的标「未开播」")
-                        if (c.followedIds.isNotEmpty()) {
+                        InfoLine("服务端关注 ${c.serverFollowIds.size} 位（唯一真相源，本地不再单独存一份）")
+                        InfoLine("读 `/user_follow/my_follow`，写 `/relationship/add` · `/relationship/remove`，凭证：$jweDesc")
+                        InfoLine("点关注会真实落到账号上，源 App 里也能看到；失败会回滚并提示")
+                        if (c.serverFollowIds.isNotEmpty()) {
                             Spacer(Modifier.height(6.dp))
                             TextButton(onClick = {
-                                c.followedIds.toList().forEach { c.unfollow(it) }
+                                c.serverFollowIds.toList().forEach { c.unfollow(it) }
                                 toast = "已清空关注"
-                            }) { Text("清空本地收藏") }
+                            }) { Text("清空关注") }
                         }
                     }
                 }
@@ -796,7 +796,7 @@ fun SettingsScreen(c: AppContainer) {
                 if (page == 5) {
                     Section {
                         InfoLine("TM Live ${c.versionName}")
-                        InfoLine("包名 com.duocai.live · 直播流直连，不经过任何中间服务器")
+                        InfoLine("包名 com.tm.live · 直播流直连，不经过任何中间服务器")
                         InfoLine("直播列表直连源 App 隧道端口，数据是服务端实时值；拉列表不需要任何凭证")
                         InfoLine("播放地址来自第三方 CDN，仅供协议学习研究")
                     }

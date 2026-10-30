@@ -1,4 +1,4 @@
-package com.duocai.live.data
+package com.tm.live.data
 
 /**
  * 非真人直播间的硬过滤（游戏 / 棋牌 / 彩票 / 带单引流房）。

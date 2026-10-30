@@ -1,4 +1,4 @@
-package com.duocai.live.data
+package com.tm.live.data
 
 import org.json.JSONArray
 import org.json.JSONObject

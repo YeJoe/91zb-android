@@ -1,10 +1,10 @@
-package com.duocai.live.tunnel
+package com.tm.live.tunnel
 
 import android.content.Context
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
-import com.duocai.live.data.Prefs
+import com.tm.live.data.Prefs
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -16,7 +16,7 @@ import java.util.zip.GZIPInputStream
 /**
  * 内置隧道的运行外壳：把 [KiwiSdk] 那套"在 IO 线程同步握手"的调用包成可观测的状态。
  *
- * 这个类的存在意义只有一个 —— 让 UI 和 [com.duocai.live.data.LiveRepo] 都不用直接碰到
+ * 这个类的存在意义只有一个 —— 让 UI 和 [com.tm.live.data.LiveRepo] 都不用直接碰到
  * 反射和线程切换：两者只看 [port] 和 [state]。
  *
  * 状态机：
@@ -84,7 +84,7 @@ class Tunnel(private val context: Context, private val prefs: Prefs) {
      * 为什么不只留 [imPort]：组名是猜的（`kiwi_im` 来自 config 里那个伪域名），
      * 万一服务端换了组名或者这个组这次没起来，只记一个 `imPort=0` 就等于把弹幕判死。
      * 把整张表留着，弹幕那层可以对每个端口验一遍 `/websock/join`（判据见
-     * [com.duocai.live.data.LiveRepo.probeWsVhosts]），验通的就是 IM vhost，
+     * [com.tm.live.data.LiveRepo.probeWsVhosts]），验通的就是 IM vhost，
      * 完全不用相信组名。顺序保持 [GROUPS] 的先后，`kiwi_im` 在靠前的位置。
      */
     var groupPorts: Map<String, Int> = emptyMap()
@@ -251,7 +251,7 @@ class Tunnel(private val context: Context, private val prefs: Prefs) {
     /**
      * 打一发 `/room/get_list_by_ids` 看这个端口到底挂了哪个 vhost。
      *
-     * 判据和 [com.duocai.live.data.LiveRepo.probePort] 一致：只有对的 vhost 才会回
+     * 判据和 [com.tm.live.data.LiveRepo.probePort] 一致：只有对的 vhost 才会回
      * `{"code":0,"rooms":[...]}`。错的 vhost 会被 nginx 直接 404（HTML），
      * 或者只回 `{"code":-1,"msg":"ids is null"}` 这种空壳。
      *

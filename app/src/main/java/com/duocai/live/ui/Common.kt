@@ -1,4 +1,4 @@
-package com.duocai.live.ui
+package com.tm.live.ui
 
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color

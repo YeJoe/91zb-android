@@ -1,4 +1,4 @@
-package com.duocai.live.player
+package com.tm.live.player
 
 import android.content.Context
 import androidx.compose.runtime.getValue

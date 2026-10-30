@@ -1,11 +1,13 @@
-package com.duocai.live.data
+package com.tm.live.data
 
 import android.util.Base64
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
@@ -56,6 +58,15 @@ class LiveDanmaku(private val prefs: Prefs) {
      * 全部候选都失败时清 0 —— 那种情况多半是 App 重启过、端口表整体换了一批。
      */
     @Volatile private var goodPort: Int = 0
+
+    /**
+     * 已经 join 成功的端口，0 = 还没进房。
+     *
+     * [goodPort] 只在 [pumpPort] 内部用来排候选顺序，发送那边也需要知道
+     * "哪个端口现在真的挂着 /websock",所以单独暴露一个只读值。
+     */
+    @Volatile var enteredPort: Int = 0
+        private set
 
     private val rnd = SecureRandom()
 
@@ -189,6 +200,7 @@ class LiveDanmaku(private val prefs: Prefs) {
         }
         // 全军覆没：端口表大概整体换了（App 重启 / 隧道重连），下次重新认
         goodPort = 0
+        enteredPort = 0
         val detail = if (reasons.isEmpty()) "没有可用端口" else reasons.joinToString(" / ")
         throw IllegalStateException("$detail（试了 ${ordered.size} 个端口）")
     }
@@ -278,6 +290,7 @@ class LiveDanmaku(private val prefs: Prefs) {
                                     }
                                     entered = true
                                     goodPort = port
+                                    enteredPort = port
                                     // 进房判定完就放宽读超时：房间安静时不该被 8 秒截断
                                     runCatching { socket.soTimeout = 30_000 }
                                     // 带上端口：设置页一眼能看出这轮是靠哪个 vhost 进房的，
@@ -296,6 +309,96 @@ class LiveDanmaku(private val prefs: Prefs) {
             hook?.dispose()
             runCatching { socket.close() }
         }
+    }
+
+    // ---------------------------------------------------------------- 发送
+    /**
+     * 发一条弹幕（`/websock/send_msg`）。
+     *
+     * ## 为什么单开一条连接，而不是复用 [pumpPort] 那条
+     *
+     * 接收那条连接是**一个阻塞读循环**，所有 `opt=http` 应答都在那里被消化掉；
+     * 从别的协程往里写帧虽然线程安全，但应答会落到那个循环里、被当成"不是 join 的
+     * 应答"直接丢掉 —— 发送方永远等不到结果。
+     *
+     * 所以发送走一条**独立的短连接**：握手 → 发一帧 → 读应答 → 关。
+     * 2026-10-30 用 tools/verify_send.py 实测过：不 join 也能发，身份由
+     * `authorization: Bearer <JWE>` 决定，不是靠连接状态。
+     *
+     * @return 服务端给的消息自增 id（`result` 字段），0 = 成功但没带 id
+     * @throws IllegalStateException 全部候选端口都失败时，message 里带最后一个原因
+     */
+    suspend fun send(
+        roomId: Long,
+        menuId: Int,
+        text: String,
+        /** 没进过房时的兜底候选（零探测的那一档最好） */
+        fallbackPorts: () -> List<Int> = { emptyList() }
+    ): Long = withContext(Dispatchers.IO) {
+        val body = text.trim()
+        require(body.isNotEmpty()) { "内容为空" }
+
+        val ports = buildList {
+            if (enteredPort > 0) add(enteredPort)
+            if (goodPort > 0) add(goodPort)
+            addAll(runCatching { fallbackPorts() }.getOrDefault(emptyList()))
+        }.filter { it > 0 }.distinct()
+        if (ports.isEmpty()) throw IllegalStateException("弹幕通道还没连上，等一会儿再发")
+
+        // random 用 8xxx 段：和 join 的 7001 错开，日志里一眼能分清是哪个请求
+        val random = 8000 + rnd.nextInt(900)
+        var lastErr = "没有可用端口"
+
+        for (port in ports) {
+            val socket = Socket()
+            try {
+                socket.connect(InetSocketAddress("127.0.0.1", port), 4000)
+                socket.tcpNoDelay = true
+                socket.soTimeout = 8_000
+                if (!handshake(socket, port)) throw IllegalStateException("握手被拒")
+
+                val out = socket.getOutputStream()
+                // content_type=1 是普通聊天（对应接收端 ct=1）。
+                // 服务端会校验这两个字段：缺 content_type 回 "content_type is null"，
+                // content 空回 "content is null"。
+                sendCall(out, "/websock/send_msg", JSONObject()
+                    .put("room_id", roomId)
+                    .put("menu_id", menuId)
+                    .put("content_type", 1)
+                    .put("content", body), random)
+
+                val inp = socket.getInputStream()
+                while (true) {
+                    val f = readFrame(inp) ?: throw IllegalStateException("连接被关")
+                    if (f.opcode == 0x9) {
+                        writeFrame(out, 0xA, f.payload)
+                        continue
+                    }
+                    if (f.opcode != 0x1 && f.opcode != 0x2) continue
+                    val obj = decode(f.payload) ?: continue
+                    if (obj.optString("opt") != "http") continue
+                    val d = obj.optJSONObject("data") ?: continue
+
+                    val st = d.optInt("status", 0)
+                    if (st != 200) throw IllegalStateException("HTTP $st")
+                    val b = asObject(d.opt("body"))
+                    val code = b?.optInt("code", 0) ?: 0
+                    if (code != 0) {
+                        val why = b?.optString("msg").orEmpty()
+                            .ifEmpty { b?.optString("message").orEmpty() }
+                        throw IllegalStateException(why.ifEmpty { "code=$code" })
+                    }
+                    return@withContext b?.optLong("result", 0L) ?: 0L
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                lastErr = ":$port ${e.message ?: e.javaClass.simpleName}"
+            } finally {
+                runCatching { socket.close() }
+            }
+        }
+        throw IllegalStateException(lastErr)
     }
 
     // ---------------------------------------------------------------- 握手

@@ -1,4 +1,4 @@
-package com.duocai.live.ui
+package com.tm.live.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -66,11 +66,11 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
-import com.duocai.live.AppContainer
-import com.duocai.live.Feed
-import com.duocai.live.Tab
-import com.duocai.live.data.Room
-import com.duocai.live.ui.theme.Gold
+import com.tm.live.AppContainer
+import com.tm.live.Feed
+import com.tm.live.Tab
+import com.tm.live.data.Room
+import com.tm.live.ui.theme.Gold
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -98,6 +98,15 @@ import kotlinx.coroutines.launch
 fun HomeScreen(c: AppContainer) {
 
     val scope = rememberCoroutineScope()
+    /**
+     * 输入框里正在打的字。
+     *
+     * 和 [query] 分开是刻意为之：以前两者是同一个变量，于是每敲一个字都要
+     * 把上千个房间按名字/房间号过一遍 plus 重排四个 tab 的池子，中端机上
+     * 打字明显掉帧。现在打字只更新这里，**点「搜索」或按回车**才写进 [query]。
+     */
+    var input by remember { mutableStateOf("") }
+    /** 已提交的搜索词：只有它参与筛选 */
     var query by remember { mutableStateOf("") }
     var searchOpen by remember { mutableStateOf(false) }
     var sortOnline by remember { mutableStateOf(true) }
@@ -148,8 +157,8 @@ fun HomeScreen(c: AppContainer) {
     }
     val activeCity = city.ifBlank { c.nearbyCity }.ifBlank { topCity }
 
-    // 本地收藏 ∪ 服务端关注
-    val followIds = remember(c.followedIds, c.serverFollowIds) { c.followedIds + c.serverFollowIds }
+    // 关注关系以服务端为唯一真相源
+    val followIds = remember(c.serverFollowIds) { c.followIdSet() }
 
     // 关键：把 cats 摊平成普通 map 当 remember 的 key —— 直接传 mutableStateMap 的话
     // 改值不会让 remember 失效，分类筛选就不会重算。
@@ -242,7 +251,13 @@ fun HomeScreen(c: AppContainer) {
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
-            IconButton(onClick = { searchOpen = !searchOpen; if (!searchOpen) query = "" }) {
+            IconButton(onClick = {
+                searchOpen = !searchOpen
+                if (!searchOpen) {
+                    input = ""
+                    query = ""
+                }
+            }) {
                 Icon(
                     if (searchOpen) Icons.Filled.Close else Icons.Filled.Search,
                     contentDescription = "搜索",
@@ -273,18 +288,52 @@ fun HomeScreen(c: AppContainer) {
         })
 
         if (searchOpen) {
-            OutlinedTextField(
-                value = query,
-                onValueChange = { query = it },
-                modifier = Modifier
+            // 输入框 + 显式「搜索」按钮：搜索是手动触发的（打字时不筛）。
+            // 原来靠 onValueChange 实时筛，两千个房间每个按键都要全表匹配 + 重排四个 tab，
+            // 输入法联想还让按键变得更密，卡到没法用。
+            val submit = {
+                query = input.trim()
+                keyboard?.hide()
+            }
+            Row(
+                Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 14.dp, vertical = 4.dp),
-                placeholder = { Text("主播名 / 主播 ID（房间号）") },
-                singleLine = true,
-                shape = RoundedCornerShape(14.dp),
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                keyboardActions = KeyboardActions(onSearch = { keyboard?.hide() })
-            )
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                OutlinedTextField(
+                    value = input,
+                    onValueChange = { input = it },
+                    modifier = Modifier.weight(1f),
+                    placeholder = { Text("主播名 / 主播 ID（房间号）") },
+                    singleLine = true,
+                    shape = RoundedCornerShape(14.dp),
+                    textStyle = MaterialTheme.typography.bodyMedium,
+                    // 清空输入框 = 放弃搜索，立刻回到列表：
+                    // 留着旧的 query 会出现"框里没字但列表还是搜索结果的空状态"
+                    trailingIcon = if (input.isNotEmpty()) {
+                        {
+                            IconButton(onClick = {
+                                input = ""
+                                query = ""
+                            }) {
+                                Icon(Icons.Filled.Close, contentDescription = "清空", modifier = Modifier.size(16.dp))
+                            }
+                        }
+                    } else null,
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                    keyboardActions = KeyboardActions(onSearch = { submit() })
+                )
+                Spacer(Modifier.width(8.dp))
+                Button(
+                    onClick = { submit() },
+                    enabled = input.isNotBlank() && input.trim() != query,
+                    shape = RoundedCornerShape(14.dp),
+                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 10.dp)
+                ) {
+                    Text("搜索", fontSize = 13.sp)
+                }
+            }
         }
 
         HorizontalPager(
