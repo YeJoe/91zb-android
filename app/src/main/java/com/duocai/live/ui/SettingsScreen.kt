@@ -1,6 +1,8 @@
 package com.tm.live.ui
 
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -44,6 +46,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -99,6 +102,12 @@ fun SettingsScreen(c: AppContainer) {
     var pasteOpen by remember { mutableStateOf(false) }
     var importOpen by remember { mutableStateOf(false) }
     var toast by remember { mutableStateOf<String?>(null) }
+
+    // 应用内覆盖安装：SAF 选 APK → 复制到 cache → 交给系统安装器
+    val ctx = LocalContext.current
+    val pickApk = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) toast = ApkInstaller.installFromUri(ctx, uri)
+    }
     /** 「备用数据源」默认收起：实时源正常时这组根本不用碰 */
     var advancedOpen by remember { mutableStateOf(false) }
 
@@ -759,9 +768,10 @@ fun SettingsScreen(c: AppContainer) {
                         } else {
                             "自定义 JWE（${c.prefs.jwe.length} 字符）"
                         }
-                        InfoLine("服务端关注 ${c.serverFollowIds.size} 位（唯一真相源，本地不再单独存一份）")
-                        InfoLine("读 `/user_follow/my_follow`，写 `/relationship/add` · `/relationship/remove`，凭证：$jweDesc")
-                        InfoLine("点关注会真实落到账号上，源 App 里也能看到；失败会回滚并提示")
+                        InfoLine("服务端关注 ${c.serverFollowIds.size} 位 · 本机关注 ${c.follows.all().size} 位")
+                        InfoLine("读 `/user_follow/my_follow`（可用）；写 `/relationship/add` 只在 :11521/:44319 上有路由，且要 go 侧登录态，当前 JWE 被拒（403 用户不存在或超时）")
+                        InfoLine("所以点关注 = 本机立刻生效，同时后台仍试一次写接口；写不动会标「仅本机」")
+                        InfoLine("凭证：$jweDesc")
                         if (c.serverFollowIds.isNotEmpty()) {
                             Spacer(Modifier.height(6.dp))
                             TextButton(onClick = {
@@ -799,6 +809,17 @@ fun SettingsScreen(c: AppContainer) {
                         InfoLine("包名 com.tm.live · 直播流直连，不经过任何中间服务器")
                         InfoLine("直播列表直连源 App 隧道端口，数据是服务端实时值；拉列表不需要任何凭证")
                         InfoLine("播放地址来自第三方 CDN，仅供协议学习研究")
+                    }
+                    Spacer(Modifier.height(12.dp))
+                    // ---------- 安装更新（覆盖安装）----------
+                    Section("安装更新") {
+                        InfoLine("选一个新的 APK：同包名同签名会覆盖安装，登录态、设置、收藏都保留，不用卸载重装。")
+                        Spacer(Modifier.height(8.dp))
+                        Button(
+                            onClick = { pickApk.launch(arrayOf("application/vnd.android.package-archive")) },
+                            shape = RoundedCornerShape(12.dp)
+                        ) { Text("选择 APK 并安装") }
+                        InfoLine("Android 8 以上第一次会先跳到「安装未知应用」，允许后回来再点一次。")
                     }
                 }
             }

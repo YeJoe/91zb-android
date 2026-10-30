@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  只把 cache/update 这一小块暴露给系统安装器，不要开 file:// 全盘。
+  安装器拿到的是 content://com.tm.live.files/update/update.apk。
+-->
+<paths>
+    <cache-path name="update" path="update/" />
+</paths>

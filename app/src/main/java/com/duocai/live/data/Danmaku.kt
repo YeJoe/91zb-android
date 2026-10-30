@@ -118,7 +118,14 @@ class DanmakuStore(
      * 快路径候选：`Tunnel.imPort` + 上次 405 命中的端口。
      * 要求零网络、零探测 —— 进房第一轮直接打这一两个端口就够了。
      */
-    private val quickPortsProvider: () -> List<Int> = { emptyList() }
+    private val quickPortsProvider: () -> List<Int> = { emptyList() },
+    /**
+     * 强制重探用的候选表：**忽略缓存**重扫一遍（发送失败时才会调）。
+     *
+     * 与 [portsProvider] 的区别只在缓存策略：那个为了列表速度会复用上一次的探测结果，
+     * 而隧道端口在源 App 冷启动后会整体重排 —— 复用等于拿旧号码去撞，全是 500。
+     */
+    private val refreshPortsProvider: () -> List<Int> = { emptyList() }
 ) {
 
     val messages = mutableStateListOf<DmMessage>()
@@ -236,8 +243,16 @@ class DanmakuStore(
         if (rid <= 0L) return Result.failure(IllegalStateException("还没进房"))
         val dm = live ?: return Result.failure(IllegalStateException("弹幕通道还没连上"))
 
-        return runCatching { dm.send(rid, menuId, t) { quickPortsProvider() } }
-            .onSuccess { push(DmMessage("chat", 32, "我", t)) }
+        return runCatching {
+            dm.send(
+                rid, menuId, t,
+                // 第一轮：现成的端口（零探测，最省时间）
+                fallbackPorts = { quickPortsProvider() },
+                // 第二轮：端口表整张重扫。隧道端口在源 App 冷启动后会重排，
+                // 缓存里的号码可能已被别的上游占用（握手照样 101，请求回 500）
+                refreshPorts = { refreshPortsProvider().ifEmpty { portsProvider() } }
+            )
+        }.onSuccess { push(DmMessage("chat", 32, "我", t)) }
     }
 
     private fun push(m: DmMessage) {

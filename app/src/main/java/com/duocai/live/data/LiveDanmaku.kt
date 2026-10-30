@@ -1,6 +1,7 @@
 package com.tm.live.data
 
 import android.util.Base64
+import android.util.Log
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -325,80 +326,134 @@ class LiveDanmaku(private val prefs: Prefs) {
      * 2026-10-30 用 tools/verify_send.py 实测过：不 join 也能发，身份由
      * `authorization: Bearer <JWE>` 决定，不是靠连接状态。
      *
+     * ## 端口为什么会「突然变坏」（2026-10-30 线上反馈 :49829 HTTP 500）
+     *
+     * 隧道端口是 libkiwi 每次**冷启动随机分配**的，同一个号码在两次启动里可能指向
+     * 完全不同的上游 vhost。App 把上一次进房成功的端口缓存下来，源 App 重启 / 隧道
+     * 重连后这个号码就可能落到别的 vhost 上 —— 握手照样 101（那一层是网关），
+     * 但 `/websock/send_msg` 会被真正的上游回 500/404。
+     *
+     * 所以发送失败不能只报最后一个原因，要：换端口继续试 → 全失败再**强制重探**
+     * 一轮端口表 → 最后把每个端口的失败原因一起抛给 UI（一行看得懂的那种）。
+     *
      * @return 服务端给的消息自增 id（`result` 字段），0 = 成功但没带 id
-     * @throws IllegalStateException 全部候选端口都失败时，message 里带最后一个原因
+     * @throws IllegalStateException 所有候选端口都失败时，message 里带每个端口的原因
      */
     suspend fun send(
         roomId: Long,
         menuId: Int,
         text: String,
-        /** 没进过房时的兜底候选（零探测的那一档最好） */
-        fallbackPorts: () -> List<Int> = { emptyList() }
+        /** 第一轮兜底候选（零探测的那一档最好） */
+        fallbackPorts: () -> List<Int> = { emptyList() },
+        /**
+         * 第二轮候选：一定要传「会重新扫一遍」的实现（`LiveRepo.probeWsVhosts(force=true)`
+         * 那一套）。第一轮全灭说明端口表过期了，不重探就是白试。
+         */
+        refreshPorts: (() -> List<Int>)? = null
     ): Long = withContext(Dispatchers.IO) {
         val body = text.trim()
         require(body.isNotEmpty()) { "内容为空" }
 
-        val ports = buildList {
-            if (enteredPort > 0) add(enteredPort)
-            if (goodPort > 0) add(goodPort)
-            addAll(runCatching { fallbackPorts() }.getOrDefault(emptyList()))
-        }.filter { it > 0 }.distinct()
-        if (ports.isEmpty()) throw IllegalStateException("弹幕通道还没连上，等一会儿再发")
-
         // random 用 8xxx 段：和 join 的 7001 错开，日志里一眼能分清是哪个请求
         val random = 8000 + rnd.nextInt(900)
-        var lastErr = "没有可用端口"
+        val tried = LinkedHashSet<Int>()
+        val reasons = ArrayList<String>()
 
-        for (port in ports) {
-            val socket = Socket()
-            try {
-                socket.connect(InetSocketAddress("127.0.0.1", port), 4000)
-                socket.tcpNoDelay = true
-                socket.soTimeout = 8_000
-                if (!handshake(socket, port)) throw IllegalStateException("握手被拒")
+        var firstRound = true
+        while (true) {
+            val ports = buildList {
+                if (enteredPort > 0) add(enteredPort)
+                if (goodPort > 0) add(goodPort)
+                addAll(runCatching { fallbackPorts() }.getOrDefault(emptyList()))
+            }.filter { it > 0 && it !in tried }
 
-                val out = socket.getOutputStream()
-                // content_type=1 是普通聊天（对应接收端 ct=1）。
-                // 服务端会校验这两个字段：缺 content_type 回 "content_type is null"，
-                // content 空回 "content is null"。
-                sendCall(out, "/websock/send_msg", JSONObject()
-                    .put("room_id", roomId)
-                    .put("menu_id", menuId)
-                    .put("content_type", 1)
-                    .put("content", body), random)
-
-                val inp = socket.getInputStream()
-                while (true) {
-                    val f = readFrame(inp) ?: throw IllegalStateException("连接被关")
-                    if (f.opcode == 0x9) {
-                        writeFrame(out, 0xA, f.payload)
-                        continue
-                    }
-                    if (f.opcode != 0x1 && f.opcode != 0x2) continue
-                    val obj = decode(f.payload) ?: continue
-                    if (obj.optString("opt") != "http") continue
-                    val d = obj.optJSONObject("data") ?: continue
-
-                    val st = d.optInt("status", 0)
-                    if (st != 200) throw IllegalStateException("HTTP $st")
-                    val b = asObject(d.opt("body"))
-                    val code = b?.optInt("code", 0) ?: 0
-                    if (code != 0) {
-                        val why = b?.optString("msg").orEmpty()
-                            .ifEmpty { b?.optString("message").orEmpty() }
-                        throw IllegalStateException(why.ifEmpty { "code=$code" })
-                    }
-                    return@withContext b?.optLong("result", 0L) ?: 0L
-                }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                lastErr = ":$port ${e.message ?: e.javaClass.simpleName}"
-            } finally {
-                runCatching { socket.close() }
+            if (ports.isEmpty() && firstRound && tried.isEmpty()) {
+                throw IllegalStateException("弹幕通道还没连上，等一会儿再发")
             }
+
+            for (port in ports) {
+                tried += port
+                try {
+                    val id = sendOnce(port, roomId, menuId, body, random)
+                    Log.i(TAG, "send ok room=$roomId menu=$menuId port=$port id=$id")
+                    // 这一轮能发，说明端口是对的 —— 顺手纠正接收端的缓存
+                    enteredPort = port
+                    return@withContext id
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    val why = e.message ?: e.javaClass.simpleName
+                    reasons += ":$port $why"
+                    Log.w(TAG, "send fail room=$roomId port=$port -> $why")
+                }
+            }
+
+            // 第一轮试完还是没成：重探一次端口表，再来一轮（只来一轮，别无限转）
+            val refresh = refreshPorts
+            if (!firstRound || refresh == null) break
+            firstRound = false
+            runCatching { refresh() }
         }
-        throw IllegalStateException(lastErr)
+
+        val detail = reasons.take(4).joinToString(" / ")
+        throw IllegalStateException(
+            if (detail.isEmpty()) "发送失败：没有可用端口"
+            else "发送失败（room=$roomId menu=$menuId）：$detail"
+        )
+    }
+
+    /** 单次发送：一条短连接，握手 → 发一帧 → 读应答 → 关 */
+    private fun sendOnce(port: Int, roomId: Long, menuId: Int, body: String, random: Int): Long {
+        val socket = Socket()
+        try {
+            socket.connect(InetSocketAddress("127.0.0.1", port), 4000)
+            socket.tcpNoDelay = true
+            socket.soTimeout = 8_000
+            if (!handshake(socket, port)) throw IllegalStateException("握手被拒")
+
+            val out = socket.getOutputStream()
+            // content_type=1 是普通聊天（对应接收端 ct=1）。
+            // 服务端会校验这两个字段：缺 content_type 回 "content_type is null"，
+            // content 空回 "content is null"。
+            sendCall(out, "/websock/send_msg", JSONObject()
+                .put("room_id", roomId)
+                .put("menu_id", menuId)
+                .put("content_type", 1)
+                .put("content", body), random)
+
+            val inp = socket.getInputStream()
+            while (true) {
+                val f = readFrame(inp) ?: throw IllegalStateException("连接被关")
+                if (f.opcode == 0x9) {
+                    writeFrame(out, 0xA, f.payload)
+                    continue
+                }
+                if (f.opcode != 0x1 && f.opcode != 0x2) continue
+                val obj = decode(f.payload) ?: continue
+                if (obj.optString("opt") != "http") continue
+                val d = obj.optJSONObject("data") ?: continue
+
+                val st = d.optInt("status", 0)
+                val b = asObject(d.opt("body"))
+                if (st != 200) {
+                    // 500/404 的错误体也带一句人话，比只报状态码有用得多
+                    val why = b?.optString("msg").orEmpty()
+                        .ifEmpty { b?.optString("message").orEmpty() }
+                    throw IllegalStateException(
+                        "HTTP $st" + if (why.isNotEmpty()) " · ${why.take(60)}" else ""
+                    )
+                }
+                val code = b?.optInt("code", 0) ?: 0
+                if (code != 0) {
+                    val why = b?.optString("msg").orEmpty()
+                        .ifEmpty { b?.optString("message").orEmpty() }
+                    throw IllegalStateException(why.ifEmpty { "code=$code" })
+                }
+                return b?.optLong("result", 0L) ?: 0L
+            }
+        } finally {
+            runCatching { socket.close() }
+        }
     }
 
     // ---------------------------------------------------------------- 握手
@@ -637,6 +692,8 @@ class LiveDanmaku(private val prefs: Prefs) {
     private fun b64(b: ByteArray): String = Base64.encodeToString(b, Base64.NO_WRAP)
 
     private companion object {
+        /** logcat 过滤：`adb logcat -s DmWire` */
+        const val TAG = "DmWire"
         /** 源 App 的版本号，服务端会校验 */
         const val APP_VERSION = "20260226001"
         const val MAX_FRAME = 8 * 1024 * 1024

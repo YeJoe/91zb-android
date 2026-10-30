@@ -5,6 +5,8 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <!-- 画中画还原：moveTaskToFront 把自己这个任务拉回前台，系统才会退出 PiP -->
     <uses-permission android:name="android.permission.REORDER_TASKS" />
+    <!-- 应用内安装更新包（覆盖安装，保留登录态与设置） -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <application
         android:name=".App"
@@ -32,6 +34,17 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- 把 cache 里的更新包交给系统安装器：7.0+ 必须走 content:// -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.files"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
     </application>
 
 </manifest>

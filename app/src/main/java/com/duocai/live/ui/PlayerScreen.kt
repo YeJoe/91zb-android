@@ -1223,6 +1223,9 @@ private fun ChatInputBar(c: AppContainer, bg: Float) {
                 "发送失败 · $err",
                 color = Color(0xFFFF8F6B),
                 fontSize = 10.sp,
+                // 失败原因里会带 room/menu 和每个端口的结果，一两行足够看清是哪类问题
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.padding(start = 14.dp, top = 4.dp),
                 style = TextStyle(shadow = textShadow())
             )

@@ -103,27 +103,12 @@ class AppContainer(context: Context) {
     val danmaku = DanmakuStore(
         prefs = prefs,
         portsProvider = {
-            fun candidates(force: Boolean): List<Int> = buildList {
-                // 1. SDK 明确指出的 kiwi_im
-                if (tunnel.imPort > 0) add(tunnel.imPort)
-
-                // 2. SDK 问到的全部组端口，逐个过 405 判据
-                addAll(live.verifyWsPorts(tunnel.groupPorts.values))
-
-                // 3. 扫本机 listener（内置隧道自己的 listener 就在里面）
-                addAll(live.probeWsVhosts(force))
-
-                // 4. 最后兜底：列表用的端口（大概率 404，但聊胜于无）
-                if (tunnel.port > 0) add(tunnel.port)
-                if (live.lastPort > 0) add(live.lastPort)
-            }.filter { it > 0 }.distinct()
-
             // 正常情况下候选表至少是「IM 端口 + 列表端口」，实测一台机器 28 个监听端口里
             // 只有 1 个回 405，所以 2 个端口意味着这一轮基本没筛出东西（假阴性）。
             // 假阴性会被 probeWsVhosts 的缓存固化，表现是「一直只试两三个端口全 404」，
             // 因此这里强制重扫一次再交给 WS。
-            val first = candidates(false)
-            if (first.size >= 3) first else candidates(true)
+            val first = danmakuCandidates(false)
+            if (first.size >= 3) first else danmakuCandidates(true)
         },
         // 快路径：零探测，只读现成的值。顺序 = 「SDK 指的 im」→「上次 405 命中」。
         quickPortsProvider = {
@@ -131,8 +116,31 @@ class AppContainer(context: Context) {
                 if (tunnel.imPort > 0) add(tunnel.imPort)
                 addAll(live.cachedWsPorts())
             }.filter { it > 0 }.distinct()
-        }
+        },
+        // 发送失败后的重探：**跳过缓存**再扫一遍。隧道端口是每次冷启动重排的，
+        // 缓存里的号码可能已经被另一个上游占走（握手 101、请求 500）
+        refreshPortsProvider = { danmakuCandidates(true) }
     )
+
+    /**
+     * 弹幕 vhost 的候选端口。
+     *
+     * @param force 忽略缓存重扫本机 listener（发送失败后用）
+     */
+    private fun danmakuCandidates(force: Boolean): List<Int> = buildList {
+        // 1. SDK 明确指出的 kiwi_im
+        if (tunnel.imPort > 0) add(tunnel.imPort)
+
+        // 2. SDK 问到的全部组端口，逐个过 405 判据
+        addAll(live.verifyWsPorts(tunnel.groupPorts.values))
+
+        // 3. 扫本机 listener（内置隧道自己的 listener 就在里面）
+        addAll(live.probeWsVhosts(force))
+
+        // 4. 最后兜底：列表用的端口（大概率 404，但聊胜于无）
+        if (tunnel.port > 0) add(tunnel.port)
+        if (live.lastPort > 0) add(live.lastPort)
+    }.filter { it > 0 }.distinct()
 
     val player = PlayerHolder(this.context)
 
@@ -198,10 +206,10 @@ class AppContainer(context: Context) {
      */
     private var pendingFollows by mutableStateOf<Map<Long, Boolean>>(emptyMap())
 
-    /** 「关注」页和首页关注 tab 的统一口径：服务端 ∪ 正在乐观更新的 */
+    /** 「关注」页和首页关注 tab 的统一口径：服务端 ∪ 本机 ∪ 正在乐观更新的 */
     fun followIdSet(): Set<Long> {
-        if (pendingFollows.isEmpty()) return serverFollowIds
         val out = serverFollowIds.toMutableSet()
+        out.addAll(follows.ids())
         pendingFollows.forEach { (id, want) -> if (want) out.add(id) else out.remove(id) }
         return out
     }
@@ -378,62 +386,75 @@ class AppContainer(context: Context) {
     }
 
     /**
-     * 关注 / 取消关注 —— **只打服务端，不再写本地收藏**。
+     * 关注 / 取消关注 —— **先落本机，再试服务端**。
      *
-     * ## 为什么砍掉本地层（2026-10-31）
+     * ## 为什么又需要本机那份（2026-10-30 线上反馈：点关注只弹「关注失败」）
      *
-     * `/relationship/add` `/relationship/remove` 打通之后，服务端就是唯一真相：
-     * 本地再存一份只会制造「本地有、服务端没有」这种半同步状态，
-     * 表现为进房自动关注、取消后又复活、toast 反复弹。
+     * 服务端写接口 `/relationship/add` 并不在房间接口那个 vhost 上：
      *
-     * 现在的模型：
      * ```
-     * 点击 → pendingFollows 乐观翻转（界面立刻变）
-     *      → 打 /relationship/add 或 /relationship/remove
-     *      → 拉一次 my_follow 快照
-     *         ├─ 与期望一致 → 清掉 pending，界面以服务端为准
-     *         └─ 不一致     → 清掉 pending，界面回滚，toast 报失败
+     * :2318（/room/get_list_by_ids、/user_follow/my_follow 都在这）
+     *     POST /relationship/add  → nginx 404（路由不在这）
+     * :11521 / :44319（唯一认这个路由的两台）
+     *     POST /relationship/add  → 403 {"msg":"用户不存在或超时，请重新登录"}
      * ```
+     *
+     * 也就是说：读接口能用（`my_follow` 200），写接口要的是**另一套登录态**
+     * （源 App 走 `/go/` 加密通道 + go 侧 session），手里这枚 JWE 不被它接受。
+     * 硬等接口打通 = 用户永远点不动关注，所以改成：
+     *
+     * ```
+     * 点击 → 本机收藏立刻写入（界面一定变）
+     *      → 后台仍打一次 /relationship/add
+     *         ├─ 服务端确认 → 文案「已关注」，本机那条留着（与服务端一致，无害）
+     *         └─ 写不动     → 文案「已关注（仅本机）」，功能照常可用
+     * ```
+     *
+     * 这样既不假装云端成功（文案写清「仅本机」），也不会让按钮变成摆设。
+     * 哪天写接口通了，把 [syncFollow] 的返回值当真就行 —— 分支已经在这儿了。
      */
     fun toggleFollow(room: Room) {
         val willFollow = room.id !in followIdSet()
 
-        // 乐观更新：立刻变星标，服务端回执后覆盖
+        // 本机先落：这是"一定生效"的那一份
+        follows.setFollowed(room, willFollow)
+        // 乐观更新：立刻变星标
         pendingFollows = pendingFollows + (room.id to willFollow)
 
         scope.launch(Dispatchers.IO) {
             val ok = runCatching { live.syncFollow(room.id, willFollow) }.getOrDefault(false)
             if (ok) {
-                // 用服务端快照覆盖，顺便把 pending 清干净
+                // 服务端已确认：用快照补齐（别的设备上关注的也能进来）
                 runCatching { live.pullFollowSnapshot() }.getOrNull()?.let { (ids, names) ->
                     applyFollowSnapshot(ids, names)
-                } ?: run {
-                    pendingFollows = pendingFollows - room.id
                 }
+                pendingFollows = pendingFollows - room.id
             } else {
-                // 失败：撤掉乐观值，界面回到服务端真实状态
+                // 服务端写不动，但本机已经生效 —— 不清 pending，界面保持用户点的那一下
                 pendingFollows = pendingFollows - room.id
             }
-            followSync = if (willFollow)
-                if (ok) "已关注" else "关注失败"
-            else
-                if (ok) "已取消关注" else "取消关注失败"
+            followSync = when {
+                willFollow && ok -> "已关注"
+                willFollow -> "已关注（仅本机）"
+                ok -> "已取消关注"
+                else -> "已取消关注（仅本机）"
+            }
             followSyncSeq++
         }
     }
 
     fun unfollow(id: Long) {
+        follows.remove(id)
         pendingFollows = pendingFollows + (id to false)
         scope.launch(Dispatchers.IO) {
             val ok = runCatching { live.syncFollow(id, false) }.getOrDefault(false)
             if (ok) {
                 runCatching { live.pullFollowSnapshot() }.getOrNull()?.let { (ids, names) ->
                     applyFollowSnapshot(ids, names)
-                } ?: run { pendingFollows = pendingFollows - id }
-            } else {
-                pendingFollows = pendingFollows - id
+                }
             }
-            followSync = if (ok) "已取消关注" else "取消关注失败"
+            pendingFollows = pendingFollows - id
+            followSync = if (ok) "已取消关注" else "已取消关注（仅本机）"
             followSyncSeq++
         }
     }
