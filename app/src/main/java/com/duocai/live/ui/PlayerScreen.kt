@@ -550,6 +550,9 @@ fun PlayerScreen(c: AppContainer, startIndex: Int, onClose: () -> Unit) {
  * 转场用的竖直平移在外层「页面」Box 上做（见 PlayerScreen），这里是画面自身的
  * 缩放/平移（双指捏合），两层互不干扰。
  */
+// pointerInteropFilter 至今仍标着 @ExperimentalComposeUiApi，必须显式 opt-in，
+// 否则编译直接报 "This API is experimental"（error 级，不是警告）
+@OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
 @Composable
 private fun VideoLayer(
     holder: PlayerHolder,
