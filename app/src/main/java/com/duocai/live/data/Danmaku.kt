@@ -264,7 +264,8 @@ class DanmakuStore(
         if (rid <= 0L) return Result.failure(IllegalStateException("还没进房"))
         val dm = live ?: return Result.failure(IllegalStateException("弹幕通道还没连上"))
 
-        fun attempt() = runCatching {
+        // 局部函数默认不是 suspend 的，dm.send 是挂起函数，必须显式加 suspend
+        suspend fun attempt() = runCatching {
             dm.send(
                 rid, menuId, t,
                 // 第一轮：现成的端口（零探测，最省时间）
