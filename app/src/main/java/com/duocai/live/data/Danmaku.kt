@@ -1,6 +1,5 @@
 package com.duocai.live.data
 
-import android.content.Context
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
@@ -9,10 +8,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import org.json.JSONObject
 
 data class DmMessage(val kind: String, val typ: Int, val nick: String, val text: String)
 
@@ -104,19 +100,20 @@ object DmFilter {
 }
 
 /**
- * 弹幕来源。
+ * 弹幕来源：只有一条路 —— 隧道端口上开 WS 打 `/websock/join`，只收 `room_msg` 实时推送
+ * （见 [LiveDanmaku]）。
  *
- * 两条路：
- *   1. **实时**：隧道端口上开 WS 打 `/websock/join`，收 `room_msg` 推送（见 [LiveDanmaku]）
- *   2. **兜底**：隧道还没热起来时，用打包进 APK 的真实样本垫场，避免聊天区空着
- *
- * 实时消息一到，垫场立刻停 —— 不是混着放，是让位。
+ * **没有任何垫场/样本/历史回填**：房间里没人说话，聊天区就是空的。
+ * 以前这里会在实时消息没到时用固定样本循环顶上，结果每个房间看到的都是同一批假弹幕，
+ * 还把"WS 根本没连上"藏得严严实实 —— 这类兜底比没有更糟，所以整个删掉了。
  */
 class DanmakuStore(
-    private val context: Context,
     private val prefs: Prefs,
-    /** 隧道端口（0 = 还没就绪）；由 AppContainer 接到 LiveRepo/内置隧道上 */
-    private val portProvider: () -> Int = { 0 }
+    /**
+     * 隧道端口候选（空 = 还没就绪），越靠前越优先。
+     * 由 AppContainer 接 `Tunnel.imPort` → `Tunnel.port` → `LiveRepo.lastPort`。
+     */
+    private val portsProvider: () -> List<Int> = { emptyList() }
 ) {
 
     val messages = mutableStateListOf<DmMessage>()
@@ -125,71 +122,54 @@ class DanmakuStore(
     var status by mutableStateOf("")
         private set
 
-    /** 是否已经收到过实时消息（用来判断垫场该不该让位） */
+    /** 本次进房已收到的实时消息数 */
     var liveCount by mutableStateOf(0)
         private set
 
     private var job: Job? = null
     private var roomId: Long = 0L
-    private var pool: List<DmMessage> = emptyList()
-
-    /** 实时消息计数（跨线程只读，用来判断垫场该不该让位） */
-    @Volatile private var seenLive: Int = 0
+    private var menuId: Int = 1
 
     private companion object {
         const val MAX_KEEP = 200
-        /** 垫场节奏 */
-        const val FILL_MS = 1300L
     }
 
-    fun start(scope: CoroutineScope, room: Long) {
+    /** 切房入口：房间号 + 分区 id 一起交给 WS，`/websock/join` 两个都要 */
+    fun start(scope: CoroutineScope, room: Room) = start(scope, room.id, room.menuId)
+
+    fun start(scope: CoroutineScope, room: Long, menu: Int = 1) {
         if (job?.isActive == true && roomId == room) return
         job?.cancel()
         job = null
         roomId = room
+        menuId = if (menu > 0) menu else 1
         messages.clear()
         liveCount = 0
         status = ""
 
         job = scope.launch {
             if (!prefs.liveMode) {
-                status = "离线样本"
-                replayDemo()
+                status = "实时弹幕已关闭（设置 → 直播源）"
                 return@launch
             }
 
-            seenLive = 0
             // socket 是阻塞 IO，绝不能放在主线程（会直接 ANR）；
             // 用通道把消息送回主线程再上屏，主线程只做状态更新。
             val inbox = Channel<DmMessage>(Channel.UNLIMITED)
             val live = launch(Dispatchers.IO) {
                 LiveDanmaku(prefs).run(
-                    port = portProvider,
+                    ports = portsProvider,
                     roomId = room,
-                    onMessage = { m ->
-                        seenLive++
-                        inbox.trySend(m)
-                    },
+                    menuId = menuId,
+                    onMessage = { m -> inbox.trySend(m) },
                     onState = { s -> launch(Dispatchers.Main) { status = s } }
                 )
             }
-            val consume = launch {
+            launch {
                 for (m in inbox) {
                     liveCount++
                     push(m)
                 }
-            }
-            // 垫场：实时一条都没来之前，用样本把聊天区撑住；实时一到立刻让位。
-            // 前 8 条走正常节奏，之后放慢，避免隧道一直连不上时刷得太假。
-            var i = 0
-            while (isActive && consume.isActive && seenLive == 0) {
-                if (pool.isEmpty()) {
-                    pool = loadDemo().filter { DmFilter.keep(it.kind, prefs.chatOnly) }
-                }
-                if (pool.isEmpty()) break
-                push(pool[i % pool.size])
-                i++
-                delay(if (i < 8) FILL_MS else 2600L)
             }
             live.join()
         }
@@ -197,12 +177,13 @@ class DanmakuStore(
 
     fun restart(scope: CoroutineScope) {
         val r = roomId
+        val menu = menuId
         job?.cancel()
         job = null
         messages.clear()
         if (r > 0) {
             roomId = 0L
-            start(scope, r)
+            start(scope, r, menu)
         }
     }
 
@@ -215,42 +196,4 @@ class DanmakuStore(
         messages.add(m)
         while (messages.size > MAX_KEEP) messages.removeAt(0)
     }
-
-    /** 离线回放：按接近真人的节奏把样本一条条放出去 */
-    private suspend fun replayDemo() {
-        if (pool.isEmpty()) {
-            pool = loadDemo().filter { DmFilter.keep(it.kind, prefs.chatOnly) }
-        }
-        val list = pool
-        if (list.isEmpty()) return
-        list.take(6).forEach { push(it) }
-        var i = 6
-        while (true) {
-            push(list[i % list.size])
-            i++
-            delay(1150L + (i % 4) * 240L)
-            if (i % list.size == 0) delay(2600L)
-        }
-    }
-
-    private fun loadDemo(): List<DmMessage> = runCatching {
-        val text = context.assets.open("danmaku_demo.json").bufferedReader().use { it.readText() }
-        val arr = JSONObject(text).optJSONArray("msgs") ?: return@runCatching emptyList()
-        val out = ArrayList<DmMessage>(arr.length())
-        for (i in 0 until arr.length()) {
-            val o = arr.optJSONObject(i) ?: continue
-            val t = o.optString("t")
-            if (t.isBlank()) continue
-            val typ = if (o.has("typ") && !o.isNull("typ")) o.optInt("typ") else null
-            out.add(
-                DmMessage(
-                    kind = o.optString("k").ifBlank { DmFilter.classify(typ, t) },
-                    typ = typ ?: 0,
-                    nick = o.optString("n").ifBlank { "观众" },
-                    text = t
-                )
-            )
-        }
-        out
-    }.getOrDefault(emptyList())
 }

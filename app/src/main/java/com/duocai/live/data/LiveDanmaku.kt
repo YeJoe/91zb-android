@@ -50,26 +50,27 @@ class LiveDanmaku(private val prefs: Prefs) {
 
     private val rnd = SecureRandom()
 
-    /** (nick|text) -> 上次出现的时间戳，用来压掉 history/push 重叠带来的重复 */
+    /** (nick|text) -> 上次出现的时间戳，用来压掉服务端重复投递 */
     private val seen = HashMap<String, Long>()
 
     suspend fun run(
-        port: () -> Int,
+        ports: () -> List<Int>,
         roomId: Long,
+        menuId: Int,
         onMessage: (DmMessage) -> Unit,
         onState: (String) -> Unit
     ) {
         var backoff = 1500L
         while (currentCoroutineContext().isActive) {
-            val p = port()
-            if (p <= 0) {
+            val list = ports().filter { it > 0 }.distinct()
+            if (list.isEmpty()) {
                 onState("等待隧道")
                 delay(3000)
                 continue
             }
             try {
                 onState("连接中")
-                pumpOnce(p, roomId, onMessage, onState)
+                pumpOnce(list, roomId, menuId, onMessage, onState)
                 backoff = 1500L          // 正常断开（服务端关连接）就快速重连
             } catch (e: CancellationException) {
                 throw e
@@ -82,10 +83,44 @@ class LiveDanmaku(private val prefs: Prefs) {
         }
     }
 
+    /** 拿到端口但 `/websock/*` 回非 200 —— 这个 Host 不挂弹幕，换下一个候选 */
+    private class BadVhost(msg: String) : Exception(msg)
+
     // ---------------------------------------------------------------- 一次连接
+    /**
+     * 挨个候选端口试。
+     *
+     * 为什么要试多个：`/tunnel/open` 的 WS 升级在网关层，**任何** vhost 的端口都能 101；
+     * 真正决定成败的是接下来的 `/websock/join` —— 只有 `kiwi_im` 那个 vhost 认这个路由，
+     * 其它 vhost 的 nginx 会回 404。所以必须"连上再验一次 join"，不能只看握手。
+     */
     private suspend fun pumpOnce(
+        ports: List<Int>,
+        roomId: Long,
+        menuId: Int,
+        onMessage: (DmMessage) -> Unit,
+        onState: (String) -> Unit
+    ) {
+        var lastWhy = "没有可用端口"
+        for (port in ports) {
+            try {
+                pumpPort(port, roomId, menuId, onMessage, onState)
+                return                       // 正常读完了（服务端关连接）
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: BadVhost) {
+                lastWhy = ":$port ${e.message}"
+            } catch (e: Exception) {
+                lastWhy = ":$port ${e.message ?: e.javaClass.simpleName}"
+            }
+        }
+        throw IllegalStateException(lastWhy)
+    }
+
+    private suspend fun pumpPort(
         port: Int,
         roomId: Long,
+        menuId: Int,
         onMessage: (DmMessage) -> Unit,
         onState: (String) -> Unit
     ) {
@@ -96,26 +131,29 @@ class LiveDanmaku(private val prefs: Prefs) {
         try {
             socket.connect(InetSocketAddress("127.0.0.1", port), 4000)
             socket.tcpNoDelay = true
-            socket.soTimeout = 30_000
+            socket.soTimeout = 8_000
 
             if (!handshake(socket, port)) {
-                throw IllegalStateException("WebSocket 握手被拒（端口 $port 不挂业务 vhost，或 token 失效）")
+                throw IllegalStateException("握手被拒（端口 $port 不挂业务 vhost）")
             }
-            onState("已连接")
 
             val out = socket.getOutputStream()
-            // 先拉一屏历史，进房立刻有内容；失败不影响后续推送
+            // 只进房，不要历史：进房之后收到的才是实时推送（room_msg）。
+            // 房间没人说话就一条都没有 —— 这是真实情况，不拿历史/样本去填。
             sendCall(out, "/websock/join", JSONObject()
                 .put("room_id", roomId)
-                .put("menu_id", JOIN_MENU)
+                .put("menu_id", menuId)
                 .put("cp_type", 3), 7001)
 
+            var entered = false
             val inp = socket.getInputStream()
             while (currentCoroutineContext().isActive) {
                 val frame = try {
                     readFrame(inp)
                 } catch (e: SocketTimeoutException) {
-                    continue                    // 房间安静，继续等
+                    // 8 秒还没等到 join 的应答 → 这个端口不对，别再干等
+                    if (!entered) throw BadVhost("join 无应答")
+                    continue
                 } ?: break
 
                 when (frame.opcode) {
@@ -124,8 +162,27 @@ class LiveDanmaku(private val prefs: Prefs) {
                         when (obj.optString("opt")) {
                             "r", "u" -> handlePush(obj, onMessage)
                             "http" -> {
-                                val st = obj.optJSONObject("data")?.optInt("status", 0) ?: 0
-                                if (st == 200) onState("已进房")
+                                val d = obj.optJSONObject("data") ?: continue
+                                val st = d.optInt("status", 0)
+                                // 只发了 join 一个请求，所以进房前收到的第一个 http 应答就是它：
+                                // random 万一没被回显也能认出来，不至于把"其实成功了"判成端口不对。
+                                if (!entered || d.optInt("random", 0) == 7001) {
+                                    if (st != 200) throw BadVhost("join 回 $st")
+                                    // body 里 code != 0 才是真失败（比如 token 失效会回
+                                    // -10000 "bad token, please login!"）。只看 HTTP 200
+                                    // 会把"鉴权没过"当成"已进房"，然后干等一条消息都不来。
+                                    val body = asObject(d.opt("body"))
+                                    val code = body?.optInt("code", 0) ?: 0
+                                    if (code != 0) {
+                                        throw BadVhost(
+                                            "join code=$code " + (body?.optString("msg") ?: "")
+                                        )
+                                    }
+                                    entered = true
+                                    // 进房判定完就放宽读超时：房间安静时不该被 8 秒截断
+                                    runCatching { socket.soTimeout = 30_000 }
+                                    onState("已进房")
+                                }
                             }
                         }
                     }
@@ -192,14 +249,18 @@ class LiveDanmaku(private val prefs: Prefs) {
             is String -> runCatching { JSONArray(raw) }.getOrNull() ?: return
             else -> return
         }
+        handleItems(arr, onMessage)
+    }
+
+    private fun handleItems(arr: JSONArray, onMessage: (DmMessage) -> Unit) {
         val now = System.currentTimeMillis()
 
         /**
          * 去重 + 上抛。
          *
-         * 同一条消息会同时从 `history`（进房补的历史）和 `push`（实时推送）来两遍，
-         * 服务端又给了一份自增 [JSONObject] `id`，所以优先按 id 去重（窗口 2 分钟），
-         * 同时保留 `昵称|正文` 作为兜底 —— 实测 history 与 push 的 id 偶尔对不上。
+         * 服务端偶尔会把同一条消息重投一遍（重连、连击礼物），并给了一份自增
+         * [JSONObject] `id`，所以优先按 id 去重（窗口 2 分钟），
+         * 同时保留 `昵称|正文` 作为兜底 —— 实测个别消息的 id 对不上。
          *
          * [pairTtl] 给礼物留了短窗口：连击时同一人连送十次、正文完全一样，
          * 用聊天的 15 秒窗口会把后面九次全吃掉。
@@ -374,7 +435,6 @@ class LiveDanmaku(private val prefs: Prefs) {
     private companion object {
         /** 源 App 的版本号，服务端会校验 */
         const val APP_VERSION = "20260226001"
-        const val JOIN_MENU = 1
         const val MAX_FRAME = 8 * 1024 * 1024
     }
 }

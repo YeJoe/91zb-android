@@ -62,6 +62,33 @@ class Tunnel(private val context: Context, private val prefs: Prefs) {
     var group by mutableStateOf("")
         private set
 
+    /**
+     * IM 组的本地端口 —— **弹幕 WebSocket 只能走这个**。
+     *
+     * 源 App 的 config 里写死了 `im_url = http://kiwi_im/tunnel/open?z=1`：
+     * `/tunnel/open` 这条长连接是挂在 `kiwi_im` 这个 vhost 上的，不在拉列表那个组上。
+     *
+     * 拿 [port]（`/room/*` 的组）去连 WS 时，隧道网关照样回 101 —— 因为升级发生在网关层，
+     * 跟 Host 无关；但接下来的 `/websock/join` 会被那个 vhost 的 nginx 404 掉。
+     * 表现就是"连上了、状态也正常，但一条弹幕都收不到"，然后被垫场样本顶上，
+     * 看起来就像"每个房间弹幕都一样、也不是实时"。
+     *
+     * 0 = 没解析出来（SDK 没起 / 源 App 模式），此时弹幕才退回 [port] 试试。
+     */
+    var imPort by mutableStateOf(0)
+        private set
+
+    /** 问一次 `kiwi_im` 的端口。失败不影响隧道状态，只让弹幕单独降级。 */
+    private fun resolveIm() {
+        imPort = 0
+        if (!KiwiSdk.abiSupported()) return
+        runCatching {
+            if (KiwiSdk.serverToLocal(context, "kiwi_im") == 0 && KiwiSdk.port > 0) {
+                imPort = KiwiSdk.port
+            }
+        }
+    }
+
     /** 最近一次启动的探测明细（每个 group 的返回码），失败时贴给设置页看 */
     var diag by mutableStateOf("")
         private set
@@ -166,6 +193,7 @@ class Tunnel(private val context: Context, private val prefs: Prefs) {
                     group = fb.third
                     prefs.tunnelPort = port
                     state = State.READY
+                    resolveIm()
                     message = "隧道已起 ${host}:$port（${group}，未验证）"
                     return@withContext true
                 }
@@ -176,6 +204,7 @@ class Tunnel(private val context: Context, private val prefs: Prefs) {
 
                 prefs.tunnelPort = port
                 state = State.READY
+                resolveIm()
                 message = "隧道就绪 $host:$port（$group）"
                 true
             }
@@ -307,6 +336,7 @@ class Tunnel(private val context: Context, private val prefs: Prefs) {
                     host = KiwiSdk.host
                     port = hit.second
                     group = hit.first
+                    resolveIm()
                     message = "隧道就绪 $host:$port（$group）"
                     sb.append(" port=").append(hit.second).append(" group=").append(hit.first)
                 } else {

@@ -66,11 +66,20 @@ class AppContainer(context: Context) {
     val tunnel = com.duocai.live.tunnel.Tunnel(this.context, prefs)
 
     /**
-     * 弹幕。端口优先取内置隧道自己的 listener，没起来就退回上一次探到的源 App 端口 ——
-     * 弹幕走的是同一条隧道上的 WS（/tunnel/open → /websock/join），和列表用的是同一批 vhost。
+     * 弹幕。端口候选按「越可能是 IM vhost 越靠前」排：
+     *
+     *  1. [com.duocai.live.tunnel.Tunnel.imPort] —— `kiwi_im` 组，**唯一**能跑
+     *     `/websock/*` 的 vhost（源 App 的 `im_url = http://kiwi_im/tunnel/open?z=1`）；
+     *  2. [com.duocai.live.tunnel.Tunnel.port] —— `/room/*` 那个组，留着兜底；
+     *  3. `live.lastPort` —— 没起内置隧道（源 App 模式）时扫到的端口。
+     *
+     * 以前这里直接给列表用的那个端口，WS 能握手但 `/websock/join` 被 404，
+     * 于是永远收不到推送、被垫场样本顶上 —— 就是"每个房间弹幕都一模一样"的原因。
      */
-    val danmaku = DanmakuStore(this.context, prefs) {
-        if (tunnel.port > 0) tunnel.port else live.lastPort
+    val danmaku = DanmakuStore(prefs) {
+        listOf(tunnel.imPort, tunnel.port, live.lastPort)
+            .filter { it > 0 }
+            .distinct()
     }
 
     val player = PlayerHolder(this.context)
@@ -106,6 +115,14 @@ class AppContainer(context: Context) {
     /** 当前播放页的房间序列（列表可能被分类/搜索筛过，翻页要跟着筛过的走） */
     var playlist by mutableStateOf<List<Room>>(emptyList())
     var openIndex by mutableStateOf(-1)
+
+    /**
+     * 是否正处于画中画（PIP）。原来这状态只活在 MainActivity 里，播放页靠
+     * `host?.inPip` 读；但 RootScreen 也要用它来决断「系统返回键要不要拦截」
+     * （小窗里返回键由系统接管，不能拦），所以提到容器里做唯一真相源，播放页直接读
+     * `c.inPip`。MainActivity 在 `onPictureInPictureModeChanged` 里同步它。
+     */
+    var inPip by mutableStateOf(false)
 
     // ---- 关注（ids 是快照，供 Compose 观察）----
     var followedIds by mutableStateOf<Set<Long>>(emptySet())

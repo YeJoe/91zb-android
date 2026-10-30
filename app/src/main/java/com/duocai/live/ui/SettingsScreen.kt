@@ -89,8 +89,6 @@ fun SettingsScreen(c: AppContainer) {
     var img by remember { mutableStateOf(prefs.imgBase) }
     var imgProxy by remember { mutableStateOf(prefs.imgProxy) }
     var gateway by remember { mutableStateOf(prefs.hlsGateway) }
-    var ws by remember { mutableStateOf(prefs.dmWs) }
-    var token by remember { mutableStateOf(prefs.dmToken) }
     var pasteOpen by remember { mutableStateOf(false) }
     var importOpen by remember { mutableStateOf(false) }
     var toast by remember { mutableStateOf<String?>(null) }
@@ -533,27 +531,11 @@ fun SettingsScreen(c: AppContainer) {
 
         // ---------- 弹幕 ----------
         Section("弹幕") {
-            OutlinedTextField(
-                value = ws,
-                onValueChange = { ws = it; prefs.dmWs = it },
-                label = { Text("WebSocket 端点（可选）") },
-                placeholder = { Text("ws://…") },
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true,
-                shape = RoundedCornerShape(12.dp),
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri)
-            )
-            InfoLine("留空则回放内置的真实弹幕样本（离线演示）")
-            Spacer(Modifier.height(6.dp))
-            OutlinedTextField(
-                value = token,
-                onValueChange = { token = it; prefs.dmToken = it },
-                label = { Text("鉴权 Token（可选）") },
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true,
-                shape = RoundedCornerShape(12.dp)
-            )
-            InfoLine("用 Android Keystore 加密后存本机，不进仓库也不进 APK")
+            val dmState = c.danmaku.status.ifBlank { "未开始" }
+            InfoLine("走隧道里的 `/websock/*`：join 进房后只收实时 room_msg，不补历史 —— 没人说话就空着")
+            InfoLine("链路：$dmState · 本次已收 ${c.danmaku.liveCount} 条")
+            // 弹幕只能走 IM 那个 vhost；列表用的端口能握手但 /websock/* 会 404
+            InfoLine("端口：im=${c.tunnel.imPort} · 列表=${c.tunnel.port}（为 0 表示隧道没起）")
             Spacer(Modifier.height(4.dp))
             SwitchLine(
                 label = "只显示观众聊天",
@@ -563,6 +545,17 @@ fun SettingsScreen(c: AppContainer) {
                     c.chatOnly = it
                     c.danmaku.restart(scope)
                 }
+            )
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "重连弹幕",
+                color = MaterialTheme.colorScheme.primary,
+                fontSize = 12.sp,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(50))
+                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f))
+                    .clickable { c.danmaku.restart(scope) }
+                    .padding(horizontal = 12.dp, vertical = 6.dp)
             )
         }
 

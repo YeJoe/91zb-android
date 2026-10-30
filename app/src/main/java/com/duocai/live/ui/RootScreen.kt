@@ -1,5 +1,6 @@
 package com.duocai.live.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
@@ -29,6 +30,15 @@ import com.duocai.live.Tab
 fun RootScreen(c: AppContainer) {
 
     LaunchedEffect(Unit) { c.bootstrap() }
+
+    // 系统返回键：播放页盖在所有 tab 之上，但它只是画在 tab 上面的一层，
+    // 没有任何地方拦截返回键 —— 于是按返回会直接 finish 掉 Activity，表现就是
+    // "进了直播间按返回直接回桌面"。这里统一拦一下：播放页开着时返回 = 关掉播放页、
+    // 落回原来的列表；小窗（PIP）状态下不拦，那会儿 Activity 不在前台，
+    // 返回键归系统管（用来关小窗）。
+    BackHandler(enabled = c.openIndex >= 0 && !c.inPip) {
+        c.closePlayer()
+    }
 
     Box(
         Modifier

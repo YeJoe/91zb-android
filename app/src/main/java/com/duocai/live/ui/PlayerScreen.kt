@@ -7,6 +7,7 @@ import android.content.Intent
 import android.net.Uri
 import android.view.LayoutInflater
 import android.view.WindowManager
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
@@ -30,8 +31,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.pager.VerticalPager
-import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -50,6 +49,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -63,6 +63,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.util.VelocityTracker
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.SpanStyle
@@ -84,6 +86,7 @@ import com.duocai.live.data.Room
 import com.duocai.live.data.StreamMode
 import com.duocai.live.player.PlayerHolder
 import com.duocai.live.ui.theme.Gold
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -140,11 +143,79 @@ private class PlayerUi {
 }
 
 /**
+ * 上下滑动切间的状态机（对标 91zb 的 SwipeLayout）。
+ *
+ * 之前用 Compose 的 VerticalPager + 盖在上面的全屏 GestureLayer：手势层不消费单指
+ * 事件、理论上 Pager 还能滚，但在 OnePlus Android 15 上实测竖直滑动被吃掉，怎么都滑不动。
+ * 这里干脆不用 Pager —— 直接自己记「当前是第几间」和「整页竖直位移」，跟手 1:1 平移，
+ * 松手后按位移/速度决定回弹还是切间。和源 App 的做法完全一致，也不再依赖任何内部
+ * scrollable 的手势仲裁。
+ */
+private class PlayerPager(initialIndex: Int, private val count: Int) {
+    private val indexState = mutableIntStateOf(initialIndex)
+    var index: Int
+        get() = indexState.intValue
+        set(v) {
+            indexState.intValue = v
+        }
+
+    /** 整页竖直位移（px），正 = 往下拖 */
+    val offset = Animatable(0f)
+
+    /** 一屏高度（px），onSizeChanged 时写入 */
+    var pageHeight by mutableFloatStateOf(1f)
+
+    private var busy = false
+
+    /** 0~1，拖了多少（控制栏跟着淡出用） */
+    fun progress(): Float = (abs(offset.value) / pageHeight.coerceAtLeast(1f)).coerceIn(0f, 1f)
+
+    /** 拖动中：1:1 跟手；到边界加 0.2 阻力，明确告诉用户没有下一间了 */
+    suspend fun drag(dy: Float) {
+        if (busy) return
+        val h = pageHeight.coerceAtLeast(1f)
+        val atEdge = (index == 0 && dy > 0) || (index == count - 1 && dy < 0)
+        val ty = (if (atEdge) dy * 0.2f else dy).coerceIn(-h * 1.1f, h * 1.1f)
+        offset.snapTo(ty)
+    }
+
+    /** 松手：位移过 14% 屏高或速度够快就切间，否则回弹。两段动画和源 App 一致 */
+    fun finish(scope: CoroutineScope, dy: Float, vy: Float) {
+        if (busy) return
+        val h = pageHeight.coerceAtLeast(1f)
+        val far = abs(dy) > h * 0.14f
+        val fast = abs(vy) > 780f && abs(dy) > 20f
+        val delta = if (dy < 0) 1 else -1
+        val next = index + delta
+        if ((!far && !fast) || next !in 0 until count) {
+            scope.launch { offset.animateTo(0f, tween(190)) }
+            return
+        }
+        busy = true
+        scope.launch {
+            // 1) 旧屏整页滑出
+            offset.animateTo(if (delta > 0) -h else h, tween(150))
+            // 2) 换到新一间，新屏从对面小幅落位（不是整屏推入，更干脆）
+            index = next
+            offset.snapTo(if (delta > 0) h * 0.16f else -h * 0.16f)
+            // 3) 落位
+            offset.animateTo(0f, tween(210))
+            busy = false
+        }
+    }
+
+    /** 双指捏合打断了单指拖拽：把残余位移复位 */
+    fun cancelDrag(scope: CoroutineScope) {
+        if (!busy && abs(offset.value) > 0.5f) scope.launch { offset.animateTo(0f, tween(150)) }
+    }
+}
+
+/**
  * 播放页。
  *
  * 三条硬规矩：
  *  1. 全页只有一个 ExoPlayer，切房只换 MediaItem（多实例必 OOM）
- *  2. 页面里只画封面，视频层固定在最底下 —— 滑动时是封面在动，不是视频在动
+ *  2. 视频和封面同处一个可竖直平移的「页面」里，上下滑时整页跟手走
  *  3. 弹幕区右滑变透明，文字加投影保证可读
  *
  * 本函数刻意保持"薄"：只算状态、摆层级，具体渲染全在下面几个私有 Composable 里。
@@ -160,7 +231,7 @@ fun PlayerScreen(c: AppContainer, startIndex: Int, onClose: () -> Unit) {
     }
 
     val safeStart = startIndex.coerceIn(0, rooms.size - 1)
-    val pager = rememberPagerState(initialPage = safeStart) { rooms.size }
+    val pager = remember { PlayerPager(safeStart, rooms.size) }
     val holder = c.player
     val context = LocalContext.current
     val screenHeight = LocalConfiguration.current.screenHeightDp.dp
@@ -175,30 +246,30 @@ fun PlayerScreen(c: AppContainer, startIndex: Int, onClose: () -> Unit) {
 
     val activity = remember(context) { context.findActivity() }
     val host = activity as? MainActivity
-    val inPip = host?.inPip == true
+    // inPip 的唯一真相源在容器里（MainActivity 同步），播放页和 RootScreen 的返回键都读它
+    val inPip = c.inPip
     val pipAvailable = remember(host) { host?.pipSupported() == true }
 
-    // 画中画参数跟着「自动进小窗」开关走。API 31+ 由系统靠 setAutoEnterEnabled
-    // 自己决定进入时机，不再在 onUserLeaveHint 里手动进（那条路会和系统手势动画抢
-    // 时序，导致小窗上的展开/关闭按钮点不动 —— 见 MainActivity.syncPip）。
+    // 画中画参数提前设好（进小窗时机在 MainActivity.onUserLeaveHint 手动触发，
+    // 参考源 App 的做法）。
     LaunchedEffect(host, pipAvailable, c.autoPip) {
-        if (host != null && pipAvailable) host.syncPip(c.autoPip)
+        if (host != null && pipAvailable) host.syncPip()
     }
 
-    val settled = pager.settledPage
-    val offset = pager.currentPageOffsetFraction
-    val room = rooms.getOrNull(settled) ?: rooms[safeStart]
+    val index = pager.index
+    val room = rooms.getOrNull(index) ?: rooms[safeStart]
 
     // 换房 → 换流；同一个地址不会重新握手
-    LaunchedEffect(settled) {
-        val r = rooms.getOrNull(settled) ?: return@LaunchedEffect
+    LaunchedEffect(index) {
+        val r = rooms.getOrNull(index) ?: return@LaunchedEffect
         ui.resetZoom()
         holder.open(
             r.streamUrls(c.prefs.rtmpDomain, StreamMode.of(c.streamMode)),
             c.autoPlay
         )
         // 弹幕跟着换房走：同一条隧道上重开 WS，打新房间的 /websock/join
-        c.danmaku.start(this, r.id)
+        // （房间号 + 分区 id 一起给，之后只收这个房间的实时推送）
+        c.danmaku.start(this, r)
     }
 
     LaunchedEffect(Unit) {
@@ -233,7 +304,9 @@ fun PlayerScreen(c: AppContainer, startIndex: Int, onClose: () -> Unit) {
         label = "video"
     )
     val chromeSwitch by animateFloatAsState(if (ui.chrome) 1f else 0f, tween(200), label = "chrome")
-    val chromeAlpha = if (inPip) 0f else chromeSwitch * (1f - min(1f, abs(offset) * 2.2f))
+    // 拖动进度（读 pager.progress()，会随位移重组，和之前的 Pager 一致）
+    val dragProgress = pager.progress()
+    val chromeAlpha = if (inPip) 0f else chromeSwitch * (1f - min(1f, dragProgress * 2.2f))
 
     // 缩放模式只剩「适应 / 拉伸」两种预设；任意倍率靠双指捏合（1×–3×）
     val resizeMode =
@@ -244,22 +317,24 @@ fun PlayerScreen(c: AppContainer, startIndex: Int, onClose: () -> Unit) {
         Modifier
             .fillMaxSize()
             .background(Color.Black)
+            .onSizeChanged { pager.pageHeight = it.height.toFloat().coerceAtLeast(1f) }
             .graphicsLayer { alpha = enterAlpha }
     ) {
-        VideoLayer(holder, ui, videoAlpha, resizeMode)
-
-        // 分页层：每页只有封面
-        VerticalPager(
-            state = pager,
-            key = { index -> rooms[index].id },
-            userScrollEnabled = !inPip && ui.zoom <= 1.01f,
-            modifier = Modifier.fillMaxSize()
-        ) { page ->
-            val coverAlpha = if (page == settled) 1f - videoAlpha else 1f
-            CoverPage(room = rooms[page], coverAlpha = coverAlpha)
+        // 可竖直平移的「页面」：视频 + 封面。滑动时整页跟手，松手后由 PlayerPager 决定切/回弹。
+        Box(
+            Modifier
+                .fillMaxSize()
+                .graphicsLayer { translationY = pager.offset.value }
+        ) {
+            VideoLayer(holder, ui, videoAlpha, resizeMode)
+            // 封面盖在视频上：视频就绪后淡出，切房瞬间（ready=false）立刻显出来遮住换流的空档
+            CoverPage(room = rooms[index], coverAlpha = 1f - videoAlpha)
         }
 
-        GestureLayer(ui, holder, enabled = !inPip)
+        // 手势层：单指上下滑切间 / 单指点击收显控制栏 / 双击暂停 / 双指缩放。
+        // 放在页面之上、控制栏之下 —— 控制栏（按钮、聊天列表）在更上层先拿到事件，
+        // 列表能滚就让列表滚，其余情况才由这一层接管竖直拖拽。
+        PlayerGestureLayer(pager, ui, holder, enabled = !inPip)
 
         // 聊天面板的临时状态提到外面：面板会被整块摘掉（见下面 chromeUp），
         // 状态放在里面的话每次藏/显背景不透明度都会被重置回 62%
@@ -285,7 +360,7 @@ fun PlayerScreen(c: AppContainer, startIndex: Int, onClose: () -> Unit) {
                     SideRail(
                         room = room,
                         c = c,
-                        pageLabel = if (rooms.size > 1) "${settled + 1}/${rooms.size}" else "",
+                        pageLabel = if (rooms.size > 1) "${index + 1}/${rooms.size}" else "",
                         alpha = chromeAlpha
                     )
                 }
@@ -358,10 +433,11 @@ fun PlayerScreen(c: AppContainer, startIndex: Int, onClose: () -> Unit) {
 }
 
 /**
- * 视频层：整页唯一实例，固定不动。
- *
- * 缩放/位移全部走 graphicsLayer，不碰布局 —— 播放器是个平台 View，
+ * 视频层：整页唯一实例。缩放/位移走 graphicsLayer，不碰布局 —— 播放器是个平台 View，
  * 每次改尺寸都会触发一次 surface 重建，滑动手感会直接崩掉。
+ *
+ * 转场用的竖直平移在外层「页面」Box 上做（见 PlayerScreen），这里是画面自身的
+ * 缩放/平移（双指捏合），两层互不干扰。
  */
 @Composable
 private fun VideoLayer(holder: PlayerHolder, ui: PlayerUi, alpha: Float, resizeMode: Int) {
@@ -370,6 +446,7 @@ private fun VideoLayer(holder: PlayerHolder, ui: PlayerUi, alpha: Float, resizeM
             val view = LayoutInflater.from(ctx)
                 .inflate(R.layout.view_player, null, false) as PlayerView
             view.setShowBuffering(PlayerView.SHOW_BUFFERING_WHEN_PLAYING)
+            view.useController = false
             view.player = holder.player()
             view
         },
@@ -392,32 +469,52 @@ private fun VideoLayer(holder: PlayerHolder, ui: PlayerUi, alpha: Float, resizeM
 }
 
 /**
- * 手势层。
+ * 手势层（对标 91zb 的 SwipeLayout）。
  *
- * 刻意不用 detectTapGestures：它会 consume 掉 down，而这个层压在 Pager 上面，
- * 很容易把上下滑动吃掉。这里自己判"没移动就是点击"，单指全程不消费事件，
- * Pager 永远能滑；只有双指才消费，用来做缩放。
- *
- * 单指点击和双指捏合合并在同一个 awaitEachGesture 里（原来拆成两个 pointerInput，
- * 等于两份状态机加两份局部变量，正是撑爆方法体的元凶之一）。
+ * 关键点：
+ *  - 单指：先不动，等竖直位移过 touchSlop 且明显大于水平位移才接管 → 整页跟手平移。
+ *    松手时由 [PlayerPager.finish] 决定切间（两段动画）还是回弹。
+ *  - 如果这一串事件已经被某个子 View（聊天列表 / 按钮）消费掉，就整串放行，不抢。
+ *    这样聊天区照常滚动、按钮照常点击，只有"没人要"的竖直拖拽才用来切间。
+ *  - 双击 / 单击 / 双指捏合的逻辑沿用原实现。
  */
 @Composable
-private fun GestureLayer(ui: PlayerUi, holder: PlayerHolder, enabled: Boolean) {
+private fun PlayerGestureLayer(
+    pager: PlayerPager,
+    ui: PlayerUi,
+    holder: PlayerHolder,
+    enabled: Boolean
+) {
     val scope = rememberCoroutineScope()
     Box(
         Modifier
             .fillMaxSize()
             .pointerInput(enabled) {
                 if (!enabled) return@pointerInput
+                val touchSlop = viewConfiguration.touchSlop
                 awaitEachGesture {
                     val down = awaitFirstDown(requireUnconsumed = false)
+                    val tracker = VelocityTracker().apply {
+                        resetTracking()
+                        addPosition(down.uptimeMillis, down.position)
+                    }
+                    // 按下时若已被下层（按钮等）消费，说明这一串手势归它
+                    var childHandled = down.isConsumed
                     var moved = false
+                    var dragging = false
                     var pinched = false
                     var last = down.position
+                    var lastDy = 0f
                     while (true) {
+                        // 原始事件：别人消费过也照读，用来判断"这手势是不是别人在处理"
                         val event = awaitPointerEvent()
                         val pressed = event.changes.filter { it.pressed }
                         if (pressed.size >= 2) {
+                            // 双指：取消单指拖拽，转做缩放
+                            if (dragging) {
+                                dragging = false
+                                pager.cancelDrag(scope)
+                            }
                             pinched = true
                             val a = pressed[0]
                             val b = pressed[1]
@@ -439,13 +536,34 @@ private fun GestureLayer(ui: PlayerUi, holder: PlayerHolder, enabled: Boolean) {
                         }
                         if (event.changes.none { it.pressed }) break
                         val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                        val totalDx = change.position.x - down.position.x
+                        val totalDy = change.position.y - down.position.y
                         if ((change.position - last).getDistance() > 14f) moved = true
                         last = change.position
+                        tracker.addPosition(change.uptimeMillis, change.position)
+
+                        if (!dragging && !pinched) {
+                            if (change.isConsumed) childHandled = true
+                            // 竖直意图明显：位移过 slop 且比水平大。缩放态不切间（留给平移）
+                            if (!childHandled && ui.zoom <= 1.01f &&
+                                abs(totalDy) > touchSlop && abs(totalDy) > abs(totalDx)
+                            ) {
+                                dragging = true
+                            }
+                        }
+                        if (dragging) {
+                            pager.drag(totalDy)
+                            lastDy = totalDy
+                            // 一旦接管就消费，避免子 View 同时再滚一下
+                            event.changes.forEach { it.consume() }
+                        }
                     }
-                    if (moved || pinched) return@awaitEachGesture
-                    // 面板已经藏起来了：**任何一次单击都立刻把它叫回来**。
-                    // 不能还走下面那套"等 260ms 看是不是双击"——用户看到面板消失后
-                    // 往往马上再点一下，那一下会被判成双击（只切暂停），面板就再也回不来了。
+                    if (dragging) {
+                        pager.finish(scope, lastDy, tracker.calculateVelocity().y)
+                        return@awaitEachGesture
+                    }
+                    if (pinched || moved || childHandled) return@awaitEachGesture
+                    // 单击：面板藏起来了就立刻叫回来（不等双击判定，否则用户第二下会正好变双击）
                     if (!ui.chrome) {
                         ui.chrome = true
                         return@awaitEachGesture
@@ -787,6 +905,23 @@ private fun ChatPanel(
             )
         }
 
+        // 没有消息时把"为什么没有"说清楚：
+        // 以前这里会被内置样本填满，看起来一切正常，实际上一条实时弹幕都没收到。
+        if (messages.isEmpty()) {
+            val why = when {
+                c.danmaku.status.isBlank() -> "正在连接弹幕…"
+                c.danmaku.status == "已进房" -> "已进房，这个房间现在没人说话"
+                else -> "弹幕未连接 · ${c.danmaku.status}"
+            }
+            Text(
+                why,
+                color = Color.White.copy(alpha = 0.62f),
+                fontSize = 11.sp,
+                modifier = Modifier.padding(start = 14.dp, end = 14.dp, top = 6.dp),
+                style = TextStyle(shadow = textShadow())
+            )
+        }
+
         LazyColumn(
             state = listState,
             modifier = Modifier.weight(1f).fillMaxWidth(),
@@ -825,11 +960,14 @@ private fun ChatHeader(
             fontSize = 11.sp,
             style = TextStyle(shadow = textShadow())
         )
-        if (c.prefs.dmWs.isBlank()) {
+        // 弹幕链路状态直接写在标题旁：以前连不上会被样本顶上，用户完全看不出来
+        val dmStatus = c.danmaku.status
+        val dmHint = if (dmStatus.isBlank() || dmStatus == "已进房") "" else dmStatus
+        if (dmHint.isNotBlank()) {
             Spacer(Modifier.width(6.dp))
             Text(
-                "离线样本",
-                color = Color.White.copy(alpha = 0.5f),
+                dmHint,
+                color = Color(0xFFFFC46B).copy(alpha = 0.9f),
                 fontSize = 10.sp,
                 style = TextStyle(shadow = textShadow())
             )
@@ -880,7 +1018,7 @@ private fun ChatInputBar(bg: Float) {
         verticalAlignment = Alignment.CenterVertically
     ) {
         Text(
-            "说点什么…（只读，配置弹幕端点后可发）",
+            "说点什么…（只读，发弹幕要先解决写接口鉴权）",
             color = Color.White.copy(alpha = 0.55f),
             fontSize = 12.sp,
             modifier = Modifier.weight(1f)
