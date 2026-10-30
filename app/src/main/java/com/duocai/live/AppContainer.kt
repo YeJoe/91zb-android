@@ -389,7 +389,7 @@ class AppContainer(context: Context) {
      * 现在的模型：
      * ```
      * 点击 → pendingFollows 乐观翻转（界面立刻变）
-     *      → 打 /relationship/*
+     *      → 打 /relationship/add 或 /relationship/remove
      *      → 拉一次 my_follow 快照
      *         ├─ 与期望一致 → 清掉 pending，界面以服务端为准
      *         └─ 不一致     → 清掉 pending，界面回滚，toast 报失败

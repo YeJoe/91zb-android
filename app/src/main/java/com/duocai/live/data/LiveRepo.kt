@@ -539,7 +539,8 @@ class LiveRepo(private val context: Context, private val prefs: Prefs) {
     /**
      * 真实关注 / 取消关注。
      *
-     * ## 2026-10-31 修正：真正的写接口是 `/relationship/*`，不是 `/user_follow/*`
+     * ## 2026-10-31 修正：真正的写接口是 `/relationship/add` 和 `/relationship/remove`，
+     * 不是 `/user_follow/…`
      *
      * 从 blutter 产物（`tianmei/outdir` 的 pp.txt）挖出的真值：
      *
