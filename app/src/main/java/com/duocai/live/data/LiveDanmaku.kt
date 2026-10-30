@@ -149,11 +149,6 @@ class LiveDanmaku(private val prefs: Prefs) {
     /** 拿到端口但 `/websock/…` 回非 200 —— 这个 Host 不挂弹幕，换下一个候选 */
     private class BadVhost(msg: String) : Exception(msg)
 
-    private companion object {
-        /** 会话 token 的形状：32 位 hex（导出工具给的就是这一串） */
-        val TOKEN_RE = Regex("[0-9a-fA-F]{32}")
-    }
-
     // ---------------------------------------------------------------- 一次连接
     /**
      * 挨个候选端口试。
@@ -542,5 +537,8 @@ class LiveDanmaku(private val prefs: Prefs) {
         /** 源 App 的版本号，服务端会校验 */
         const val APP_VERSION = "20260226001"
         const val MAX_FRAME = 8 * 1024 * 1024
+
+        /** 会话 token 的形状：32 位 hex（导出工具给的就是这一串） */
+        val TOKEN_RE = Regex("[0-9a-fA-F]{32}")
     }
 }
