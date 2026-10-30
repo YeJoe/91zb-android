@@ -34,6 +34,7 @@ DC Live 的「实时直播源」直连源 App 隧道端口, 需要两个凭证 +
   --out FILE        把可粘贴配置同时写入文件 (默认只打印到 stdout)
 """
 import gzip
+import base64
 import json
 import os
 import re
@@ -87,6 +88,8 @@ class SuError(RuntimeError):
 class Adb:
     def __init__(self, device=None):
         self.device = device
+        # None = 还没探; True = adb shell 本身就是 root (KernelSU/Magisk 常见)
+        self._shell_root = None
 
     def raw(self, *args, timeout=30):
         cmd = ["adb"]
@@ -104,16 +107,38 @@ class Adb:
         except subprocess.TimeoutExpired:
             return 124, "", "adb 命令超时"
 
+    def shell_is_root(self, timeout=8):
+        """adb shell 自己是不是 root。
+
+        KernelSU / Magisk 常把 adbd 直接跑成 uid=0（context u:r:ksu:s0），
+        这时再调 `su -c` 等于让 root 进程去申请 root —— 授权弹窗一卡就是十几秒超时。
+        先探一次，是 root 就彻底绕开 su。
+        """
+        if self._shell_root is None:
+            rc, out, err = self.raw("exec-out", "id", timeout=timeout)
+            self._shell_root = (rc == 0 and "uid=0" in out)
+        return bool(self._shell_root)
+
     def root_ok(self, timeout=15):
+        if self.shell_is_root():
+            return True
         rc, out, err = self.raw("exec-out", "su", "-c", "id", timeout=timeout)
         if rc == 124:
             raise SuError("su 调用超时 (%ds) —— 大概率是 root 授权弹窗卡住了, "
-                          "点亮屏幕后在设备上允许本机的 root 请求" % timeout)
+                          "点亮屏幕后在设备上允许本机的 root 请求。" % timeout
+                          + "若 adb shell 本身已是 root, 本工具会自动跳过 su。")
         return rc == 0 and "uid=0" in out
 
     def sudo(self, cmd, timeout=25):
         """以 root 执行一条 shell 命令。用 exec-out 避免 pty 把 \\n 改成 \\r\\n,
         二进制/大文件读出来才是干净的。"""
+        if self.shell_is_root():
+            rc, out, err = self.raw("exec-out", "sh", "-c", cmd, timeout=timeout)
+            if rc == 124:
+                raise SuError("命令超时: %s" % cmd[:60])
+            if rc != 0 and not out.strip():
+                raise SuError("执行失败 (rc=%d): %s" % (rc, (err or "").strip()[:120]))
+            return out
         rc, out, err = self.raw("exec-out", "su", "-c", cmd, timeout=timeout)
         if rc == 124:
             raise SuError("su 执行超时: %s" % cmd[:60])
@@ -205,7 +230,7 @@ def diagnose(pkg, device):
             ok = False
 
     try:
-        ports = listen_ports(serial)
+        ports = listen_ports(serial, pkg)
         lines.append("隧道 LISTEN 端口 : %d 个" % len(ports))
         if not ports:
             lines.append("  → App 没在前台跑 (退后台隧道会被冻结)")
@@ -216,19 +241,59 @@ def diagnose(pkg, device):
 
 
 # ----------------------------------------------------------------- prefs 解析
+def prefs_dirs(device, pkg):
+    """列出可能存放 shared_prefs 的目录（按优先级）。
+
+    普通安装:   /data/data/<pkg>/shared_prefs
+    工作资料:   /data/user/12/<pkg>/shared_prefs        ← 源 App 装在分身空间
+    多开容器:   /data/user/12/<宿主>/app_split/<pkg>/0/shared_prefs
+                （如 top.bienvenido.saas.i18n 这类容器，prefs 埋在 app_split 里）
+    """
+    adb = Adb(device)
+    dirs = []
+
+    def add(p):
+        p = p.rstrip("/")
+        if p and p not in dirs:
+            dirs.append(p)
+
+    add("/data/data/%s/shared_prefs" % pkg)
+    try:
+        found = adb.sudo(
+            "find /data/user -maxdepth 8 -type d -name '%s' 2>/dev/null" % pkg, timeout=60)
+    except SuError:
+        found = ""
+    for line in found.splitlines():
+        line = line.strip()
+        if not line.startswith("/data/user/"):
+            continue
+        add(line + "/shared_prefs")
+        add(line + "/0/shared_prefs")
+    return dirs
+
+
 def read_prefs(device, pkg):
     """读源 App 全部 shared_prefs xml, 合并成 {key: value} 与原始文本。"""
     adb = Adb(device)
-    # -1 强制一行一个: adb exec-out 下 toybox ls 会按列排版, 直接把文件名拼坏
-    listing = adb.sudo("ls -1 /data/data/%s/shared_prefs/ 2>/dev/null" % pkg)
-    files = [f.strip() for f in listing.splitlines() if f.strip().endswith(".xml")]
+    files, base = [], None
+    for d in prefs_dirs(device, pkg):
+        # -1 强制一行一个: adb exec-out 下 toybox ls 会按列排版, 直接把文件名拼坏
+        try:
+            listing = adb.sudo("ls -1 %s/ 2>/dev/null" % d)
+        except SuError:
+            continue
+        got = [f.strip() for f in listing.splitlines() if f.strip().endswith(".xml")]
+        if got:
+            files, base = got, d
+            break
     merged = {}
     raw_texts = []
     if not files:
         _print("[!] shared_prefs 目录里没有 xml。跑 `token_export.py diagnose` 看具体原因。")
         return merged, raw_texts
+    _print("[*] prefs 目录: %s (%d 个 xml)" % (base, len(files)))
     for fn in files:
-        path = "/data/data/%s/shared_prefs/%s" % (pkg, fn)
+        path = "%s/%s" % (base, fn)
         try:
             content = adb.sudo("cat %s" % path, timeout=40)
         except SuError:
@@ -318,8 +383,38 @@ def find_token_candidates(strings, known_junk=()):
 
 
 # ----------------------------------------------------------------- 端口 / 探测
-def listen_ports(device):
+def app_pid(device, pkg):
+    """取源 App 的 pid（多开容器里进程名就是子包名）。"""
     adb = Adb(device)
+    try:
+        out = adb.sudo("ps -A -o PID,NAME 2>/dev/null | grep -w '%s'" % pkg)
+    except SuError:
+        return []
+    pids = []
+    for line in out.splitlines():
+        cols = line.split()
+        if len(cols) >= 2 and cols[0].isdigit() and cols[1] == pkg:
+            pids.append(int(cols[0]))
+    return pids
+
+
+def listen_ports(device, pkg=None):
+    """LISTEN 端口。给了 pkg 就只取该进程自己的（设备上别的 App 也开着几十个口）。"""
+    adb = Adb(device)
+    if pkg:
+        for pid in app_pid(device, pkg):
+            try:
+                out = adb.sudo("ss -tlnp 2>/dev/null | grep 'pid=%d,'" % pid)
+            except SuError:
+                continue
+            ports = set()
+            for line in out.splitlines():
+                m = re.search(r":(\d+)\s", line)
+                if m:
+                    ports.add(int(m.group(1)))
+            ports = sorted(p for p in ports if 1024 <= p <= 65535 and p not in SKIP_PORTS)
+            if ports:
+                return ports
     out = adb.sudo("cat /proc/net/tcp /proc/net/tcp6 2>/dev/null")
     ports = set()
     for line in out.splitlines():
@@ -333,50 +428,64 @@ def listen_ports(device):
     return sorted(p for p in ports if 1024 <= p <= 65535 and p not in SKIP_PORTS)
 
 
-def _probe_one(device, port, token, jwe, host_port, timeout=5):
-    """打一条隧道端口, 返回 (ok, status, snippet)。
+def _http_on_device(adb, port, method, path, body, headers, timeout=5):
+    """在**设备侧**发一条裸 HTTP 请求（nc），返回原始响应字节串。
 
-    用独立的 host 端口做转发, 避免和「设备端口号相同」时撞上 PC 上已占用的端口。
+    为什么不走 adb forward：本机 env 里有 HTTP_PROXY、且部分 ROM（含 KernelSU
+    下的 adbd）forward 到 127.0.0.1 的应用监听口会握手成功但永远不回数据——
+    表现为"连上了、超时、零字节"。设备侧 nc 是同一 netns 里的直连，稳。
     """
-    import http.client
+    req = ("%s %s HTTP/1.0\r\n" % (method, path)).encode()
+    for k, v in headers.items():
+        req += ("%s: %s\r\n" % (k, v)).encode()
+    req += b"Connection: close\r\n\r\n" + body
+    b64 = base64.b64encode(req).decode()
+    cmd = ("printf %%s '%s' | base64 -d | timeout %d toybox nc 127.0.0.1 %d"
+           % (b64, timeout, port))
+    rc, out, err = adb.raw("exec-out", "sh", "-c", cmd, timeout=timeout + 8)
+    if "nc: not found" in (err or "") or "inaccessible" in (err or ""):
+        return None
+    return (out or "").encode()
+
+
+def _probe_one(device, port, token, jwe, host_port, timeout=5):
+    """打一条隧道端口, 返回 (ok, status, snippet)。"""
     adb = Adb(device)
-    adb.raw("forward", "tcp:%d" % host_port, "tcp:%d" % port, timeout=10)
-    try:
-        h = {
-            "user-agent": "Dart/3.10 (dart:io)",
-            "content-type": "application/json",
-            "accept-encoding": "gzip",
-        }
-        if jwe:
-            h["authorization"] = "Bearer " + jwe
-        suffix = ("?token=%s" % token) if token else ""
-        last = (False, None, "")
-        for path, body in PROBE_TARGETS:
+    h = {
+        "user-agent": "Dart/3.10 (dart:io)",
+        "content-type": "application/json",
+        "accept-encoding": "identity",
+    }
+    if jwe:
+        h["authorization"] = "Bearer " + jwe
+    suffix = ("?token=%s" % token) if token else ""
+    last = (False, None, "")
+    for path, body in PROBE_TARGETS:
+        raw = _http_on_device(adb, port, "POST", path + suffix,
+                              json.dumps(body).encode(), h, timeout)
+        if raw is None:
+            return (False, "NONC", "设备上没有 nc")
+        if not raw:
+            last = (False, "EMPTY", "端口无响应")
+            continue
+        if raw[:2] == b"\x1f\x8b":
             try:
-                c = http.client.HTTPConnection("127.0.0.1", host_port, timeout=timeout)
-                c.request("POST", path + suffix, body=json.dumps(body).encode(), headers=h)
-                r = c.getresponse()
-                raw = r.read()
-                c.close()
-            except Exception as e:
-                return (False, "ERR", "%s: %s" % (type(e).__name__, e))
-            if raw[:2] == b"\x1f\x8b":
-                try:
-                    raw = gzip.decompress(raw)
-                except OSError:
-                    pass
-            txt = raw.decode("utf-8", "replace")
-            code = None
-            try:
-                code = json.loads(txt).get("code")
-            except (ValueError, AttributeError):
+                raw = gzip.decompress(raw)
+            except OSError:
                 pass
-            if r.status == 200 and code == 0:
-                return (True, r.status, txt[:80])
-            last = (False, r.status, txt[:80] or "code=%s" % code)
-        return last
-    finally:
-        adb.raw("forward", "--remove", "tcp:%d" % host_port, timeout=10)
+        txt = raw.decode("utf-8", "replace")
+        m = re.match(r"HTTP/1\.[01] (\d{3})", txt)
+        status = int(m.group(1)) if m else None
+        payload = txt.split("\r\n\r\n", 1)[-1].split("\n\n", 1)[-1]
+        code = None
+        try:
+            code = json.loads(payload).get("code")
+        except (ValueError, AttributeError):
+            pass
+        if status == 200 and code == 0:
+            return (True, status, payload[:80])
+        last = (False, status, (payload or txt)[:80] or "code=%s" % code)
+    return last
 
 
 def probe_combos(device, ports, tokens, jwes, budget=400):
@@ -439,14 +548,9 @@ def capture_loopback_tokens(device, seconds=8):
     adb = Adb(device)
     for binpath in ("tcpdump", "/system/bin/tcpdump", "/data/local/tmp/tcpdump"):
         try:
-            rc, out, err = adb.raw(
-                "exec-out", "su", "-c",
-                "timeout %d %s -i lo -s 0 -A -n tcp 2>/dev/null" % (seconds, binpath),
-                timeout=seconds + 10,
-            )
-        except Exception:
-            continue
-        if rc == 127 or "not found" in (err or ""):
+            out = adb.sudo("%s -i lo -s 0 -A -n tcp 2>/dev/null" % binpath,
+                           timeout=seconds + 15)
+        except SuError:
             continue
         found = CAPTURE_TOKEN_RE.findall(out or "")
         if found:
@@ -455,15 +559,45 @@ def capture_loopback_tokens(device, seconds=8):
             for t in found:
                 uniq[t] = uniq.get(t, 0) + 1
             return sorted(uniq.items(), key=lambda kv: -kv[1])
-        if rc == 0:
-            return []          # tcpdump 能跑, 只是这段时间没抓到
     return None                # 压根没有 tcpdump
+
+
+def app_user(device, pkg):
+    """源 App 跑在哪个 user 下（工作资料 = 12 之类），monkey/am 都得带上。"""
+    adb = Adb(device)
+    pids = app_pid(device, pkg)
+    if not pids:
+        return None
+    try:
+        out = adb.sudo("ps -o USER -p %d 2>/dev/null | tail -1" % pids[0]).strip()
+    except SuError:
+        return None
+    m = re.match(r"u(\d+)_", out or "")
+    return int(m.group(1)) if m else None
 
 
 def poke_app(device, pkg):
     """把 App 拉到前台, 触发一次网络活动 (退后台时隧道是冻结的)。"""
-    Adb(device).raw("shell", "monkey", "-p", pkg,
+    adb = Adb(device)
+    user = app_user(device, pkg)
+    opts = []
+    if user:
+        try:
+            brief = adb.sudo("cmd package resolve-activity --brief %s 2>/dev/null | tail -1" % pkg)
+            act = (brief or "").strip()
+            if "/" in act:
+                opts.append("am start --user %d -n %s" % (user, act))
+        except SuError:
+            pass
+        opts.append("monkey -p %s -c android.intent.category.LAUNCHER 1" % pkg)
+    else:
+        opts.append("monkey -p %s -c android.intent.category.LAUNCHER 1" % pkg)
+    for cmd in opts:
+        if "monkey" in cmd:
+            adb.raw("shell", "monkey", "-p", pkg,
                     "-c", "android.intent.category.LAUNCHER", "1", timeout=20)
+        else:
+            adb.raw("shell", *cmd.split(), timeout=20)
 
 
 def tokens_from_capture(device, pkg, seconds=8):
@@ -490,7 +624,11 @@ def tokens_from_capture(device, pkg, seconds=8):
     th = threading.Thread(target=_cap, daemon=True)
     th.start()
     time.sleep(2.5)                     # 等 tcpdump 就位
-    Adb(device).raw("shell", "am", "force-stop", pkg, timeout=15)
+    user = app_user(device, pkg)
+    if user:
+        Adb(device).raw("shell", "am", "force-stop", "--user", str(user), pkg, timeout=15)
+    else:
+        Adb(device).raw("shell", "am", "force-stop", pkg, timeout=15)
     poke_app(device, pkg)
     th.join(cold + 15)
     return box.get("got") or []
@@ -628,7 +766,7 @@ def cmd_dump(device, pkg):
 
 
 def cmd_ports(device, pkg):
-    ports = listen_ports(device)
+    ports = listen_ports(device, pkg)
     _print("隧道 LISTEN 端口 (%d):" % len(ports))
     _print("  " + ", ".join(str(p) for p in ports))
     return 0
@@ -718,7 +856,7 @@ def cmd_export(device, pkg, no_probe, out_file, no_capture):
     # 3) 在线探测: 哪个端口 + 哪个 token 真的能用
     token, port = None, None
     if not no_probe:
-        ports = listen_ports(device)
+        ports = listen_ports(device, pkg)
         if not ports:
             _print("[!] 没扫到隧道端口。确认源 App 正在前台运行(退后台隧道会冻结)。")
         else:

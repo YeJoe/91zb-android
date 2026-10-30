@@ -119,23 +119,45 @@ class AppContainer(context: Context) {
         },
         // 发送失败后的重探：**跳过缓存**再扫一遍。隧道端口是每次冷启动重排的，
         // 缓存里的号码可能已经被另一个上游占走（握手 101、请求 500）
-        refreshPortsProvider = { danmakuCandidates(true) }
+        refreshPortsProvider = { danmakuCandidates(true) },
+        // 半死状态（列表组在、弹幕组没了）只能重建隧道：换端口/重探都是白试
+        rebuildTunnel = {
+            val ok = runCatching { tunnel.restart() }.getOrDefault(false)
+            if (ok) {
+                live.preferPort = tunnel.port
+                // 这两个是 Compose 可观察状态，只在主线程改
+                scope.launch {
+                    tunnelPort = tunnel.port
+                    tunnelOk = true
+                }
+                // 端口整批换了，列表也顺手刷一次
+                runCatching { reload(force = true) }
+            }
+            ok
+        }
     )
 
     /**
      * 弹幕 vhost 的候选端口。
      *
+     * 顺序有讲究，别随手调：**本机 listener 实扫排在 SDK 组端口前面**。
+     *
+     * 2026-10-31 现场：发送一直 500，日志里只试了 `:48325`（旧端口）和 `:43473`，
+     * 而此刻真正挂 `/websock` 的是 42561 / 63304。原因就是 `tunnel.groupPorts`
+     * 是首次 init 时问 SDK 要的快照 —— 隧道重启后端口整批重排，这份快照全是过期号码，
+     * 却排在实扫结果前面，白白占掉前几次尝试。
+     *
      * @param force 忽略缓存重扫本机 listener（发送失败后用）
      */
     private fun danmakuCandidates(force: Boolean): List<Int> = buildList {
-        // 1. SDK 明确指出的 kiwi_im
+        // 1. SDK 明确指出的 kiwi_im（Tunnel 重启会更新它，基本可信）
         if (tunnel.imPort > 0) add(tunnel.imPort)
 
-        // 2. SDK 问到的全部组端口，逐个过 405 判据
-        addAll(live.verifyWsPorts(tunnel.groupPorts.values))
-
-        // 3. 扫本机 listener（内置隧道自己的 listener 就在里面）
+        // 2. 扫本机 listener + 405 判据 —— 唯一反映"此刻"真实端口表的一档
         addAll(live.probeWsVhosts(force))
+
+        // 3. SDK 问到的组端口快照（可能是重启前的，只当补充）
+        addAll(live.verifyWsPorts(tunnel.groupPorts.values))
 
         // 4. 最后兜底：列表用的端口（大概率 404，但聊胜于无）
         if (tunnel.port > 0) add(tunnel.port)

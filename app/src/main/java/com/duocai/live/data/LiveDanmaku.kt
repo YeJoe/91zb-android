@@ -361,11 +361,13 @@ class LiveDanmaku(private val prefs: Prefs) {
 
         var firstRound = true
         while (true) {
+            // distinct 不能省：enteredPort / goodPort / 快路径候选三者经常是同一个号码，
+            // 不去重会对同一端口连打三次（线上日志里 ":48325 HTTP 500" 出现三遍）
             val ports = buildList {
                 if (enteredPort > 0) add(enteredPort)
                 if (goodPort > 0) add(goodPort)
                 addAll(runCatching { fallbackPorts() }.getOrDefault(emptyList()))
-            }.filter { it > 0 && it !in tried }
+            }.filter { it > 0 }.distinct().filter { it !in tried }
 
             if (ports.isEmpty() && firstRound && tried.isEmpty()) {
                 throw IllegalStateException("弹幕通道还没连上，等一会儿再发")
@@ -393,9 +395,16 @@ class LiveDanmaku(private val prefs: Prefs) {
             if (!firstRound || refresh == null) break
             firstRound = false
             runCatching { refresh() }
+            // 隧道刚重启时 listener 还没 bind 完，`/proc/net/tcp` 里读不到新端口 ——
+            // 立刻重试等于拿空表再撞一次，等半秒让端口表稳定
+            delay(600L)
         }
 
         val detail = reasons.take(4).joinToString(" / ")
+        // 全灭 = 这两个缓存都不作数了。留着它们只会让下一次发送继续撞同一个死端口，
+        // 也让接收线程以为"已进房"（设置页会显示一个假的 :端口）
+        enteredPort = 0
+        goodPort = 0
         throw IllegalStateException(
             if (detail.isEmpty()) "发送失败：没有可用端口"
             else "发送失败（room=$roomId menu=$menuId）：$detail"

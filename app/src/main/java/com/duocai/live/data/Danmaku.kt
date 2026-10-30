@@ -8,6 +8,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 data class DmMessage(val kind: String, val typ: Int, val nick: String, val text: String)
@@ -125,7 +126,25 @@ class DanmakuStore(
      * 与 [portsProvider] 的区别只在缓存策略：那个为了列表速度会复用上一次的探测结果，
      * 而隧道端口在源 App 冷启动后会整体重排 —— 复用等于拿旧号码去撞，全是 500。
      */
-    private val refreshPortsProvider: () -> List<Int> = { emptyList() }
+    private val refreshPortsProvider: () -> List<Int> = { emptyList() },
+    /**
+     * 通道整体不可用时重建隧道（`Tunnel.restart`），返回是否成功。
+     *
+     * ## 为什么必须有这一层（2026-10-31 实测）
+     *
+     * 隧道端口是分组的，每个组对应一个上游。源 App 退出 / 隧道重连之后，
+     * 有可能出现「列表组还在、弹幕组没了」的半死状态：
+     *
+     * ```
+     * 设置页显示「隧道在线 · 515 个直播间 · 端口 56772」 ← 列表正常
+     * 但扫完全部 34 个 listener，没有任何一个的 /websock/join 回 200
+     * → 怎么发都是 HTTP 500（代理到空上游）
+     * ```
+     *
+     * 这种时候换端口、重探端口全都没用，只有把隧道重启一遍重建分组才恢复。
+     * 留着这个回调，用户点发送时就不用自己去设置页点「重启隧道」了。
+     */
+    private val rebuildTunnel: (suspend () -> Boolean)? = null
 ) {
 
     val messages = mutableStateListOf<DmMessage>()
@@ -155,6 +174,8 @@ class DanmakuStore(
      * 所以不能再像以前那样 `LiveDanmaku(prefs)` 建完就丢在 launch 里。
      */
     private var live: LiveDanmaku? = null
+    /** 上次重建隧道的时间：失败时别疯狂重启（60 秒一次够了） */
+    private var lastRebuildAt: Long = 0L
     private var roomId: Long = 0L
     private var menuId: Int = 1
 
@@ -243,7 +264,7 @@ class DanmakuStore(
         if (rid <= 0L) return Result.failure(IllegalStateException("还没进房"))
         val dm = live ?: return Result.failure(IllegalStateException("弹幕通道还没连上"))
 
-        return runCatching {
+        fun attempt() = runCatching {
             dm.send(
                 rid, menuId, t,
                 // 第一轮：现成的端口（零探测，最省时间）
@@ -252,7 +273,35 @@ class DanmakuStore(
                 // 缓存里的号码可能已被别的上游占用（握手照样 101，请求回 500）
                 refreshPorts = { refreshPortsProvider().ifEmpty { portsProvider() } }
             )
-        }.onSuccess { push(DmMessage("chat", 32, "我", t)) }
+        }
+
+        val first = attempt()
+        if (first.isSuccess) return first.onSuccess { push(DmMessage("chat", 32, "我", t)) }
+
+        // 换端口 + 重探都失败了，说明不是"端口号过期"，而是隧道里**根本没有弹幕上游**
+        // （列表组还在、ws 组没了）。实测这种半死状态下无论打哪个端口都是 HTTP 500。
+        // 这里重建一次隧道再发 —— 用户不必自己去设置页点「重启隧道」。
+        val rebuild = rebuildTunnel
+        if (rebuild != null && System.currentTimeMillis() - lastRebuildAt > 60_000L) {
+            lastRebuildAt = System.currentTimeMillis()
+            status = "弹幕通道断了，正在重建隧道…"
+            val ok = runCatching { rebuild() }.getOrDefault(false)
+            if (ok) {
+                // 新隧道起来后端口会整体换一批，等一下让它把 listener 都 bind 完
+                delay(1500)
+                val again = attempt()
+                if (again.isSuccess) {
+                    return again.onSuccess { push(DmMessage("chat", 32, "我", t)) }
+                }
+                return Result.failure(
+                    IllegalStateException(
+                        "隧道已重建，但弹幕通道还没就绪，稍等十秒再发（" +
+                            (again.exceptionOrNull()?.message ?: "无应答") + "）"
+                    )
+                )
+            }
+        }
+        first
     }
 
     private fun push(m: DmMessage) {
