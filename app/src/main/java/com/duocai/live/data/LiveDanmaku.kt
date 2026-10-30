@@ -62,6 +62,22 @@ class LiveDanmaku(private val prefs: Prefs) {
     /** (nick|text) -> 上次出现的时间戳，用来压掉服务端重复投递 */
     private val seen = HashMap<String, Long>()
 
+    /**
+     * 常驻重连循环。
+     *
+     * ## 端口分两档拿（2026-10-30 改）
+     *
+     * 缺 token 是"身份"问题，端口是"路由"问题，两件事都得管，但**代价差一个数量级**：
+     *
+     *  - [quickPorts]：`tunnel.imPort` + 上次 405 探测命中的端口。**零探测**，纯读现成的值；
+     *  - [ports]：全量候选，内部会扫本机全部 LISTEN 端口过 405 判据（一台机器 24~28 个）。
+     *
+     * 以前每轮重连都直接算全量表，于是"为了试 1 个端口先扫 24 个"——实测多数情况下
+     * `imPort` 本来就是对的（日志里 `im=38105` 且 join 回 `bad token` 就是证据：路由通了，
+     * 只差身份）。现在改成：先打快路径那一两个端口，**失败**才扩到全量。
+     *
+     * @param quickPorts 便宜的一档，必须是纯函数、不能触发网络/探测
+     */
     suspend fun run(
         ports: () -> List<Int>,
         roomId: Long,
@@ -69,20 +85,55 @@ class LiveDanmaku(private val prefs: Prefs) {
         onMessage: (DmMessage) -> Unit,
         onState: (String) -> Unit,
         /** 把本轮实际要试的端口候选报出去（设置页诊断用，**只在 IO 线程**回调） */
-        onPorts: (List<Int>) -> Unit = {}
+        onPorts: (List<Int>) -> Unit = {},
+        /** 便宜的一档（`imPort` + 上次 405 命中的端口），空 = 直接走全量 */
+        quickPorts: () -> List<Int> = { emptyList() }
     ) {
         var backoff = 1500L
         while (currentCoroutineContext().isActive) {
-            val list = ports().filter { it > 0 }.distinct()
-            runCatching { onPorts(list) }
-            if (list.isEmpty()) {
-                onState("等待隧道")
-                delay(3000)
+            // 没有会话 token 时，`/websock/join` 必然回 `403 bad token, please login!`
+            // —— 端口表本身是对的，再挨个试只是把二十几秒浪费掉，还把真正的原因藏在一堆
+            // 「:38105 join 回 403」里。这一条直接说人话，用户才知道该去填什么。
+            val tk = prefs.appToken.trim()
+            if (tk.isEmpty()) {
+                onState("缺会话 token：设置 → 弹幕 → 会话 token 填 32 位 hex（源 App 一键导出里有）")
+                delay(5000)
+                continue
+            }
+            if (!TOKEN_RE.matches(tk)) {
+                onState("会话 token 格式不对：要 32 位 hex，当前 ${tk.length} 位")
+                delay(5000)
                 continue
             }
             try {
                 onState("连接中")
-                pumpOnce(list, roomId, menuId, onMessage, onState)
+                // ---- 第一档：只打最可能的端口，一个额外请求都不发 ----
+                val quick = runCatching { quickPorts() }.getOrDefault(emptyList())
+                    .filter { it > 0 }.distinct()
+                var connected = false
+                if (quick.isNotEmpty()) {
+                    runCatching { onPorts(quick) }
+                    try {
+                        pumpOnce(quick, roomId, menuId, onMessage, onState)
+                        connected = true
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        // 快路径失败不报状态：马上扩到全量再试一轮，别让状态行闪一下错误
+                        lastError = e.message ?: e.javaClass.simpleName
+                    }
+                }
+                // ---- 第二档：全量候选（会扫本机全部 LISTEN 端口） ----
+                if (!connected) {
+                    val full = ports().filter { it > 0 }.distinct()
+                    runCatching { onPorts(full) }
+                    if (full.isEmpty()) {
+                        onState("等待隧道")
+                        delay(3000)
+                        continue
+                    }
+                    pumpOnce(full, roomId, menuId, onMessage, onState)
+                }
                 backoff = 1500L          // 正常断开（服务端关连接）就快速重连
             } catch (e: CancellationException) {
                 throw e
@@ -97,6 +148,11 @@ class LiveDanmaku(private val prefs: Prefs) {
 
     /** 拿到端口但 `/websock/…` 回非 200 —— 这个 Host 不挂弹幕，换下一个候选 */
     private class BadVhost(msg: String) : Exception(msg)
+
+    private companion object {
+        /** 会话 token 的形状：32 位 hex（导出工具给的就是这一串） */
+        val TOKEN_RE = Regex("[0-9a-fA-F]{32}")
+    }
 
     // ---------------------------------------------------------------- 一次连接
     /**

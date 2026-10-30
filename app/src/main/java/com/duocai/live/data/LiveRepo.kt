@@ -106,7 +106,8 @@ class LiveRepo(private val context: Context, private val prefs: Prefs) {
     // ------------------------------------------------------ 弹幕 vhost 筛选
     /** [probeWsVhosts] 的结果缓存：一次连不上会反复重连，不能每次都把端口扫一遍 */
     private var wsVhosts: List<Int> = emptyList()
-    private var wsVhostsAt = 0L
+    /** 上次扫出 [wsVhosts] 时的 LISTEN 端口集合指纹（见 [cachedWsPorts]） */
+    private var wsPortsSig: String = ""
 
     /**
      * 找出真的挂 `/websock` 的端口。
@@ -132,31 +133,46 @@ class LiveRepo(private val context: Context, private val prefs: Prefs) {
      * 明文探测 1.5 秒封顶、不需要 token / JWE，比逐个开 WS 便宜得多。
      * 真正进房仍然由 [com.duocai.live.data.LiveDanmaku] 开 WS 做。
      *
-     * ## 缓存策略（2026-10-30 修）
+     * ## 缓存策略（2026-10-30 修，当天第二次改）
      *
      * 原实现「空结果也缓存 60 秒」是 404 的帮凶：隧道刚 init 时 listener 没 bind 稳，
      * 第一轮必然全失败，于是接下来整整 60 秒 `probeWsVhosts()` 都直接返回空表。
-     * 现在改成：**只有拿到结果才缓存，空结果下次立刻重扫**。
+     * 中间改成「只有拿到结果才缓存 + 60 秒 TTL」，但**时间窗口本身就是错的判据**：
+     * 端口表可能在 5 秒内就重排，也可能 10 分钟没动。现在换成 **LISTEN 端口集合指纹**——
+     * 集合一模一样就说明端口没重排，结论继续有效；一变立刻重扫。
      *
-     * @param force 忽略缓存强制重扫。候选表小到不正常时（见 AppContainer 的弹幕端口块）用，
-     *   否则一次错误的结果会在 60 秒里被反复复用，表现就是「一直只试两三个端口」。
+     * @param force 忽略缓存强制重扫。设置页「诊断端口」用，见 [diagnoseWs]。
      */
     @Synchronized
     fun probeWsVhosts(force: Boolean = false): List<Int> {
-        val now = System.currentTimeMillis()
-        // 只有"上次确实扫出了东西"才允许走缓存；空结果不缓存
-        if (!force && wsVhosts.isNotEmpty() && now - wsVhostsAt < 60_000L) return wsVhosts
-
         val ports = listenPorts()
+        if (ports.isEmpty()) return emptyList()
+        val sig = ports.joinToString(",")
+        // 只有"上次确实扫出了东西"才允许走缓存；空结果不缓存
+        if (!force && wsVhosts.isNotEmpty() && sig == wsPortsSig) return wsVhosts
+
         // 不再按上限截断候选：真 IM 端口可能落在临时端口段任意位置，
         // 截断会把正确答案切掉。按并发验，多试几个也就多一两秒。
         val result = verifyWsPorts(ports.sortedDescending())
-        if (result.isNotEmpty()) wsVhostsAt = now
+        if (result.isNotEmpty()) wsPortsSig = sig
         return result
     }
 
-    /** 端口 -> 上次验它的时间。验失败也要记，否则每轮重连都把失败端口再试一遍 */
-    private val wsTriedAt = HashMap<Int, Long>()
+    /**
+     * 快路径：端口表没变时，上次 405 探测的命中可以直接拿出来用，**一个请求都不发**。
+     *
+     * 和 [probeWsVhosts] 的区别就是这里只读缓存、绝不探测。弹幕进房的第一轮走这个，
+     * 避免了「为了试一个端口，先扫二十几个 LISTEN」。
+     *
+     * 判据用 LISTEN 集合指纹而不是时间：集合一样说明端口没重排，上次的结论就还成立。
+     */
+    @Synchronized
+    fun cachedWsPorts(): List<Int> {
+        if (wsVhosts.isEmpty()) return emptyList()
+        val ports = listenPorts()
+        if (ports.isEmpty()) return emptyList()
+        return if (ports.joinToString(",") == wsPortsSig) wsVhosts else emptyList()
+    }
 
     /**
      * 对指定端口做同一套判据，返回其中真正挂 `/websock` 的那些。
@@ -168,7 +184,7 @@ class LiveRepo(private val context: Context, private val prefs: Prefs) {
      *
      * ## 「一直 404」的两个真实成因（2026-10-30 修）
      *
-     * 1. **失败缓存把正确端口毒化了**。原实现里 `wsTriedAt[port]` 写入后 60 秒内不再重验，
+     * 1. **失败缓存把正确端口毒化了**。原实现里「失败端口的时间戳」写入后 60 秒内不再重验，
      *    而 `wsVhosts` 只在 `hits.isNotEmpty()` 时才更新。于是：
      *    隧道刚 init 完、listener 还没 bind 稳 → 第一次验全部失败 → `wsVhosts` 恒空
      *    → 接下来 60 秒里哪怕隧道已经好了，`verifyWsPorts` 也只会从缓存里返回空表
@@ -183,7 +199,6 @@ class LiveRepo(private val context: Context, private val prefs: Prefs) {
      */
     @Synchronized
     fun verifyWsPorts(candidates: Collection<Int>): List<Int> {
-        val now = System.currentTimeMillis()
         val list = candidates.filter { it > 0 }.distinct()
         if (list.isEmpty()) return emptyList()
 
@@ -207,14 +222,11 @@ class LiveRepo(private val context: Context, private val prefs: Prefs) {
             pool.shutdown()
         }
 
-        // 成功才记时间戳；失败不记，保证下轮重验
-        fresh.forEach { p -> if (p in hits) wsTriedAt[p] = now }
         // 成功集也要以本轮候选为界，避免无限增长
         wsVhosts = (hits + cached).distinct().filter { it in list }
-
-        if (wsTriedAt.size > 128) {
-            wsTriedAt.entries.removeAll { now - it.value > 300_000L }
-        }
+        // 结果被本轮候选**收缩**过，不再是「全量 LISTEN 扫描的结论」，
+        // 指纹作废，让下次 [probeWsVhosts] 老实重扫一遍，别拿半张表当全表用。
+        wsPortsSig = ""
         return wsVhosts
     }
 
@@ -726,10 +738,11 @@ class LiveRepo(private val context: Context, private val prefs: Prefs) {
      */
     suspend fun diagnoseWs(ports: List<Int> = emptyList(), limit: Int = 32): String =
         withContext(Dispatchers.IO) {
-            val candidates = (if (ports.isEmpty()) {
+            val raw = (if (ports.isEmpty()) {
                 (preferPort.takeIf { it > 0 }?.let { listOf(it) } ?: emptyList()) +
                     listenPorts()
-            } else ports).filter { it > 0 }.distinct().take(limit)
+            } else ports).filter { it > 0 }.distinct()
+            val candidates = raw.take(limit)
 
             if (candidates.isEmpty()) return@withContext "没有候选端口（隧道没起来？）"
 
@@ -746,10 +759,10 @@ class LiveRepo(private val context: Context, private val prefs: Prefs) {
 
             val hits = rows.filter { it.hit }.map { it.port }
             if (hits.isNotEmpty()) {
-                val now = System.currentTimeMillis()
                 wsVhosts = (hits + wsVhosts).distinct()
-                hits.forEach { wsTriedAt[it] = now }
-                wsVhostsAt = now
+                // 扫全了才算「全量结论」，指纹据此生效，进房时快路径能直接拿来用；
+                // 被 limit 截断就作废，宁可下次重扫，也别拿半张表当全表。
+                wsPortsSig = if (raw.size <= limit) listenPorts().joinToString(",") else ""
             }
 
             fun fmt(r: WsProbeRow): String {
@@ -767,6 +780,13 @@ class LiveRepo(private val context: Context, private val prefs: Prefs) {
 
             buildString {
                 appendLine("弹幕端口诊断（判据：明文 POST /websock/join 回 405）")
+                // 405 与 token 无关（那是 nginx 的方法层），所以诊断只能证明「端口对」。
+                // 真正决定能不能进房的是会话 token —— 单独报一行，避免又把两件事混在一起。
+                val tk = prefs.appToken.trim()
+                appendLine(
+                    "会话 token：" + (if (tk.isEmpty()) "空 → 就算端口全对，join 也会 403 bad token"
+                    else "${tk.take(6)}…${tk.takeLast(4)}（${tk.length} 位）")
+                )
                 appendLine("共 ${rows.size} 个端口，命中 ${hits.size} 个" +
                     (if (hits.isNotEmpty()) "：" + hits.joinToString(" ") { ":$it" } else ""))
                 if (hits.isNotEmpty()) {
@@ -777,6 +797,11 @@ class LiveRepo(private val context: Context, private val prefs: Prefs) {
                     rows.filterNot { it.hit }.forEach { appendLine(fmt(it)) }
                     appendLine()
                     appendLine("命中端口已记进候选表 → 点上面的「重连弹幕」直接用它，不用再扫")
+                    if (prefs.appToken.trim().isEmpty()) {
+                        appendLine()
+                        appendLine("⚠️ 但会话 token 是空的：join 一定回 403 bad token。")
+                        appendLine("   把导出工具的【会话 Token】那一串 32 位 hex 填进上面的框，再点「保存并重连」。")
+                    }
                 } else {
                     appendLine()
                     rows.forEach { appendLine(fmt(it)) }

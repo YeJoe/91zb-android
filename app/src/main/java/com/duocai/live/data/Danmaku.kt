@@ -110,10 +110,15 @@ object DmFilter {
 class DanmakuStore(
     private val prefs: Prefs,
     /**
-     * 隧道端口候选（空 = 还没就绪），越靠前越优先。
-     * 由 AppContainer 接 `Tunnel.imPort` → `Tunnel.port` → `LiveRepo.lastPort`。
+     * 全量隧道端口候选（空 = 还没就绪），越靠前越优先。
+     * 这条路径会扫本机全部 LISTEN 端口过 405 判据，**只有快路径失败时才走**。
      */
-    private val portsProvider: () -> List<Int> = { emptyList() }
+    private val portsProvider: () -> List<Int> = { emptyList() },
+    /**
+     * 快路径候选：`Tunnel.imPort` + 上次 405 命中的端口。
+     * 要求零网络、零探测 —— 进房第一轮直接打这一两个端口就够了。
+     */
+    private val quickPortsProvider: () -> List<Int> = { emptyList() }
 ) {
 
     val messages = mutableStateListOf<DmMessage>()
@@ -173,7 +178,8 @@ class DanmakuStore(
                     menuId = menuId,
                     onMessage = { m -> inbox.trySend(m) },
                     onState = { s -> launch(Dispatchers.Main) { status = s } },
-                    onPorts = { l -> launch(Dispatchers.Main) { ports = l } }
+                    onPorts = { l -> launch(Dispatchers.Main) { ports = l } },
+                    quickPorts = quickPortsProvider
                 )
             }
             launch {

@@ -90,30 +90,49 @@ class AppContainer(context: Context) {
      *     405 判据能把它挑出来（实测一台机器上 24 个监听端口里只有 1 个回 405）；
      *  3. 顺序仍然是「最可能是 IM 的在前」，但不是 IM 的端口也会被**验过**再排除，
      *     而不是凭组名直接丢。
+     *
+     * ## 分成快慢两档（2026-10-30 第二次改）
+     *
+     * 上面这套全量候选要扫 24~28 个 LISTEN 端口。但实测 `imPort` 通常就是对的
+     * （日志里 `im=38105` 且 join 回 `bad token` —— 路由早就通了，差的是身份）。
+     * 所以进房第一轮只打「`imPort` + 上次 405 命中」，这一档**不发任何探测请求**；
+     * 全量扫描（下面这个 lambda）只在快路径失败时才跑。
+     *
+     * 两个 lambda 的分工必须守住：quick 里出现任何网络调用，省下的扫描就白省了。
      */
-    val danmaku = DanmakuStore(prefs) {
-        fun candidates(force: Boolean): List<Int> = buildList {
-            // 1. SDK 明确指出的 kiwi_im
-            if (tunnel.imPort > 0) add(tunnel.imPort)
+    val danmaku = DanmakuStore(
+        prefs = prefs,
+        portsProvider = {
+            fun candidates(force: Boolean): List<Int> = buildList {
+                // 1. SDK 明确指出的 kiwi_im
+                if (tunnel.imPort > 0) add(tunnel.imPort)
 
-            // 2. SDK 问到的全部组端口，逐个过 405 判据
-            addAll(live.verifyWsPorts(tunnel.groupPorts.values))
+                // 2. SDK 问到的全部组端口，逐个过 405 判据
+                addAll(live.verifyWsPorts(tunnel.groupPorts.values))
 
-            // 3. 扫本机 listener（内置隧道自己的 listener 就在里面）
-            addAll(live.probeWsVhosts(force))
+                // 3. 扫本机 listener（内置隧道自己的 listener 就在里面）
+                addAll(live.probeWsVhosts(force))
 
-            // 4. 最后兜底：列表用的端口（大概率 404，但聊胜于无）
-            if (tunnel.port > 0) add(tunnel.port)
-            if (live.lastPort > 0) add(live.lastPort)
-        }.filter { it > 0 }.distinct()
+                // 4. 最后兜底：列表用的端口（大概率 404，但聊胜于无）
+                if (tunnel.port > 0) add(tunnel.port)
+                if (live.lastPort > 0) add(live.lastPort)
+            }.filter { it > 0 }.distinct()
 
-        // 正常情况下候选表至少是「IM 端口 + 列表端口」，实测一台机器 28 个监听端口里
-        // 只有 1 个回 405，所以 2 个端口意味着这一轮基本没筛出东西（假阴性）。
-        // 假阴性会被 probeWsVhosts 的结果缓存固化 60 秒，表现是「一直只试两三个端口全 404」，
-        // 因此这里强制重扫一次再交给 WS。
-        val first = candidates(false)
-        if (first.size >= 3) first else candidates(true)
-    }
+            // 正常情况下候选表至少是「IM 端口 + 列表端口」，实测一台机器 28 个监听端口里
+            // 只有 1 个回 405，所以 2 个端口意味着这一轮基本没筛出东西（假阴性）。
+            // 假阴性会被 probeWsVhosts 的缓存固化，表现是「一直只试两三个端口全 404」，
+            // 因此这里强制重扫一次再交给 WS。
+            val first = candidates(false)
+            if (first.size >= 3) first else candidates(true)
+        },
+        // 快路径：零探测，只读现成的值。顺序 = 「SDK 指的 im」→「上次 405 命中」。
+        quickPortsProvider = {
+            buildList {
+                if (tunnel.imPort > 0) add(tunnel.imPort)
+                addAll(live.cachedWsPorts())
+            }.filter { it > 0 }.distinct()
+        }
+    )
 
     val player = PlayerHolder(this.context)
 
