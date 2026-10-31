@@ -781,7 +781,7 @@ fun SettingsScreen(c: AppContainer) {
                         if (c.follows.all().isNotEmpty()) {
                             Spacer(Modifier.height(6.dp))
                             TextButton(onClick = {
-                                c.follows.replaceAll(emptyList())
+                                c.clearLocalFollows()
                                 toast = "已清空本地关注"
                             }) { Text("清空本地关注") }
                         }

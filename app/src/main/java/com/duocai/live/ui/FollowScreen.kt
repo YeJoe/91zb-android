@@ -79,7 +79,8 @@ fun FollowScreen(c: AppContainer) {
     var tab by remember { mutableStateOf(0) } // 0=服务端  1=本地
 
     val byId = remember(c.rooms) { c.rooms.associateBy { it.id } }
-    val localNames = remember(c.follows) { c.follows.all().associate { it.id to it.name } }
+    // 订阅 followVersion：本地关注增删时立刻重算（否则 remember(c.follows) 因对象引用不变而不更新）
+    val localNames = remember(c.followVersion) { c.follows.all().associate { it.id to it.name } }
 
     LaunchedEffect(c.toast) {
         val msg = c.toast ?: return@LaunchedEffect
@@ -219,7 +220,9 @@ private fun LocalFollowTab(
     byId: Map<Long, Room>
 ) {
     val scope = androidx.compose.runtime.rememberCoroutineScope()
-    val list = remember(c.follows) { c.follows.all() }
+    // 订阅 followVersion（一个真正的 Compose State），本地关注增删后本 tab 立即重绘
+    val followVersion = c.followVersion
+    val list = remember(followVersion) { c.follows.all() }
 
     val live = remember(list, byId) { list.filter { byId[it.id]?.let { r -> !r.ad && r.liveIn } == true } }
     val offline = remember(list, byId) { list.filter { byId[it.id]?.let { r -> !r.ad && r.liveIn } != true } }

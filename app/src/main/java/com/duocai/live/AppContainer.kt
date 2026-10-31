@@ -257,6 +257,18 @@ class AppContainer(context: Context) {
         private set
 
     /**
+     * 本地关注变更版本号。
+     *
+     * 关注页/首页「关注」tab 里 `c.follows` 是同一个对象引用，直接用 `remember(c.follows)`
+     * 只会在首次组合算一次、之后本地增删都触发不了重绘（行还在列表里）。
+     * 这里用一个真正的 Compose State 当"本地关注变了"的信号，每次 [FollowStore] 增删都 +1，
+     * UI 读它（哪怕只做 remember 的 key）就会订阅并立刻重绘。
+     */
+    var followVersion by mutableStateOf(0)
+        private set
+    private fun bumpFollow() { followVersion++ }
+
+    /**
      * 消费掉关注回执（弹完 toast 后调用）。
      *
      * 不清空的话，`followSync` 会一直留着上一条文案；播放页重新组合时
@@ -285,6 +297,12 @@ class AppContainer(context: Context) {
     // ---- 本地关注导出 ----
     /** 导出本地关注为 JSON 字符串（剪贴板复制 / SAF 另存文件用，无网络依赖） */
     fun exportFollowsJson(): String = follows.exportJson()
+
+    /** 清空本地关注（设置页「清空本地关注」用），并通知 UI 重绘 */
+    fun clearLocalFollows() {
+        follows.replaceAll(emptyList())
+        bumpFollow()
+    }
 
     // ---- 设置里会被界面直接读的几项，做成可观察 ----
     // 原先这里还有个 showAd（「显示推广位」）。开关连同 Prefs 字段一起删了：
@@ -467,6 +485,7 @@ class AppContainer(context: Context) {
 
         // 本机先落：这是"一定生效"的那一份，立刻给反馈（不等服务端，避免 4~5 秒才弹提示）
         follows.setFollowed(room, willFollow)
+        bumpFollow()
         pendingFollows = pendingFollows + (room.id to willFollow)
         followSync = if (willFollow) "已关注" else "已取消关注"
         followSyncSeq++
@@ -491,6 +510,7 @@ class AppContainer(context: Context) {
 
     fun unfollow(id: Long) {
         follows.remove(id)
+        bumpFollow()
         pendingFollows = pendingFollows + (id to false)
         // 立刻给反馈
         followSync = "已取消关注"

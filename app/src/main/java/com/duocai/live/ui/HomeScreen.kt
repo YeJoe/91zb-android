@@ -159,8 +159,9 @@ fun HomeScreen(c: AppContainer) {
     }
     val activeCity = city.ifBlank { c.nearbyCity }.ifBlank { topCity }
 
-    // 关注关系以服务端为唯一真相源
-    val followIds = remember(c.serverFollowIds) { c.followIdSet() }
+    // 关注关系：服务端快照 ∪ 本地收藏。本地收藏增删时 followVersion 会变，必须一起做 key，
+    // 否则在「关注」tab 里取消本地关注后列表不刷新。
+    val followIds = remember(c.serverFollowIds, c.followVersion) { c.followIdSet() }
 
     // 关键：把 cats 摊平成普通 map 当 remember 的 key —— 直接传 mutableStateMap 的话
     // 改值不会让 remember 失效，分类筛选就不会重算。
