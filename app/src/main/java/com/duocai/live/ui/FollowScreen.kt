@@ -34,7 +34,6 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -81,12 +80,8 @@ fun FollowScreen(c: AppContainer) {
     val byId = remember(c.rooms) { c.rooms.associateBy { it.id } }
     // 订阅 followVersion：本地关注增删时立刻重算（否则 remember(c.follows) 因对象引用不变而不更新）
     val localNames = remember(c.followVersion) { c.follows.all().associate { it.id to it.name } }
-
-    LaunchedEffect(c.toast) {
-        val msg = c.toast ?: return@LaunchedEffect
-        android.widget.Toast.makeText(ctx, msg, android.widget.Toast.LENGTH_SHORT).show()
-        c.toast = null
-    }
+    // 刷新结果提示的 toast 消费点已上收到 RootScreen（tab 常驻组合后
+    // 多屏同时活着，各自消费会把同一条提示弹两遍）
 
     Column(Modifier.fillMaxSize().statusBarsPadding()) {
         Row(

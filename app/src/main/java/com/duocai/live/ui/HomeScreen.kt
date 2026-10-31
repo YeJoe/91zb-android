@@ -98,7 +98,7 @@ import kotlinx.coroutines.launch
  * 还是「热门·舞蹈」——不会被串成同一个值。
  */
 @Composable
-fun HomeScreen(c: AppContainer) {
+fun HomeScreen(c: AppContainer, visible: Boolean) {
 
     val scope = rememberCoroutineScope()
     /**
@@ -118,14 +118,9 @@ fun HomeScreen(c: AppContainer) {
     /** 一级页 → 该页选中的二级分类 */
     val cats = remember { mutableStateMapOf<Feed, String>() }
     val keyboard = LocalSoftwareKeyboardController.current
-    val ctx = LocalContext.current
 
-    // 刷新结果提示：容器把结果写进 toast，这里弹一次再清掉
-    LaunchedEffect(c.toast) {
-        val msg = c.toast ?: return@LaunchedEffect
-        android.widget.Toast.makeText(ctx, msg, android.widget.Toast.LENGTH_SHORT).show()
-        c.toast = null
-    }
+    // 刷新结果提示的 toast 消费点已上收到 RootScreen（tab 常驻组合后
+    // 多屏同时活着，各自消费会把同一条提示弹两遍）
 
     val all = c.rooms
     val feeds = Feed.entries
@@ -360,7 +355,7 @@ fun HomeScreen(c: AppContainer) {
             FeedPage(
                 c = c,
                 feed = f,
-                active = f == curFeed,
+                active = f == curFeed && visible,
                 rooms = pool[f].orEmpty(),
                 cat = catMap[f] ?: "全部",
                 onCat = { cats[f] = it },
@@ -398,7 +393,11 @@ fun HomeScreen(c: AppContainer) {
 private fun FeedPage(
     c: AppContainer,
     feed: Feed,
-    /** 是不是「当前这一页」。Pager 会预合成相邻页，探活只该由看得见的那页发起 */
+    /**
+     * 是不是「当前这一页，且整个首页正被用户看着」。
+     * Pager 会预合成相邻页、tab 常驻组合后首页在别的 tab 底下也活着，
+     * 探活只该由真正看得见的页面发起 —— 两层条件缺一不可。
+     */
     active: Boolean,
     rooms: List<Room>,
     cat: String,
