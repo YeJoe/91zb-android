@@ -189,7 +189,13 @@ def diagnose(pkg, device):
 
     rc, out, _ = adb.raw("shell", "pm", "path", pkg)
     installed = rc == 0 and out.strip().startswith("package:")
-    lines.append("App 是否安装     : %s" % ("是 " + out.strip() if installed else "否"))
+    if not installed:
+        # 工作资料/多开容器里装的应用, user 0 的 pm 看不见 —— 用数据目录兜底判断
+        try:
+            installed = bool(prefs_dirs(serial, pkg))
+        except SuError:
+            installed = False
+    lines.append("App 是否安装     : %s" % ("是" if installed else "否"))
     if not installed:
         lines.append("  → 包名不对或 App 没装, 用 --pkg 指定正确的包名")
         return False, lines
@@ -205,20 +211,25 @@ def diagnose(pkg, device):
         return False, lines
 
     try:
-        d = adb.sudo("ls -d /data/data/%s 2>/dev/null" % pkg).strip()
+        dirs = prefs_dirs(serial, pkg)
     except SuError as e:
-        d = ""
+        dirs = []
         lines.append("数据目录         : 读取失败 (%s)" % e)
-    lines.append("数据目录         : %s" % (d or "(不存在)"))
-    if not d:
+    lines.append("数据目录         : %s" % (", ".join(dirs) or "(不存在)"))
+    if not dirs:
         lines.append("  → App 从未启动过, 先手动打开 App 到登录完成")
         return False, lines
 
-    try:
-        listing = adb.sudo("ls -1 /data/data/%s/shared_prefs/ 2>/dev/null" % pkg)
-    except SuError:
-        listing = ""
-    files = [f.strip() for f in listing.splitlines() if f.strip().endswith(".xml")]
+    files = []
+    for d in dirs:
+        try:
+            listing = adb.sudo("ls -1 %s/ 2>/dev/null" % d)
+        except SuError:
+            continue
+        files = [f.strip() for f in listing.splitlines() if f.strip().endswith(".xml")]
+        if files:
+            lines.append("shared_prefs 目录: %s" % d)
+            break
     lines.append("shared_prefs     : %d 个 xml" % len(files))
     if not files:
         lines.append("  → 目录在但没有 xml: App 可能被清过数据, 或被安全软件锁了目录")
@@ -258,9 +269,11 @@ def prefs_dirs(device, pkg):
             dirs.append(p)
 
     add("/data/data/%s/shared_prefs" % pkg)
+    # 用 glob 而不是 find /data/user 递归: 后者在装了 200+ 应用的机器上要几十秒
     try:
         found = adb.sudo(
-            "find /data/user -maxdepth 8 -type d -name '%s' 2>/dev/null" % pkg, timeout=60)
+            "ls -d /data/user/*/%s /data/user/*/*/app_split/%s 2>/dev/null" % (pkg, pkg),
+            timeout=20)
     except SuError:
         found = ""
     for line in found.splitlines():
@@ -537,29 +550,49 @@ def probe_combos(device, ports, tokens, jwes, budget=400):
 
 # ----------------------------------------------------------------- loopback 抓包
 CAPTURE_TOKEN_RE = re.compile(r"token=([0-9a-fA-F]{32})")
+# tcpdump -n 的行首: "IP 127.0.0.1.36050 > 127.0.0.1.44079: Flags [P.]"
+CAPTURE_FLOW_RE = re.compile(r"IP (\d+\.\d+\.\d+\.\d+)\.(\d+) > (\d+\.\d+\.\d+\.\d+)\.(\d+):")
+
+
+def _parse_capture(text):
+    """从 -A -n 的抓包文本里同时取出 (token, 目标端口, 次数)。
+
+    会话 token 是拼在请求行上的（`POST /x?token=<32hex> HTTP/1.1`），
+    它前面最近的一条 IP 行就是这个请求的目标端口 —— 也就是 tunnelPort。
+    一次抓包拿到两样，不用再去盲探 46 个端口。
+    """
+    hits = {}
+    dst = None
+    for line in (text or "").splitlines():
+        m = CAPTURE_FLOW_RE.search(line)
+        if m:
+            dst = int(m.group(4))
+            continue
+        for tok in CAPTURE_TOKEN_RE.findall(line):
+            key = (tok, dst)
+            hits[key] = hits.get(key, 0) + 1
+    return sorted(((t, n, p) for (t, p), n in hits.items()), key=lambda x: -x[1])
 
 
 def capture_loopback_tokens(device, seconds=8):
-    """在设备 lo 上抓明文 HTTP, 从 ?token=<32hex> 里取会话令牌。
+    """在设备 lo 上抓明文 HTTP, 取 ?token=<32hex> 以及它打到的端口。
 
     8.5.3 起 App 不把会话令牌落盘, 这是唯一不需要 hook 的取法。
     需要 root + tcpdump。
     """
     adb = Adb(device)
+    ran = False
     for binpath in ("tcpdump", "/system/bin/tcpdump", "/data/local/tmp/tcpdump"):
         try:
-            out = adb.sudo("%s -i lo -s 0 -A -n tcp 2>/dev/null" % binpath,
-                           timeout=seconds + 15)
+            out = adb.sudo("timeout %d %s -i lo -s 0 -A -n tcp 2>/dev/null"
+                           % (seconds, binpath), timeout=seconds + 20)
+            ran = True
         except SuError:
             continue
-        found = CAPTURE_TOKEN_RE.findall(out or "")
-        if found:
-            # 出现次数最多的更可能是当前会话
-            uniq = {}
-            for t in found:
-                uniq[t] = uniq.get(t, 0) + 1
-            return sorted(uniq.items(), key=lambda kv: -kv[1])
-    return None                # 压根没有 tcpdump
+        got = _parse_capture(out)
+        if got:
+            return got
+    return [] if ran else None   # 能跑但没抓到 / 压根没有 tcpdump
 
 
 def app_user(device, pkg):
@@ -600,19 +633,39 @@ def poke_app(device, pkg):
             adb.raw("shell", *cmd.split(), timeout=20)
 
 
-def tokens_from_capture(device, pkg, seconds=8):
-    """先静默抓一轮; 抓不到就冷启动一次 App 再抓。
+def nudge(device, times=2):
+    """制造一点网络活动：下拉刷新。
 
-    App 已在前台空闲时几乎不发请求, 单纯 monkey 拉起是不会产生流量的,
-    必须 force-stop 再启动, 让它走一遍 init/login, 才会把 ?token= 打出来。
+    App 前台空闲时几乎不发请求，抓 8 秒经常一个 `?token=` 都没有；
+    而 8.5.3+ 之后**不需要**为了拿 token 去冷启动（token 跟着会话走，重启反而换新的），
+    只要让它真的发一次业务请求就行。
     """
-    _print("[*] 在设备 loopback 上抓 %ds, 找 ?token=…" % seconds)
-    got = capture_loopback_tokens(device, seconds)
-    if got is None:
-        _print("[!] 设备上没有 tcpdump, 抓包这条路走不通")
-        return []
-    if got:
-        return got
+    adb = Adb(device)
+    for _ in range(times):
+        adb.raw("shell", "input", "swipe", "540", "800", "540", "1800", "250", timeout=15)
+        time.sleep(2.5)
+
+
+def tokens_from_capture(device, pkg, seconds=8, trigger=True, rounds=2):
+    """抓 loopback 上的 ?token=，顺带把 tunnelPort 一起带出来。
+
+    顺序：静默抓（同时下拉刷新制造流量）→ 仍抓不到才冷启动一次再抓。
+    """
+    if trigger:
+        th = threading.Thread(target=nudge, args=(device,), daemon=True)
+        th.start()
+    for i in range(max(1, rounds)):
+        _print("[*] 在设备 loopback 上抓 %ds, 找 ?token=…（第 %d 轮）" % (seconds, i + 1))
+        got = capture_loopback_tokens(device, seconds)
+        if got is None:
+            _print("[!] 设备上没有 tcpdump, 抓包这条路走不通")
+            return []
+        if got:
+            if trigger:
+                th.join(timeout=3)
+            return got
+    if trigger:
+        th.join(timeout=3)
 
     cold = max(seconds, 20)
     _print("[*] 没抓到。冷启动一次 App 再抓 %ds（App 会被重启）…" % cold)
@@ -670,7 +723,13 @@ def tokens_from_session_cache(jwe, mainuser=None):
     return [(tok, 1)]
 
 
-def tokens_from_own_cache(jwe, mainuser):
+def _pid1(device, pkg):
+    """源 App 主进程 pid（多开容器下可能有多个, 取第一个做会话指纹）。"""
+    pids = app_pid(device, pkg)
+    return pids[0] if pids else None
+
+
+def tokens_from_own_cache(jwe, mainuser, pid=None):
     """本工具上一次成功导出时存下的 token (带 jwe + uid 指纹)。
 
     抓包要冷启动一次 App, 挺烦的; 只要还是同一个账号同一个会话, 直接复用就行,
@@ -691,14 +750,24 @@ def tokens_from_own_cache(jwe, mainuser):
     cur_uid = (mainuser or {}).get("id")
     if c.get("uid") and cur_uid and str(c["uid"]) != str(cur_uid):
         return []
+    # token 是"每个进程一份"的: 源 App 冷启动(pid 变)就换了。缓存里的 pid 对不上
+    # 说明它重启过, 这串已经失效 —— 采信它只会让弹幕 join 回 403 bad token。
+    cached_pid = c.get("pid")
+    if cached_pid and pid and str(cached_pid) != str(pid):
+        _print("[!] 源 App 已重启 (pid %s → %s), 缓存 token 失效, 重新抓包" % (cached_pid, pid))
+        return []
     return [(tok, 1)]
 
 
-def save_token_cache(token, jwe, mainuser):
+def save_token_cache(token, jwe, mainuser, pid=None):
     try:
         with open(TOKEN_CACHE, "w", encoding="utf-8") as f:
             json.dump({"token": token, "jwe": jwe or "",
-                       "uid": (mainuser or {}).get("id"),
+                       "uid": (mainuser or {}).get("id"), "pid": pid,
+                       # uid / channel 一律从 MAINUSER_DATA 取真值，别再猜默认值：
+                       # 它决定「导入的是哪个号」，也决定部分接口的兜底参数
+                       "channel": (mainuser or {}).get("channel_id"),
+                       "nickname": (mainuser or {}).get("nickname"),
                        "saved_at": datetime.now().isoformat(timespec="seconds")},
                       f, ensure_ascii=False, indent=1)
     except OSError:
@@ -706,36 +775,59 @@ def save_token_cache(token, jwe, mainuser):
 
 
 # ----------------------------------------------------------------- 输出
-def render_config(token, jwe, port):
+def render_config(token, jwe, port, uid=None, channel=None, nickname=None):
     bar = "═" * 52
+    who = ("%s（uid %s，渠道 %s）" % (nickname or "?", uid, channel or "?")) if uid else "(未解析到)"
     lines = [
         bar,
         " DC Live 直播源配置（源 App 一键导出）",
         " 导出时间: %s" % datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        " 当前账号: %s" % who,
         bar,
         "",
-        "【JWE】  → 只有这一段要填，粘到设置页「JWE」框",
+        "能力 → 凭证对照（别只填 JWE，弹幕会 403）：",
+        "  看列表 get_list_by_ids  不需要任何凭证",
+        "  关注列表 my_follow      只要 JWE",
+        "  关注/取关 relationship   ❌ 明文层实测不存在（docs/关注写接口-实测结论-2026-10-31.md）",
+        "                           关注只落本机，别指望这组凭证能让服务端记住",
+        "  实时弹幕 /websock/join  会话 Token + JWE，缺一个就 403",
+        "",
+        "★ 一键导入：设置 → 直播源与隧道 → 「导入配置（从导出工具粘贴）」",
+        "  把下面这段 JSON 整段粘进去，appToken / JWE / userId / 渠道 / 端口一次填好：",
+        "",
+        render_json(token, jwe, port, uid, channel),
+        "",
+        "── 手工填的话，逐项对照 ──",
+        "【会话 Token】 (= appToken，弹幕必填) → 设置 → 弹幕 → 会话 token",
+        token or "(未探测到。源 App 在前台且下拉刷新一次再跑本工具)",
+        "",
+        "【JWE】 (关注 + 弹幕都认) → 设置 → 直播源与隧道 → JWE",
         jwe or "(未探测到，见下方候选)",
         "",
-        "【隧道端口】  → 可留空：每次源 App 启动端口都会变，App 自己扫",
+        "【userId】 (关注写接口必填) → 设置 → 关注 → 我的 userId",
+        str(uid) if uid else "(未解析到 MAINUSER_DATA.id)",
+        "",
+        "【渠道 channelId】 → 设置 → 关注 → 渠道",
+        channel or "(未解析到 MAINUSER_DATA.channel_id)",
+        "",
+        "【隧道端口】 可留空：每次源 App 启动端口都会变，App 自己扫",
         str(port) if port else "(留空，让 App 自动扫 /proc/net/tcp)",
         "",
-        "【会话 Token】  → 不用填。实测 /room/get_list_by_ids 零凭证即可返回，",
-        "                 这串只在个别接口上可能有用，留着备查：",
-        token or "(未探测到，不影响使用)",
-        "",
-        "用法: 打开 DC Live → 设置 → 直播源 → 把 JWE 粘进去 → 点「测试连接并刷新」。",
-        "      源 App 必须**同机、后台运行**：监听端口是它进程里起的，它一关就没数据。",
+        "提醒: 会话 token 是**每次冷启动都会换**的短命凭证，弹幕 403 就先重跑本工具。",
+        "      源 App 必须同机、后台运行：监听端口是它进程里起的，它一关就没数据。",
         bar,
     ]
     return "\n".join(lines)
 
 
-def render_json(token, jwe, port):
-    return json.dumps(
-        {"appToken": token or "", "jwe": jwe or "", "tunnelPort": port or 0},
-        ensure_ascii=False, indent=2,
-    )
+def render_json(token, jwe, port, uid=None, channel=None):
+    out = {"appToken": token or "", "jwe": jwe or "", "tunnelPort": port or 0}
+    # userId / channel 只在解析出来时才写 —— 空值写进去反而会把 App 里的好值覆盖掉
+    if uid:
+        out["userId"] = uid
+    if channel:
+        out["channel"] = channel
+    return json.dumps(out, ensure_ascii=False, indent=2)
 
 
 # ----------------------------------------------------------------- 子命令
@@ -778,8 +870,8 @@ def cmd_capture(device, pkg):
         _print("[!] 没抓到。确认 App 已登录且网络活动正常。")
         return 1
     _print("[✓] 抓到 %d 个候选:" % len(got))
-    for tok, n in got:
-        _print("  %s  (出现 %d 次)" % (tok, n))
+    for tok, n, port in got:
+        _print("  %s  (出现 %d 次, 端口 %s)" % (tok, n, port or "?"))
     return 0
 
 
@@ -820,6 +912,14 @@ def cmd_export(device, pkg, no_probe, out_file, no_capture):
     jwes = find_jwe_candidates(strings)
     tokens = find_token_candidates(strings, known_junk=[data.get("mobile", "")])
     jwe = jwes[0][1] if jwes else None
+    # 账号身份：原本是给「关注写接口 /relationship/add」准备的（userId + channelId
+    # 必须与 JWE 同属一个账号）。2026-10-31 实测那条路由在明文层根本不存在，
+    # 这组字段现在只用于：① 让用户在设置页看清导入的是哪个号 ② 弹幕等接口的兜底。
+    uid = data.get("id")
+    channel = data.get("channel_id")
+    if uid:
+        _print("[✓] 账号: %s (uid=%s, 渠道=%s)"
+               % (data.get("nickname") or "?", uid, channel or "?"))
 
     if jwe:
         _print("[✓] JWE: %s…%s (len=%d, 来自 %s)"
@@ -836,16 +936,19 @@ def cmd_export(device, pkg, no_probe, out_file, no_capture):
         if token_cands:
             _print("[✓] 从 .session.json 取到 1 个候选")
         else:
-            token_cands = tokens_from_own_cache(jwe, data)
+            token_cands = tokens_from_own_cache(jwe, data, _pid1(device, pkg))
             if token_cands:
                 _print("[✓] 复用上次导出缓存 .apptoken.json（稍后实测校验）")
 
-    # 2) 还在没有 token: 抓 loopback
+    # 2) 还没有 token: 抓 loopback（顺带把 tunnelPort 读出来）
+    port_hint = None
     if not token_cands and not no_capture:
         got = tokens_from_capture(device, pkg, 8)
         if got:
-            token_cands = [(t, n) for t, n in got]
-            _print("[✓] 抓包取到 %d 个候选: %s" % (len(got), ", ".join(t for t, _ in got)))
+            token_cands = [(t, n) for t, n, _p in got]
+            port_hint = got[0][2]
+            _print("[✓] 抓包取到 %d 个候选: %s (端口 %s)"
+                   % (len(got), ", ".join(t for t, _, _p in got), port_hint or "?"))
     elif not token_cands and no_capture:
         _print("[!] --no-capture 且没有落盘 token, 无法自动取会话令牌")
 
@@ -854,8 +957,10 @@ def cmd_export(device, pkg, no_probe, out_file, no_capture):
         return 1
 
     # 3) 在线探测: 哪个端口 + 哪个 token 真的能用
-    token, port = None, None
-    if not no_probe:
+    token, port = None, port_hint
+    if port:
+        _print("[✓] 隧道端口: %d（抓包里这条请求打的就是它，不用再盲探）" % port)
+    if not no_probe and not port:
         ports = listen_ports(device, pkg)
         if not ports:
             _print("[!] 没扫到隧道端口。确认源 App 正在前台运行(退后台隧道会冻结)。")
@@ -877,14 +982,14 @@ def cmd_export(device, pkg, no_probe, out_file, no_capture):
 
     # 5) 存一份, 下次同账号同 JWE 就不用再冷启动抓包了
     if token and jwe:
-        save_token_cache(token, jwe, data)
+        save_token_cache(token, jwe, data, _pid1(device, pkg))
 
     _print("")
-    text = render_config(token, jwe, port)
+    text = render_config(token, jwe, port, uid, channel, data.get("nickname"))
     _print(text)
     _print("")
     _print("── 机器可读 JSON（DC Live 设置页「导入配置」直接粘这段）──")
-    _print(render_json(token, jwe, port))
+    _print(render_json(token, jwe, port, uid, channel))
     if out_file:
         with open(out_file, "w", encoding="utf-8") as f:
             f.write(text + "\n")
@@ -920,7 +1025,9 @@ def cmd_from_file(path):
         _print("  [%s]  %s" % (p, s))
     _print("")
     _print(render_config(tokens[0][1] if tokens else None,
-                         jwes[0][1] if jwes else None, None))
+                         jwes[0][1] if jwes else None, None,
+                         data.get("id"), data.get("channel_id"),
+                         data.get("nickname")))
     return 0
 
 
