@@ -181,6 +181,17 @@ class AppContainer(context: Context) {
     var rooms by mutableStateOf<List<Room>>(emptyList())
     var meta by mutableStateOf(SourceMeta())
     var loading by mutableStateOf(false)
+
+    /**
+     * **手动**刷新（下拉手势 / 右上角刷新按钮）正在进行。
+     *
+     * 和 [loading] 分开是必须的：[loading] 会被 20 秒一轮的自动轮询点亮，
+     * 拿它驱动下拉指示器的话，用户没碰屏幕也会凭空转圈；反过来，界面上的
+     * 「刷新中」也该只反映用户自己发起的那次。
+     */
+    var refreshing by mutableStateOf(false)
+        private set
+
     var error by mutableStateOf<String?>(null)
     var loadedOnce by mutableStateOf(false)
     /** 上一次刷新是否真的连上了隧道端口（源 App 活着 = true） */
@@ -206,14 +217,16 @@ class AppContainer(context: Context) {
      */
     var inPip by mutableStateOf(false)
 
-    // ---- 关注：服务端是唯一真相源 ----
+    // ---- 关注：服务端 ∪ 本机（并集，不是"服务端唯一真相"） ----
     /**
      * 服务端确认的关注集合（`/user_follow/my_follow` 的 `podcast_id`）。
      *
-     * 2026-10-31 改为**单一真相源**：`/relationship/add` `/relationship/remove` 能真正落库之后，
-     * 本地收藏（SharedPreferences 里那份 JSON）就成了第二套状态 ——
-     * 两份不一致时界面反复横跳，还会在进房时误弹「服务端未确认」。
-     * 所以本地那份已彻底删除，只在 [pendingFollows] 里保留短暂的乐观值。
+     * 10-31 一度改成"服务端是唯一真相源"，把本机那份删了。后来实测推翻了：
+     * `/relationship/add` 在明文隧道里根本打不到（`docs/关注写接口-实测结论-2026-10-31.md`），
+     * 只留服务端那份的话，用户在 App 里点的关注一刷新就全消失。
+     *
+     * 所以现在是**并集**：`followIdSet()` = 服务端快照 ∪ 本机收藏 ∪ 乐观值。
+     * 需要区分来源时看 `FollowScreen` 的「仅本机 · 服务端没有」分组，别在这里做减法。
      */
 
     /** 源 App 账号在服务端关注的人（`podcast_id` 就是房间号）。实时刷新时更新。 */
@@ -266,6 +279,74 @@ class AppContainer(context: Context) {
         // 服务端已经反映的期待状态，就不用再挂着乐观值了
         if (pendingFollows.isNotEmpty()) {
             pendingFollows = pendingFollows.filter { (id, want) -> (id in ids) != want }
+        }
+    }
+
+    // ---- 本地关注的 GitHub 同步（Gist，双向合并） ----
+    /**
+     * 同步状态：UI 直接观察这两个就行。
+     * [syncBusy] 正在请求中；[syncMsg] 最近一次结果文案（同时落了 [Prefs.syncMsg]）。
+     */
+    var syncBusy by mutableStateOf(false)
+        private set
+    var syncMsg by mutableStateOf(prefs.syncMsg)
+        private set
+
+    private val syncMutex = Mutex()
+
+    /** 手动触发一次「推+拉」同步。已在同步中则忽略。 */
+    fun syncNow() {
+        scope.launch(Dispatchers.IO) {
+            if (!syncMutex.tryLock()) return@launch
+            try {
+                syncBusy = true
+                FollowSync.sync(prefs, follows, pushFirst = true)
+                syncMsg = prefs.syncMsg
+            } finally {
+                syncBusy = false
+                syncMutex.unlock()
+            }
+        }
+    }
+
+    /** 只上传不拉取（「上传」按钮） */
+    fun pushNow() {
+        scope.launch(Dispatchers.IO) {
+            if (!syncMutex.tryLock()) return@launch
+            try {
+                syncBusy = true
+                FollowSync.push(prefs, follows)
+                syncMsg = prefs.syncMsg
+            } finally {
+                syncBusy = false
+                syncMutex.unlock()
+            }
+        }
+    }
+
+    /** 导出本地关注为 JSON 字符串（分享/剪贴板用，无需 Token） */
+    fun exportFollowsJson(): String = follows.exportJson()
+
+    init {
+        // 自动同步循环：间隔由 Prefs.syncSec 控制，仅在「开了自动」且「填了 Token」时跑。
+        // 启动延迟 3 秒，等隧道/网络先就绪，别一启动就打 GitHub。
+        scope.launch {
+            delay(3000)
+            while (true) {
+                if (prefs.syncAuto && prefs.ghToken.isNotBlank()) {
+                    if (syncMutex.tryLock()) {
+                        try {
+                            syncBusy = true
+                            FollowSync.sync(prefs, follows, pushFirst = true)
+                            syncMsg = prefs.syncMsg
+                        } finally {
+                            syncBusy = false
+                            syncMutex.unlock()
+                        }
+                    }
+                }
+                delay(maxOf(10, prefs.syncSec).toLong() * 1000L)
+            }
         }
     }
 
@@ -434,6 +515,16 @@ class AppContainer(context: Context) {
      *
      * 这样既不假装云端成功（文案写清「仅本机」），也不会让按钮变成摆设。
      * 哪天写接口通了，把 [syncFollow] 的返回值当真就行 —— 分支已经在这儿了。
+     *
+     * ## 2026-10-31 复查（结论更悲观，但上面的设计不用改）
+     *
+     * 重新扫了当时在听的 **17 个 listener**，`/relationship/add` 全部返回网关兜底的
+     * `{"code":0}`（连上面那两台回 403 的都找不到了，重启后端口已换）。也就是说
+     * "路由在、只是鉴权不过"的判断不成立，是**当前会话的隧道根本不挂这条路由**。
+     * 详见 `docs/关注写接口-实测结论-2026-10-31.md`。
+     *
+     * 所以"先落本机 + 如实标注"不是临时妥协，而是这个版本下的正确终态；
+     * 想真打通得从源 App 的加密通道取会话（Frida / 逆密钥派生），不是改这里。
      */
     fun toggleFollow(room: Room) {
         val willFollow = room.id !in followIdSet()
@@ -600,13 +691,24 @@ class AppContainer(context: Context) {
         }
     }
 
-    /** 手动刷新：给 UI 用，结束后把结果写进 [toast] */
+    /**
+     * 手动刷新：给 UI 用，结束后把结果写进 [toast]。
+     *
+     * 下拉手势和右上角按钮是同一个入口 —— 两边都可能被连点，
+     * 用 [refreshing] 挡掉重入：否则连拉两下会排两轮全量抓取，等半天才停。
+     */
     suspend fun refreshManually() {
-        reload(force = true)
-        toast = when {
-            tunnelOk -> "已更新 ${rooms.size} 个直播间"
-            error != null -> error
-            else -> "已更新 ${rooms.size} 个直播间"
+        if (refreshing) return
+        refreshing = true
+        try {
+            reload(force = true)
+            toast = when {
+                tunnelOk -> "已更新 ${rooms.size} 个直播间"
+                error != null -> error
+                else -> "已更新 ${rooms.size} 个直播间"
+            }
+        } finally {
+            refreshing = false
         }
     }
 

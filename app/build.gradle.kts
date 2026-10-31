@@ -1,7 +1,47 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
+}
+
+/**
+ * 真号凭证的注入通道（**不要把凭证写进源码**）。
+ *
+ * 这个仓库是公开的（`github.com/YeJoe/91zb-android`）。真号的 JWE 一旦提交进去，
+ * 等于把账号的关注/发言能力挂到公网上 —— GitHub 不会识别这种第三方串，不会自动撤销，
+ * 只能等被人扫到。所以凭证走两条带外的通道，都只在构建期存在：
+ *
+ *  1. **本地**：`local.properties`（已在 `.gitignore` 里）——
+ *     ```
+ *     tm.appToken=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+ *     tm.jwe=eyJhbGciOiJkaXIi...
+ *     tm.userId=1422303235
+ *     tm.channelId=tui1
+ *     ```
+ *  2. **CI**：仓库 Secrets —— `TM_APP_TOKEN` / `TM_JWE` / `TM_USER_ID` / `TM_CHANNEL_ID`
+ *
+ * 两边都没有时全部注入空串，App 退回"无凭证"状态：看直播照常，关注/弹幕需要用户自己在
+ * 设置页粘一份。也就是说**开源出去的代码是可编译、可运行的，只是不带别人的账号**。
+ */
+val credProps = Properties().apply {
+    val f = rootProject.file("local.properties")
+    if (f.exists()) f.inputStream().use { load(it) }
+}
+
+fun cred(localKey: String, envKey: String): String =
+    (System.getenv(envKey) ?: credProps.getProperty(localKey) ?: "").trim()
+
+val tmAppToken: String = cred("tm.appToken", "TM_APP_TOKEN")
+val tmJwe: String = cred("tm.jwe", "TM_JWE")
+val tmUserId: String = cred("tm.userId", "TM_USER_ID")
+val tmChannelId: String = cred("tm.channelId", "TM_CHANNEL_ID")
+
+/** 生成 Kotlin 字符串字面量（转义反斜杠与引号；凭证里不会有换行，换行也一并吃掉） */
+fun kstr(s: String): String {
+    val esc = s.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "").replace("\r", "")
+    return "\"$esc\""
 }
 
 /**
@@ -39,6 +79,14 @@ android {
             abiFilters.clear()
             abiFilters.add("arm64-v8a")
         }
+
+        // 凭证：构建期注入，运行时由 Prefs 当默认值读（见 Prefs.Defaults）。
+        // 注意这里**只进 BuildConfig**，不落 SharedPreferences —— 用户换了号以后
+        // 设置页那份（Secure 加密存）优先级更高，清空即回到这里的值。
+        buildConfigField("String", "TM_APP_TOKEN", kstr(tmAppToken))
+        buildConfigField("String", "TM_JWE", kstr(tmJwe))
+        buildConfigField("String", "TM_USER_ID", kstr(tmUserId))
+        buildConfigField("String", "TM_CHANNEL_ID", kstr(tmChannelId))
     }
 
     signingConfigs {
@@ -90,6 +138,8 @@ android {
 
     buildFeatures {
         compose = true
+        // 打开 BuildConfig：上面几个凭证字段要靠它注入
+        buildConfig = true
     }
 
     packaging {

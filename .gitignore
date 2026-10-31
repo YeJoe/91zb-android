@@ -2,12 +2,17 @@
 .jwe.txt
 .apptoken.txt
 .apptoken.json
+.export_*.txt
 .session.json
 login_init.json
 .api_port
 .ws_port
 .rtmp_domain.txt
 .stream_url.txt
+keys.txt
+*.pcap
+# 从这里 import 进 App 的凭证包，里面是真号 JWE（uid 1422303235）
+.import.json
 
 # ---- assets/：保留的原始素材与逆向产物（体积大，不入库）----
 assets/channel.apk
@@ -29,6 +34,15 @@ Thumbs.db
 
 # ---- 抓包/逆向调试临时产物（含 apk、pcap、so，体积大且敏感）----
 tools/_dbg/
+# 从源 App 拉下来的 so 底料（libapp.so 26MB + libkiwi.so 6.6MB），只用来本地穷举密钥
+/so/
+# 模拟器/真机上 dump 出来的 prefs、UI 树、候选路由（都含凭证或设备指纹）
+mumu_prefs.xml
+route_candidates.txt
+orig_settings.kt
+err.txt
+# frida-server 二进制（xz + 解压后共 69MB），只用于本机推送到测试机，不入库
+/tools/frida-server/
 
 # ---- 临时导出与 CI 查询残留（曾经误提交过，这里挡死）----
 .dist/

@@ -34,6 +34,7 @@ import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
@@ -41,6 +42,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -264,8 +266,8 @@ fun HomeScreen(c: AppContainer) {
                     tint = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
-            IconButton(onClick = { if (!c.loading) scope.launch { c.refreshManually() } }) {
-                if (c.loading) {
+            IconButton(onClick = { if (!c.refreshing) scope.launch { c.refreshManually() } }) {
+                if (c.refreshing) {
                     CircularProgressIndicator(
                         strokeWidth = 2.dp,
                         modifier = Modifier.size(18.dp),
@@ -376,7 +378,13 @@ fun HomeScreen(c: AppContainer) {
  *
  * 单独抽出来是因为它要在 Pager 里被实例化 4 次（相邻页会预合成），
  * 状态全部由外部传入，页面本身不持有跨页的选择。
+ *
+ * 四个一级页（关注/推荐/热门/附近）各自一个 [PullToRefreshBox]，
+ * 所以「每个分类都能下拉刷新」是结构化保证的，不是在某一个页面上挂了个手势：
+ * 二级分类（热门下的游戏/舞蹈…）、附近的城市、以及搜索结果，
+ * 用的都是同一个列表容器，换分类只是换了 [rooms]，下拉照旧能用。
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun FeedPage(
     c: AppContainer,
@@ -400,6 +408,7 @@ private fun FeedPage(
     onOpen: (List<Room>, Int) -> Unit
 ) {
     val all = c.rooms
+    val scope = rememberCoroutineScope()
 
     // 瀑布流状态提到外面：要读可见区间上报给探活（见下面的 LaunchedEffect）
     val gridState = rememberLazyStaggeredGridState()
@@ -462,71 +471,89 @@ private fun FeedPage(
 
         Box(Modifier.weight(1f).fillMaxWidth()) {
             val offAir = followIds.size - rooms.size
-            when {
-                rooms.isEmpty() && query.isNotEmpty() -> HintBox(
-                    title = "没找到「${query.trim()}」",
-                    desc = "名字里的一段字符、或者房间号（主播 ID）都能搜。\n只搜在播的真人直播间，游戏/棋牌房不参与搜索",
-                    action = null,
-                    onAction = {}
-                )
+            // 下拉刷新挂在**每一页**上（四页各一个），不是全局一个：
+            // 手势要贴着这一页的列表，指示器也才能从这一页的顶部长出来。
+            // 换二级分类 / 城市 / 搜索词只是换了 rooms，容器没换，所以下拉照旧可用。
+            PullToRefreshBox(
+                isRefreshing = c.refreshing,
+                onRefresh = { scope.launch { c.refreshManually() } },
+                modifier = Modifier.fillMaxSize()
+            ) {
+                when {
+                    // 空状态/提示页都套一层 RefreshFill：它们本身不会滚动，
+                    // 不套的话手指拖下去收不到 nested scroll，看起来就是"下拉没反应"
+                    rooms.isEmpty() && query.isNotEmpty() -> RefreshFill {
+                        HintBox(
+                            title = "没找到「${query.trim()}」",
+                            desc = "名字里的一段字符、或者房间号（主播 ID）都能搜。\n只搜在播的真人直播间，游戏/棋牌房不参与搜索",
+                            action = null,
+                            onAction = {}
+                        )
+                    }
 
-                rooms.isEmpty() && (c.loading || !c.loadedOnce) -> LoadingBox()
+                    rooms.isEmpty() && (c.loading || !c.loadedOnce) -> RefreshFill { LoadingBox() }
 
-                rooms.isEmpty() && feed == Feed.FOLLOW && followIds.isEmpty() ->
-                    HintBox(
-                        title = "还没关注任何主播",
-                        desc = "在卡片右上角点星标，或在直播间里点右侧的星；关注过的人会汇总到这里",
-                        action = "去推荐看看",
-                        onAction = { c.feed = Feed.RECOMMEND }
-                    )
+                    rooms.isEmpty() && feed == Feed.FOLLOW && followIds.isEmpty() -> RefreshFill {
+                        HintBox(
+                            title = "还没关注任何主播",
+                            desc = "在卡片右上角点星标，或在直播间里点右侧的星；关注过的人会汇总到这里",
+                            action = "去推荐看看",
+                            onAction = { c.feed = Feed.RECOMMEND }
+                        )
+                    }
 
-                rooms.isEmpty() && feed == Feed.FOLLOW -> HintBox(
-                    title = "关注的主播都没开播",
-                    desc = "共 ${followIds.size} 位关注，当前一个都不在播",
-                    action = if (offAir > 0) "去关注页看全部" else null,
-                    onAction = { c.tab = Tab.FOLLOW }
-                )
+                    rooms.isEmpty() && feed == Feed.FOLLOW -> RefreshFill {
+                        HintBox(
+                            title = "关注的主播都没开播",
+                            desc = "共 ${followIds.size} 位关注，当前一个都不在播",
+                            action = if (offAir > 0) "去关注页看全部" else null,
+                            onAction = { c.tab = Tab.FOLLOW }
+                        )
+                    }
 
-                rooms.isEmpty() && feed == Feed.NEARBY -> HintBox(
-                    title = "没取到同城房间",
-                    desc = if (activeCity.isBlank()) "房间里没有城市信息，换「推荐」看看"
-                    else "「$activeCity」眼下没有在播的房间，换个城市试试",
-                    action = "换推荐",
-                    onAction = { c.feed = Feed.RECOMMEND }
-                )
+                    rooms.isEmpty() && feed == Feed.NEARBY -> RefreshFill {
+                        HintBox(
+                            title = "没取到同城房间",
+                            desc = if (activeCity.isBlank()) "房间里没有城市信息，换「推荐」看看"
+                            else "「$activeCity」眼下没有在播的房间，换个城市试试",
+                            action = "换推荐",
+                            onAction = { c.feed = Feed.RECOMMEND }
+                        )
+                    }
 
-                rooms.isEmpty() -> EmptyBox(c)
+                    rooms.isEmpty() -> RefreshFill { EmptyBox(c) }
 
-                else -> {
-                    // 紧凑档（3 列）连边距一起收：2 列时 14dp 的左右留白在 3 列下太奢侈，
-                    // 每省 4dp 边距就是每格多 2-3dp 封面宽度。
-                    val compact = cols >= 3
-                    LazyVerticalStaggeredGrid(
-                        columns = StaggeredGridCells.Fixed(cols),
-                        state = gridState,
-                        contentPadding = PaddingValues(
-                            start = if (compact) 9.dp else 12.dp,
-                            end = if (compact) 9.dp else 12.dp,
-                            top = 4.dp,
-                            bottom = 18.dp
-                        ),
-                        horizontalArrangement = Arrangement.spacedBy(if (compact) 7.dp else 9.dp),
-                        verticalItemSpacing = if (compact) 7.dp else 9.dp
-                    ) {
-                        items(rooms, key = { it.id }) { room ->
-                            RoomCard(
-                                c = c,
-                                room = room,
-                                compact = compact,
-                                followed = room.id in followIds,
-                                // 探活确认拉不到流：压暗沉底，但不从列表里拿掉
-                                // （删了会让列表在手指底下变短，也容易误杀）
-                                dim = room.id in c.deadIds,
-                                onClick = {
-                                    val index = rooms.indexOfFirst { it.id == room.id }
-                                    onOpen(rooms, index)
-                                }
-                            )
+                    else -> {
+                        // 紧凑档（3 列）连边距一起收：2 列时 14dp 的左右留白在 3 列下太奢侈，
+                        // 每省 4dp 边距就是每格多 2-3dp 封面宽度。
+                        val compact = cols >= 3
+                        LazyVerticalStaggeredGrid(
+                            columns = StaggeredGridCells.Fixed(cols),
+                            state = gridState,
+                            contentPadding = PaddingValues(
+                                start = if (compact) 9.dp else 12.dp,
+                                end = if (compact) 9.dp else 12.dp,
+                                top = 4.dp,
+                                bottom = 18.dp
+                            ),
+                            horizontalArrangement = Arrangement.spacedBy(if (compact) 7.dp else 9.dp),
+                            verticalItemSpacing = if (compact) 7.dp else 9.dp
+                        ) {
+                            items(rooms, key = { it.id }) { room ->
+                                RoomCard(
+                                    c = c,
+                                    room = room,
+                                    compact = compact,
+                                    followed = room.id in followIds,
+                                    // 探活确认拉不到流：压暗沉底，但不从列表里拿掉
+                                    // （删了会让列表在手指底下变短，也容易误杀）
+                                    dim = room.id in c.deadIds,
+                                    onClick = {
+                                        val index = rooms.indexOfFirst { it.id == room.id }
+                                        onOpen(rooms, index)
+                                    }
+                                )
+                            }
                         }
                     }
                 }

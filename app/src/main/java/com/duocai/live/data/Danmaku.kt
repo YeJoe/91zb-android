@@ -247,65 +247,6 @@ class DanmakuStore(
         live = null
     }
 
-    /**
-     * 发一条弹幕。
-     *
-     * 成功后**本地直接上屏**：服务端不会把用户自己发的消息回推给同一条连接
-     * （2026-10-30 实测：发完 watch 12 秒收不到，但 history_msg 能拉到），
-     * 不回显的话用户会以为没发出去。
-     *
-     * 昵称写「我」而不是真名：prefs 里只有 token/JWE，没有会话里的房间昵称，
-     * 与其显示一串占位 id，不如明确标成自己发的。
-     */
-    suspend fun send(text: String): Result<Long> {
-        val t = text.trim()
-        if (t.isEmpty()) return Result.failure(IllegalArgumentException("内容不能为空"))
-        val rid = roomId
-        if (rid <= 0L) return Result.failure(IllegalStateException("还没进房"))
-        val dm = live ?: return Result.failure(IllegalStateException("弹幕通道还没连上"))
-
-        // 局部函数默认不是 suspend 的，dm.send 是挂起函数，必须显式加 suspend
-        suspend fun attempt() = runCatching {
-            dm.send(
-                rid, menuId, t,
-                // 第一轮：现成的端口（零探测，最省时间）
-                fallbackPorts = { quickPortsProvider() },
-                // 第二轮：端口表整张重扫。隧道端口在源 App 冷启动后会重排，
-                // 缓存里的号码可能已被别的上游占用（握手照样 101，请求回 500）
-                refreshPorts = { refreshPortsProvider().ifEmpty { portsProvider() } }
-            )
-        }
-
-        val first = attempt()
-        if (first.isSuccess) return first.onSuccess { push(DmMessage("chat", 32, "我", t)) }
-
-        // 换端口 + 重探都失败了，说明不是"端口号过期"，而是隧道里**根本没有弹幕上游**
-        // （列表组还在、ws 组没了）。实测这种半死状态下无论打哪个端口都是 HTTP 500。
-        // 这里重建一次隧道再发 —— 用户不必自己去设置页点「重启隧道」。
-        val rebuild = rebuildTunnel
-        if (rebuild != null && System.currentTimeMillis() - lastRebuildAt > 60_000L) {
-            lastRebuildAt = System.currentTimeMillis()
-            status = "弹幕通道断了，正在重建隧道…"
-            val ok = runCatching { rebuild() }.getOrDefault(false)
-            if (ok) {
-                // 新隧道起来后端口会整体换一批，等一下让它把 listener 都 bind 完
-                delay(1500)
-                val again = attempt()
-                if (again.isSuccess) {
-                    return again.onSuccess { push(DmMessage("chat", 32, "我", t)) }
-                }
-                return Result.failure(
-                    IllegalStateException(
-                        "隧道已重建，但弹幕通道还没就绪，稍等十秒再发（" +
-                            (again.exceptionOrNull()?.message ?: "无应答") + "）"
-                    )
-                )
-            }
-        }
-        // 块体函数不会隐式返回最后一行，必须显式 return
-        return first
-    }
-
     private fun push(m: DmMessage) {
         messages.add(m)
         while (messages.size > MAX_KEEP) messages.removeAt(0)

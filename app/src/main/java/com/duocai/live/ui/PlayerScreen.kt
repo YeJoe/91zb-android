@@ -34,14 +34,10 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.foundation.text.KeyboardActions
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.ExitToApp
 import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -73,12 +69,10 @@ import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
@@ -1068,7 +1062,6 @@ private fun ChatPanel(
             items(messages) { m -> ChatLine(m) }
         }
 
-        ChatInputBar(c = c, bg = bg)
     }
 }
 
@@ -1135,101 +1128,6 @@ private fun ChatHeader(
                 }
                 .padding(horizontal = 9.dp, vertical = 4.dp)
         )
-    }
-}
-
-@Composable
-private fun ChatInputBar(c: AppContainer, bg: Float) {
-    var text by remember { mutableStateOf("") }
-    var busy by remember { mutableStateOf(false) }
-    var err by remember { mutableStateOf("") }
-    val scope = rememberCoroutineScope()
-    val focus = LocalFocusManager.current
-
-    fun fire() {
-        val t = text.trim()
-        if (t.isEmpty() || busy) return
-        busy = true
-        err = ""
-        scope.launch {
-            val r = c.danmaku.send(t)
-            busy = false
-            r.onSuccess {
-                text = ""
-                focus.clearFocus()
-            }.onFailure { err = it.message ?: it.javaClass.simpleName }
-        }
-    }
-
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .padding(start = 12.dp, end = 12.dp, bottom = 8.dp, top = 2.dp)
-    ) {
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(50))
-                .background(Color.White.copy(alpha = 0.12f * (0.35f + bg)))
-                .padding(start = 14.dp, end = 6.dp, top = 2.dp, bottom = 2.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Box(Modifier.weight(1f)) {
-                if (text.isEmpty()) {
-                    Text(
-                        "说点什么…",
-                        color = Color.White.copy(alpha = 0.55f),
-                        fontSize = 12.sp
-                    )
-                }
-                BasicTextField(
-                    value = text,
-                    onValueChange = {
-                        text = it
-                        if (err.isNotEmpty()) err = ""
-                    },
-                    singleLine = true,
-                    textStyle = TextStyle(color = Color.White, fontSize = 12.sp),
-                    cursorBrush = SolidColor(Color.White),
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-                    keyboardActions = KeyboardActions(onSend = { fire() }),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 9.dp)
-                )
-            }
-            // 发送键：忙的时候压暗并禁点，避免连点发出好几条一样的
-            Box(
-                Modifier
-                    .size(30.dp)
-                    .clip(CircleShape)
-                    .background(
-                        if (busy) Color.White.copy(alpha = 0.08f)
-                        else Gold.copy(alpha = 0.22f)
-                    )
-                    .clickable(enabled = !busy) { fire() },
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    Icons.Filled.Send,
-                    contentDescription = "发送弹幕",
-                    tint = if (busy) Color.White.copy(alpha = 0.3f) else Gold,
-                    modifier = Modifier.size(15.dp)
-                )
-            }
-        }
-        if (err.isNotEmpty()) {
-            Text(
-                "发送失败 · $err",
-                color = Color(0xFFFF8F6B),
-                fontSize = 10.sp,
-                // 失败原因里会带 room/menu 和每个端口的结果，一两行足够看清是哪类问题
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.padding(start = 14.dp, top = 4.dp),
-                style = TextStyle(shadow = textShadow())
-            )
-        }
     }
 }
 

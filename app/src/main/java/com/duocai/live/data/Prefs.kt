@@ -5,6 +5,7 @@ import android.content.SharedPreferences
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
+import com.tm.live.BuildConfig
 import java.security.KeyStore
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
@@ -37,9 +38,18 @@ class Prefs(context: Context) {
         get() = sp.getBoolean(K_LIVE_MODE, true)
         set(v) = sp.edit().putBoolean(K_LIVE_MODE, v).apply()
 
-    /** 隧道 token：32 位 hex，来自 quick-login，隧道 URL 的 ?token= */
+    /**
+     * 隧道 token：32 位 hex，来自 quick-login，隧道 URL 的 `?token=`。
+     *
+     * 2026-10-31 起**默认值来自构建注入的真号**（`BuildConfig.TM_APP_TOKEN`，
+     * 由 `local.properties` 或 CI Secrets 提供，见 `app/build.gradle.kts`）。
+     * 它同时是弹幕 `/tunnel/open?token=` 与 `/websock/join` 的身份凭证 ——
+     * 空着就是 `403 bad token, please login!`，一条弹幕都进不来。
+     *
+     * 设置页粘一份别的会覆盖它（换号用）；清空即回落到注入值。
+     */
     var appToken: String
-        get() = Secure.get(sp, K_APP_TOKEN)
+        get() = Secure.get(sp, K_APP_TOKEN).ifBlank { Defaults.APP_TOKEN }
         set(v) = Secure.put(sp, K_APP_TOKEN, v.trim())
 
     /**
@@ -47,8 +57,10 @@ class Prefs(context: Context) {
      *
      * 全仓只有 `/user_follow/my_follow`（服务端关注）和弹幕 join 两处需要它，
      * 但缺了就是 403「用户不存在或超时」，关注分类永远空着、弹幕也连不上。
-     * 用户没有义务自己去扒这个 330 字符的串，所以内置一份默认值（[Defaults.JWE]）：
-     * 设置页留空 = 用内置的；粘贴别的 = 覆盖它（换号时用）。
+     *
+     * 默认值优先取**构建注入**的真号（`BuildConfig.TM_JWE`）；没有注入时回落到
+     * 源码里那串临时号的 JWE，保证开源版本首装也不是一片空白。
+     * 设置页留空 = 用默认的；粘贴别的 = 覆盖它（换号时用）。
      */
     var jwe: String
         get() = Secure.get(sp, K_JWE).ifBlank { Defaults.JWE }
@@ -68,11 +80,11 @@ class Prefs(context: Context) {
     /**
      * 当前登录用户 id（源 App `MAINUSER_DATA.id`）。
      *
-     * 关注写接口要 `userId`。传 0 时多数服务端会按 token 推，
-     * 但为了和 App 请求体完全一致，能从 prefs 读到就填上。
+     * 关注写接口要 `userId`。默认值跟着注入凭证走（真号 1422303235），
+     * 传 0 时多数服务端会按 token 推，但为了和 App 请求体完全一致，能从 prefs 读到就填上。
      */
     var myUserId: Long
-        get() = sp.getLong(K_MY_USER_ID, 0L)
+        get() = sp.getLong(K_MY_USER_ID, Defaults.USER_ID.toLongOrNull() ?: 0L)
         set(v) = sp.edit().putLong(K_MY_USER_ID, v).apply()
 
     /**
@@ -213,6 +225,53 @@ class Prefs(context: Context) {
         get() = sp.getString(K_FOLLOW, "") ?: ""
         set(v) = sp.edit().putString(K_FOLLOW, v).apply()
 
+    // ---- 本地关注的云同步（GitHub Gist）----
+    /**
+     * 同步用的 GitHub Personal Access Token（只需 `gist` 权限）。
+     *
+     * 走 Keystore 加密存。**不要**把它写进源码或 `local.properties` ——
+     * PAT 比 JWE 更危险，它能改用户整个 Gist 空间，泄漏了得手动去 GitHub 撤销。
+     */
+    var ghToken: String
+        get() = Secure.get(sp, K_GH_TOKEN)
+        set(v) = Secure.put(sp, K_GH_TOKEN, v.trim())
+
+    /** 同步目标 Gist id（首次推送成功后自动回填，之后就一直更新这一个） */
+    var ghGistId: String
+        get() = sp.getString(K_GH_GIST, "") ?: ""
+        set(v) = sp.edit().putString(K_GH_GIST, v.trim()).apply()
+
+    /** 前台自动同步。默认开：本地关注最大的价值就是跨设备一致 */
+    var syncAuto: Boolean
+        get() = sp.getBoolean(K_SYNC_AUTO, true)
+        set(v) = sp.edit().putBoolean(K_SYNC_AUTO, v).apply()
+
+    /**
+     * 自动同步间隔（秒），默认 30。
+     *
+     * 为什么不更快：Gist 没有推送通道，只能轮询。30 秒 ≈ 120 次/小时，
+     * 带 ETag 的请求大部分是 304，既够"接近实时"，也离 GitHub 的
+     * 5000 次/小时配额很远（按天算也才 2880 次）。
+     */
+    var syncSec: Int
+        get() = sp.getInt(K_SYNC_SEC, 30).coerceIn(10, 3600)
+        set(v) = sp.edit().putInt(K_SYNC_SEC, v.coerceIn(10, 3600)).apply()
+
+    /** 上次同步成功的时刻（毫秒），0 = 从没成功过 */
+    var syncAt: Long
+        get() = sp.getLong(K_SYNC_AT, 0L)
+        set(v) = sp.edit().putLong(K_SYNC_AT, v).apply()
+
+    /** 上次同步的一句话结果，设置页/关注页直接显示 */
+    var syncMsg: String
+        get() = sp.getString(K_SYNC_MSG, "") ?: ""
+        set(v) = sp.edit().putString(K_SYNC_MSG, v).apply()
+
+    /** 上次同步时服务端那份的 ETag：一致就说明没人改过，省一次下载 */
+    var syncEtag: String
+        get() = sp.getString(K_SYNC_ETAG, "") ?: ""
+        set(v) = sp.edit().putString(K_SYNC_ETAG, v).apply()
+
     // ---- 自研隧道（内置云层 SDK，不再依赖源 App 常驻）----
     /**
      * 云层 SDK 的 appKey。SDK 的 `Init(String appkey)` 只认这一个参数，
@@ -260,6 +319,13 @@ class Prefs(context: Context) {
         const val K_NEARBY_CITY = "nearby_city"
         const val K_GRID_COLS = "grid_cols"
         const val K_FOLLOW = "follow_json"
+        const val K_GH_TOKEN = "gh_token"
+        const val K_GH_GIST = "gh_gist_id"
+        const val K_SYNC_AUTO = "sync_auto"
+        const val K_SYNC_SEC = "sync_sec"
+        const val K_SYNC_AT = "sync_at"
+        const val K_SYNC_MSG = "sync_msg"
+        const val K_SYNC_ETAG = "sync_etag"
         const val K_KIWI_KEY = "kiwi_app_key"
         const val K_KIWI_AUTO = "kiwi_auto"
         const val K_SOURCE_TUNNEL = "source_tunnel"
@@ -314,25 +380,49 @@ class Prefs(context: Context) {
          * 若它失效（SDK 初始化返回非 0），设置页可以直接改，不用重新打包。
          */
         /**
-         * 内置 JWE（`alg=dir` / `enc=A128CBC-HS256`）。
+         * 隧道会话 token（32 位 hex）的默认值，来源：**构建期注入**的真号。
          *
-         * 2026-10-29 从源 App 的 `FlutterSharedPreferences.xml` 里
-         * `flutter.MAINUSER_DATA` → `token` 字段原样取出，330 字符，与磁盘
-         * `.jwe.txt` 一致。它不是会话令牌（不会随登录刷新），目前没观察到过期，
-         * 所以直接内置当默认值 —— 否则用户装完 App 得自己扒这个串，
-         * 「关注」分类永远是空的。
-         *
-         * 失效表现：`/user_follow/my_follow` 返回 401/403 或空数组。
-         * 届时在设置页粘贴一份新的即可覆盖，不用重新打包。
+         * 它就是弹幕链路的身份：`/tunnel/open?token=` 与 `/websock/join` 都读这一串，
+         * 缺了只会得到 `403 {"msg":"bad token, please login!"}`。
+         * 构建时没注入（开源 clone / 没配 Secrets）则为空串 —— 看直播不受影响，
+         * 关注与弹幕需要用户在设置页自己粘一份。
          */
-        const val JWE =
+        val APP_TOKEN: String = BuildConfig.TM_APP_TOKEN
+
+        /**
+         * JWE（`alg=dir` / `enc=A128CBC-HS256`，330 字符）。
+         *
+         * 取值优先级：构建注入的真号 → 代码里的开源兜底（[FALLBACK_JWE]，临时号）。
+         * 设置页粘一份会盖过两者；清空输入框即回到这里。
+         *
+         * 失效表现：`/user_follow/my_follow` 返回 401/403 或空数组、弹幕 join 403。
+         */
+        val JWE: String = BuildConfig.TM_JWE.ifBlank { FALLBACK_JWE }
+
+        /**
+         * 开源兜底凭证：临时号 **423344474**（渠道 `ecy`）的 JWE。
+         *
+         * 只在构建时没有注入 `TM_JWE` 时生效 —— 这样公开仓库的代码 clone 下来
+         * 也能直接编译、装上有数据，不会一片空白。真号凭证请走
+         * `local.properties` / CI Secrets（见 `app/build.gradle.kts` 顶部），
+         * **不要**改成这里。
+         */
+        private const val FALLBACK_JWE =
             "eyJhbGciOiJkaXIiLCJlbmMiOiJBMTI4Q0JDLUhTMjU2In0..UL92WOqbRRtDc84vjAloUQ.7O00WSXSCjgaWhQgrngpqx-jqcEYimDZr18hcEHj1y8XFgYM6m-fMZ3bCqZZYc5hMWwPy00n3TtulK7ZQNfIhhKiZk1EaSvsyXCP1dXS-Rcm6USUxJ7HyIw-Lklyu1zoW1INXtTFiqiujPElCJCXDvbZne7OxHHE8d7WK4bzokd0zIyMz6UDHXUhxOxixKKO93-n664Qx8urx8wDtc7H6LJ8hDCJ6Ofccf7nDuY3r2s.wMUa4eXemBncmq9Ynwo9DQ"
 
         /**
-         * 渠道 id。`/relationship/add` / `/relationship/remove` 要用它，
-         * 与内置 JWE 同渠道（源 App `MAINUSER_DATA.channel_id == "ecy"`）。
+         * 渠道 id。真号 1422303235 的 `MAINUSER_DATA.channel_id == "tui1"`，
+         * 与注入的 JWE 同渠道。构建期注入了 `TM_CHANNEL_ID` 时会被它覆盖，
+         * 这里只是无注入时的兜底默认值。
          */
-        const val CHANNEL_ID = "ecy"
+        const val CHANNEL_ID = "tui1"
+
+        /**
+         * 默认登录用户 id（源 App `MAINUSER_DATA.id`），真号 1422303235。
+         * 关注写接口要 `userId`；虽然传 0 时服务端多按 token 推，
+         * 但为了和源 App 请求体完全一致，默认值填真号。构建期注入 `TM_USER_ID` 会覆盖它。
+         */
+        const val USER_ID = "1422303235"
 
         const val KIWI_APP_KEY =
             "360wjdqlAsjhpkqV7pq3Mzj6mfrZdxM4yt39ASqwjWgc3Eq4gjbRp4/qzeH3mlgzQCGK197OhozJE7wxXR1lHHvsbbfn8e+7YRS4p3rgdAg33j6OkmmntfBvqcmvA67vkSwe8rFbLZF1IZGAy6U76eqCd8mQzlEovcAqLT9xcU7kpAWc3svYbMwXCDTNL6aufyS5IaerIygPzSeeafzt4+C0kjXKYuolKELlFv4ltQMPRqOQTrxK2fW9qvHMQUsjjlklnAarvVimL8pg2ewANRvxuBGoZEN6ePLSvnLL+ffGdgq+D/1citmYauR6sK6BRiMQnUXFGksyIf09AmqI6GRMhHjgaviv8VFz2GFyW4awq7shOJQbsykqhzI3E9gf2UdWSHElt4fVvZByA5JlaZKeAijN7fitPWs6RaahHMdk8z5NiSPRTQnMN97YMZKaJEEuOts9QqG1h5vzlcXjlGSCfVRmGv+zadHzoE4XDtW0Oqbb4/1hYzS4ageeNXswo6jzXgIiYcg8tXy1WvKYdzy1E7USYGG/WRdmBCM0+nDG3lHsiOK2Lcs6QugL2isZc/W//glYh+mMuN9vnalWv/JYGesap2Q2Gr19TxIJoDvBorZXzNKxq1mVBR3M8Bd14cxBgqi1gEx8te37d8Qpb0rW4NkVi7WGevOG3RsA4mrUPc5kQGtJ70rEC4VFzshCLFQnRoBVeJh1APevNiKtW13/ExcFCyp4EovUeUVmujgjAklG0sql2TMcPLLoYVtCshzwD3FIXB4WorckMge1uldb7pTHHjB55jmW4tsgnyQR7Im+7jBVV9rfuoUSoq2wNpEU8W2xi7D8mVi2XZfwTZGsb6e0p4nSxy1+FLX/4/Lu7pVfFK1rzxbq346mJJgJSZkkEzzlCOKzPpU3WF8rwnYcWqdNYLnyzXTNpCQjLcNeqBZU8uQoSxyBANmw0AoslNGRImN7m6H81DtbP8XY28Pa9wIKQBw/u/mAvMxtVE2b8smZlt7CU733X3ikkkRGR5F6kRhGmulQbcuqLHiwI5Y9Tq9kEhU+VCCA5+56lmW+NukiIqYBgL9H3woNHTF9JHw/H0UwqacQzruCZ+ez4zbP2HGXvW/4TlJ5LCFhbiU1o3N7VWgsehj+zxsOQoRq3+XhcJo2V6z2GYYytgTUDT7QTYK64ThDJ0vnUnizTqlPppRn0AU+jwh3YOj/QGhQOM4sKD2CcHfoafcwNMoyb5phHi3xuoGE4uyeQUeRKc0EvJ1SVFlt6OT9FwBlhVMwbYl7Jgs3yty0g6WMxmVDUM8+RYawSFjoKNGRr4ckXCCqpX7+E+/mqAhEW/NZWWw63f4oPlPdOSZTva1NVdIlLbcAuaGzQImU4Fg/a9DRSCF+UcHCivl1p959xoWcLiD9H/eAyKnVFckebrlEpJnT7Q=="

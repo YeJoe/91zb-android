@@ -25,7 +25,7 @@ import org.json.JSONObject
  * | `POST /login/get_data_by_tbname {"tb_name":"room"}` | `{"code":-2,"msg":"查询失败"}`，room 是动态表不对外 |
  * | `POST /room/get_list_by_ids {"ids":"a,b,c"}` | ✅ **唯一可用**，一次 200 个 id 约 0.5s，返回完整 Room |
  * | `POST /login/get_data_by_tbname {"tb_name":"lobby_menu"}` | ✅ 分类表（关注/推荐/热门/附近/星秀/…） |
- * | `POST /user_follow/my_follow` | ✅ 关注的主播（podcast_id），但没有房间号 |
+ * | `POST /user_follow/my_follow` | ✅ 关注的主播（podcast_id）。**分页，一页 20 条**，见 [pullFollows] |
  *
  * 也就是说：**这一版没有"房间列表接口"了**。源 App 自己维护一张
  * `localData:room.<uid>` 的本地表（实测 1972 间 / 1956 在播），靠 WS `ctl=room`
@@ -447,12 +447,17 @@ class LiveRepo(private val context: Context, private val prefs: Prefs) {
 
             var port = probePort(sample = ids.firstOrNull())
 
-            // 关注的人大多不在大厅 id 池里（池子是按大厅表导出的），单独补一次
+            // 关注的人大多不在大厅 id 池里（池子是按大厅表导出的），单独补一次。
+            // 这里会翻页拿全量（一页 20 条）；**失败时返回 null，此时保持上一次的结果不动** ——
+            // 之前把失败当成空集写回去，一次网络抖动就能让「关注」整片消失。
             val follows = pullFollows(port)
-            followIds = follows.keys
-            followNames = follows
+            if (follows != null) {
+                followIds = follows.keys
+                followNames = follows
+            }
+            val followSet = follows?.keys ?: followIds
 
-            val targets = (ids + follows.keys).distinct()
+            val targets = (ids + followSet).distinct()
             val rooms = runCatching { pullAll(port, targets) }.getOrElse { first ->
                 // 端口大概率变了，重新探一次
                 port = probePort(force = true, sample = ids.firstOrNull())
@@ -491,27 +496,77 @@ class LiveRepo(private val context: Context, private val prefs: Prefs) {
     }
 
     /**
-     * 服务端关注。
+     * 服务端关注 —— **全量**，会自动翻页。
      *
-     * **`podcast_id` 就是房间号** —— 2026-10-29 实测：8 位关注拿去 `/room/get_list_by_ids`
+     * `podcast_id` 就是房间号 —— 2026-10-29 实测：拿 8 位关注去 `/room/get_list_by_ids`
      * 全部命中，返回的 `attachment_url` 与关注列表里的头像完全一致。所以拿到 podcast_id
      * 就等于拿到房间号，不用再做映射。
      *
-     * 这个接口不分页：`page` / `pageIndex` / `offset` 传什么值都只回同一批，
-     * 所以关注数超过返回条数时补不齐（当前账号 8 位，全拿到了）。
-     * 失败不抛异常 —— 没配 JWE、号被封都不该影响主列表。
+     * ## 2026-10-31 修正：这个接口是分页的，一页固定 20 条
+     *
+     * 之前只发一次 `{}` 就当成了全集，结果是「关注列表和服务端不一样」的真正原因：
+     *
+     * ```
+     * 账号 1422303235（真号）实测：
+     *   {"page":1}  → {"count":299,"has_next":1,"result":[ …20 条… ]}
+     *   {"page":2}  → 20 条        {"page":16} → 3 条       {"page":0} → 0 条
+     * ```
+     *
+     * `result` 只是当前这一页；旧代码只取第一页，于是 App 里永远只有 20 位关注，
+     * 而服务端实际有 303 位。注意 `count` **也不准**：报 299，翻完 16 页去重后是 303
+     * （偏小 4），所以它只能当参考，绝不能拿来算页数。
+     *
+     * 几个必须按实测来的细节：
+     *  - `page` **从 1 开始**，传 0 得到的是空页（不是第一页）；
+     *  - `pageSize` 服务端不认，传 100 依然回 20 条；
+     *  - `has_next` 恒为 1，**不可信**，唯一可靠的终止判据是「本页不足 20 条」。
+     *
+     * 所以：第 1 页不满 20 条就直接收工（绝大多数账号一发就够）；否则按
+     * [FOLLOW_PAGE_WAVE] 页一波并发往后翻，遇到空页/不满页停。不靠 `count` 算页数 ——
+     * 那个数在实测里和实际页数对不上（299 条却有 16 页）。
+     *
+     * @return `房间号 → 昵称`；**第 1 页就失败时返回 null**，调用方不要拿空集覆盖已有列表
      */
-    private fun pullFollows(port: Int): Map<Long, String> = runCatching {
-        val obj = post(port, "/user_follow/my_follow", "{}", timeout = 6000)
-        val arr = obj.optJSONArray("result") ?: return@runCatching emptyMap<Long, String>()
-        val out = LinkedHashMap<Long, String>()
-        for (i in 0 until arr.length()) {
-            val o = arr.optJSONObject(i) ?: continue
-            val id = o.optLong("podcast_id", 0L)
-            if (id > 0L) out[id] = o.optString("nickname")
+    private suspend fun pullFollows(port: Int): Map<Long, String>? = coroutineScope {
+        val first = followPage(port, 1) ?: return@coroutineScope null
+        val out = LinkedHashMap<Long, String>(first.ids)
+        // 只有一页（多数账号）：不再多发请求
+        if (first.ids.size < FOLLOW_PAGE_SIZE) return@coroutineScope out
+
+        var page = 2
+        while (page <= MAX_FOLLOW_PAGES) {
+            val wave = (page until (page + FOLLOW_PAGE_WAVE).coerceAtMost(MAX_FOLLOW_PAGES + 1)).toList()
+            val got = wave.map { p -> async(Dispatchers.IO) { followPage(port, p) } }.awaitAll()
+            var stop = false
+            for (fp in got) {
+                // 中途某一页失败：已拿到的照用，别再往后翻（下一页大概率也失败）
+                if (fp == null || fp.ids.isEmpty()) { stop = true; break }
+                out.putAll(fp.ids)
+                if (fp.ids.size < FOLLOW_PAGE_SIZE) { stop = true; break }
+            }
+            if (stop) break
+            page += wave.size
         }
         out
-    }.getOrDefault(emptyMap<Long, String>())
+    }
+
+    /** 一页关注 `(服务端报的总数, 房间号→昵称)` */
+    private class FollowPage(val count: Int, val ids: Map<Long, String>)
+
+    /** 拉一页关注。page 从 1 开始；请求失败（抛异常/HTTP 错）返回 null，与「这一页是空的」区分开 */
+    private fun followPage(port: Int, page: Int, timeout: Int = 8000): FollowPage? = runCatching {
+        val obj = post(port, "/user_follow/my_follow", JSONObject().put("page", page).toString(), timeout)
+        val ids = LinkedHashMap<Long, String>()
+        val arr = obj.optJSONArray("result")
+        if (arr != null) {
+            for (i in 0 until arr.length()) {
+                val o = arr.optJSONObject(i) ?: continue
+                val id = o.optLong("podcast_id", 0L)
+                if (id > 0L) ids[id] = o.optString("nickname")
+            }
+        }
+        FollowPage(obj.optInt("count", ids.size), ids)
+    }.getOrNull()
 
     /**
      * 拉一次服务端关注快照 `(房间号集合, 房间号→昵称)`。
@@ -526,21 +581,17 @@ class LiveRepo(private val context: Context, private val prefs: Prefs) {
         withContext(Dispatchers.IO) {
             val port = runCatching { probePort(sample = idPool().firstOrNull()) }.getOrNull() ?: 0
             if (port <= 0) return@withContext null
-            val m = pullFollows(port)
-            if (m.isEmpty() && !followsOk(port)) return@withContext null
+            // null = 第 1 页就没打通（保持原状）；空 Map = 账号确实一位都没关注。
+            // 以前这两件事都落成 emptyMap，再拿 `my_follow_count` 去分辨 —— 而那个接口
+            // 无论有没有关注都回 `{"code":0,"data":0}`，等于永远判不出失败。
+            val m = pullFollows(port) ?: return@withContext null
             m.keys to m
         }
 
-    /** 区分「真的没关注任何人」和「请求失败」——两者都是空 Map，但语义完全不同 */
-    private fun followsOk(port: Int): Boolean = runCatching {
-        post(port, "/user_follow/my_follow_count", "{}", timeout = 4000).optInt("code", -1) == 0
-    }.getOrDefault(false)
-
     /**
-     * 真实关注 / 取消关注。
+     * 关注 / 取消关注（**尽力而为**）。
      *
-     * ## 2026-10-31 修正：真正的写接口是 `/relationship/add` 和 `/relationship/remove`，
-     * 不是 `/user_follow/…`
+     * ## 接口身份是确定的：`/relationship/add` / `/relationship/remove`
      *
      * 从 blutter 产物（`tianmei/outdir` 的 pp.txt）挖出的真值：
      *
@@ -559,17 +610,24 @@ class LiveRepo(private val context: Context, private val prefs: Prefs) {
      * List(11) [0, 0x4, 0x3, 0x1, "channelId", 0x3, "followeeId", 0x2, "userId", 0x1, Null]
      * ```
      *
-     * 注意三件事：
-     *  1. `user_follow` 模块（pp.txt 里只有 5 条路径）**根本没有 add/cancel_follow** ——
-     *     那是我们早期猜的路径，服务端对未知路径返回空转的 `{"code":0}`，所以「看起来成功但不落库」。
+     * ## 但这个接口**在明文隧道里打不到**（2026-10-31 实测，别再来一遍）
+     *
+     * 判据和全量扫描结果见 `docs/关注写接口-实测结论-2026-10-31.md`：
+     * 17 个 listener 上 `/relationship/add` 和它的 5 种变体全部回网关兜底的
+     * `{"code":0}`，`my_follow` 条数一条都没变。它只挂在 `/go/` 加密通道上
+     * （日志里那句 `go api:addFollow` 就是线索），而那条通道要另一套 go 侧 session。
+     *
+     * 所以这里保留调用只是"万一哪天通了"的伏笔，**返回值必须以复查 `my_follow` 为准**：
+     * 写完不复查就等于自欺（服务端对未知路径也回 `{"code":0}`，看着像成功）。
+     *
+     * 另外两个细节别踩：
+     *  1. `user_follow` 模块（pp.txt 里只有 5 条路径）**根本没有 add/cancel_follow**，
+     *     那是早期猜的路径。
      *  2. 参数名是全小写驼峰 **`followeeId`**（双 e），不是 `podcast_id`。
-     *  3. 日志里 `go api:addFollow` 说明它走的是 `/go/` 加密路径那一套。
-     *     本机明文隧道上试 `/relationship/add` 若仍空转，就说明必须走 protobuf 隧道
-     *     （`ProtobufHttpTunnelDelegate`），这时用 `/relationship/is_following/` 复查兜底。
      *
      * @param podcastId 房间号（`podcast_id` 与房间 id 同一命名空间，已实测 8/8 命中）
      * @param wantFollow true=关注 / false=取消关注
-     * @return 服务端状态是否确实变成了 [wantFollow]
+     * @return 服务端状态是否确实变成了 [wantFollow]（当前几乎必然 false，调用方要能接受）
      */
     suspend fun syncFollow(podcastId: Long, wantFollow: Boolean): Boolean = withContext(Dispatchers.IO) {
         val port = runCatching { probePort(sample = idPool().firstOrNull()) }.getOrNull() ?: 0
@@ -594,7 +652,9 @@ class LiveRepo(private val context: Context, private val prefs: Prefs) {
 
         // 2) 无论如何都复查一次真实状态 —— 这是唯一可信的判据。
         //    `/relationship/is_following/` 比拉全量 my_follow 便宜得多，但后者更稳（已实测可用）。
-        val ids = pullFollows(port).keys
+        //    复查本身打不通（null）时直接判「没成」：宁可让 UI 显示「仅本机」，
+        //    也不能凭一个回不了头的 code=0 谎报关注成功。
+        val ids = pullFollows(port)?.keys ?: return@withContext false
         val nowFollowed = podcastId in ids
         if (nowFollowed == wantFollow) return@withContext true
 
@@ -964,6 +1024,18 @@ class LiveRepo(private val context: Context, private val prefs: Prefs) {
          * 这时候整批放行（让用户还能点进去试），不能给一张空列表。
          */
         const val MIN_KEPT_ROOMS = 8
+
+        /**
+         * `my_follow` 每页固定 20 条（服务端不认 `pageSize`，实测传 100 也只回 20）。
+         * 用它判断「这一页是不是最后一页」—— 只有不满 20 条才是真的完了。
+         */
+        const val FOLLOW_PAGE_SIZE = 20
+
+        /** 翻页时一波并发几页。10 页 ≈ 1 个来回，比逐页翻快得多 */
+        const val FOLLOW_PAGE_WAVE = 5
+
+        /** 翻页上限：50 页 = 1000 位关注，够用且能挡住被别人写坏的数据 */
+        const val MAX_FOLLOW_PAGES = 50
 
         /**
          * `lobby_menu` 表里的分类（实测拉取，2026-10-29）。

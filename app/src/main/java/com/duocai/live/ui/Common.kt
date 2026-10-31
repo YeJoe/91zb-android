@@ -1,5 +1,10 @@
 package com.tm.live.ui
 
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import kotlin.math.abs
@@ -64,4 +69,24 @@ fun nickColor(nick: String): Color {
     var h = 0
     for (ch in nick) h = h * 31 + ch.code
     return NICK_COLORS[((h % NICK_COLORS.size) + NICK_COLORS.size) % NICK_COLORS.size]
+}
+
+/**
+ * 把「撑满一屏、但本身不滚动」的内容塞进一个可滚动容器里，好让下拉刷新能触发。
+ *
+ * `PullToRefreshBox` 是靠 **nested scroll** 工作的：手指往下拖时，子级滚动容器
+ * 把没消费掉的位移上报给父级，父级再接住。而空列表提示、加载中、搜索无结果
+ * 这类页面只有一个居中的 Box，压根不产生滚动事件 —— 直接套上去就是
+ * 「怎么拉都没反应」。
+ *
+ * 这里用 `LazyColumn` + 单个 `fillParentMaxSize` 的 item 兜一层：视觉上和原来的
+ * 居中提示完全一致（内容撑满一屏、无处可滚），但手指拖动时照样派发 nested scroll。
+ */
+@Composable
+fun RefreshFill(content: @Composable () -> Unit) {
+    LazyColumn(Modifier.fillMaxSize()) {
+        item {
+            Box(Modifier.fillParentMaxSize()) { content() }
+        }
+    }
 }

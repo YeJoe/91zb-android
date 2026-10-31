@@ -1,8 +1,6 @@
 package com.tm.live.ui
 
 import androidx.activity.compose.BackHandler
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -51,12 +49,16 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.tm.live.AppContainer
 import com.tm.live.data.Prefs
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.json.JSONObject
 
 /** 解析导出工具给的配置；appToken / jwe 任一有值即视为有效。 */
@@ -103,11 +105,10 @@ fun SettingsScreen(c: AppContainer) {
     var importOpen by remember { mutableStateOf(false) }
     var toast by remember { mutableStateOf<String?>(null) }
 
-    // 应用内覆盖安装：SAF 选 APK → 复制到 cache → 交给系统安装器
+    // 自更新：只认本应用的包（包名 + 签名），找到就覆盖安装
     val ctx = LocalContext.current
-    val pickApk = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri != null) toast = ApkInstaller.installFromUri(ctx, uri)
-    }
+    var apkScanning by remember { mutableStateOf(false) }
+    var apkNote by remember { mutableStateOf<String?>(null) }
     /** 「备用数据源」默认收起：实时源正常时这组根本不用碰 */
     var advancedOpen by remember { mutableStateOf(false) }
 
@@ -762,22 +763,107 @@ fun SettingsScreen(c: AppContainer) {
                 // ---------- 关注 ----------
 
                 if (page == 3) {
-                    Section {
+                    // 关注说明：服务端只读 + 本机可编辑
+                    Section("关注说明") {
                         val jweDesc = if (c.prefs.jwe == Prefs.Defaults.JWE) {
                             "内置默认 JWE（已就绪）"
                         } else {
                             "自定义 JWE（${c.prefs.jwe.length} 字符）"
                         }
                         InfoLine("服务端关注 ${c.serverFollowIds.size} 位 · 本机关注 ${c.follows.all().size} 位")
-                        InfoLine("读 `/user_follow/my_follow`（可用）；写 `/relationship/add` 只在 :11521/:44319 上有路由，且要 go 侧登录态，当前 JWE 被拒（403 用户不存在或超时）")
-                        InfoLine("所以点关注 = 本机立刻生效，同时后台仍试一次写接口；写不动会标「仅本机」")
+                        InfoLine("「服务端」是真号 1422303235 在源 App 的关注（只读，写接口走加密协议够不到）。")
+                        InfoLine("「本地」是在本 App 点星标收藏的，可编辑、可导出、可同步到 GitHub Gist 多设备共享。")
+                        InfoLine("点关注 = 本机立刻生效，同时后台仍试一次写接口；写不动会标「仅本机」。")
                         InfoLine("凭证：$jweDesc")
-                        if (c.serverFollowIds.isNotEmpty()) {
+                    }
+
+                    // 本地关注的云同步配置
+                    Section("本地关注 · 云同步（GitHub Gist）") {
+                        // 这些项用局部 state 镜像，避免直接读 prefs 不改触发重组导致开关不回弹
+                        var token by remember { mutableStateOf(c.prefs.ghToken) }
+                        var showToken by remember { mutableStateOf(false) }
+                        var autoSync by remember { mutableStateOf(c.prefs.syncAuto) }
+                        var sec by remember { mutableStateOf(c.prefs.syncSec) }
+                        val syncing = c.syncBusy
+                        val hasToken = token.isNotBlank()
+
+                        OutlinedTextField(
+                            value = token,
+                            onValueChange = { token = it.trim(); c.prefs.ghToken = token },
+                            label = { Text("GitHub Token（只需 gist 权限）") },
+                            placeholder = { Text("ghp_… 或 github_pat_…") },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true,
+                            visualTransformation = if (showToken) VisualTransformation.None
+                                else PasswordVisualTransformation(),
+                            trailingIcon = {
+                                TextButton(onClick = { showToken = !showToken }) {
+                                    Text(if (showToken) "隐藏" else "显示", fontSize = 11.sp)
+                                }
+                            },
+                            shape = RoundedCornerShape(12.dp)
+                        )
+                        InfoLine(
+                            if (hasToken) {
+                                "Token 已保存（Keystore 加密）。" +
+                                    (if (c.prefs.ghGistId.isNotBlank()) " 同步目标 Gist：${c.prefs.ghGistId}"
+                                     else " 首次同步会自动新建私有 Gist")
+                            } else {
+                                "在 github.com → Settings → Developer settings → Personal access tokens 新建，" +
+                                    "勾选 gist 权限即可；只需这一个范围，泄漏了也动不了主仓库。"
+                            }
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        SwitchLine(
+                            label = "前台自动同步",
+                            desc = "开 = 每 $sec 秒推拉一次（带 ETag，多数请求 304）",
+                            checked = autoSync,
+                            onChange = { autoSync = it; c.prefs.syncAuto = it }
+                        )
+                        val secPresets = listOf(10, 30, 60, 120, 300)
+                        ChipLine(
+                            label = "同步间隔",
+                            options = secPresets.map { "${it}秒" } + "自定义",
+                            selected = secPresets.indexOf(sec).let { if (it < 0) secPresets.size else it },
+                            onSelect = { i ->
+                                if (i < secPresets.size) {
+                                    sec = secPresets[i]
+                                    c.prefs.syncSec = sec
+                                }
+                            }
+                        )
+                        Spacer(Modifier.height(6.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Button(
+                                onClick = {
+                                    scope.launch { c.syncNow() }
+                                    toast = "同步中…"
+                                },
+                                enabled = hasToken && !syncing,
+                                shape = RoundedCornerShape(12.dp)
+                            ) { Text(if (syncing) "同步中…" else "立即同步") }
+                            Spacer(Modifier.width(8.dp))
+                            if (c.prefs.ghGistId.isNotBlank()) {
+                                TextButton(onClick = {
+                                    c.prefs.ghGistId = ""
+                                    toast = "已清除 Gist 绑定，下次同步会新建"
+                                }) { Text("重置 Gist", fontSize = 12.sp) }
+                            }
+                        }
+                        Spacer(Modifier.height(4.dp))
+                        InfoLine("状态：${c.syncMsg.ifBlank { "尚未同步" }}")
+                        InfoLine(
+                            if (c.prefs.syncAt > 0) "上次成功：" + runCatching {
+                                val s = (System.currentTimeMillis() - c.prefs.syncAt) / 1000
+                                if (s < 60) "${s}秒前" else if (s < 3600) "${s / 60}分钟前" else "${s / 3600}小时前"
+                            }.getOrDefault("—") else "从未成功同步"
+                        )
+                        if (c.follows.all().isNotEmpty()) {
                             Spacer(Modifier.height(6.dp))
                             TextButton(onClick = {
-                                c.serverFollowIds.toList().forEach { c.unfollow(it) }
-                                toast = "已清空关注"
-                            }) { Text("清空关注") }
+                                c.follows.replaceAll(emptyList())
+                                toast = "已清空本地关注"
+                            }) { Text("清空本地关注") }
                         }
                     }
                 }
@@ -811,14 +897,34 @@ fun SettingsScreen(c: AppContainer) {
                         InfoLine("播放地址来自第三方 CDN，仅供协议学习研究")
                     }
                     Spacer(Modifier.height(12.dp))
-                    // ---------- 安装更新（覆盖安装）----------
-                    Section("安装更新") {
-                        InfoLine("选一个新的 APK：同包名同签名会覆盖安装，登录态、设置、收藏都保留，不用卸载重装。")
+                    // ---------- 检查更新（只覆盖安装本应用）----------
+                    Section("检查更新") {
+                        InfoLine(
+                            "只安装本应用的更新包：包名必须等于 " + ctx.packageName +
+                                " 且签名一致，一键覆盖安装。登录态、设置、收藏都保留，不用卸载重装。"
+                        )
                         Spacer(Modifier.height(8.dp))
                         Button(
-                            onClick = { pickApk.launch(arrayOf("application/vnd.android.package-archive")) },
+                            onClick = {
+                                if (apkScanning) return@Button
+                                apkScanning = true
+                                apkNote = null
+                                scope.launch {
+                                    val found = withContext(Dispatchers.IO) { ApkInstaller.find(ctx) }
+                                    apkScanning = false
+                                    apkNote = if (found == null) {
+                                        "没找到更新包：把 APK 放进下面任一目录，再点一次。"
+                                    } else {
+                                        ApkInstaller.install(ctx, found)
+                                    }
+                                }
+                            },
+                            enabled = !apkScanning,
                             shape = RoundedCornerShape(12.dp)
-                        ) { Text("选择 APK 并安装") }
+                        ) { Text(if (apkScanning) "正在查找更新包…" else "扫描并覆盖安装") }
+                        apkNote?.let { InfoLine(it) }
+                        Spacer(Modifier.height(4.dp))
+                        InfoLine(ApkInstaller.scanHint(ctx))
                         InfoLine("Android 8 以上第一次会先跳到「安装未知应用」，允许后回来再点一次。")
                     }
                 }
