@@ -25,13 +25,22 @@ DC Live 的「实时直播源」直连源 App 隧道端口, 需要两个凭证 +
   python tools/token_export.py capture         # 只做 loopback 抓包取 appToken
   python tools/token_export.py diagnose        # 排查为什么读不到 prefs
   python tools/token_export.py from-file X.xml # 离线解析本地 prefs 快照 (调试, 不碰设备)
+  python tools/token_export.py installs        # 列出设备上所有能找到的源 App 安装位
 
 选项:
   --device SERIAL   指定 adb 设备 (默认: 第一个 online 设备)
   --pkg PKG         源 App 包名 (默认 com.l95c2450d7.f68bb4e2d5)
+  --connect H:P     先 adb connect 这个地址 (MuMu 自动连接失败时手动指定)
   --no-probe       导出但不做在线探测 (只给候选, 适合设备不在手边)
   --no-capture     禁用 loopback 抓包 (不想让 App 被拉前台时用)
   --out FILE        把可粘贴配置同时写入文件 (默认只打印到 stdout)
+
+设备支持:
+  - 真机 (USB/网络 adb) 与 MuMu 模拟器都行。没有在线设备时会自动尝试
+    adb connect MuMu 的端口段 (MuMu 12: 16384+32N, MuMu 6: 7555)。
+  - 多开容器 (如 top.bienvenido.saas.i18n 的 app_split) 直接支持:
+    prefs 在 /data/user/<u>/<宿主>/app_split/<子包>/shared_prefs 下也能读到;
+    用 --pkg 传**子包名**即可, 或者跑 installs 让工具自己找。
 """
 import gzip
 import base64
@@ -53,6 +62,13 @@ TOKEN_CACHE = os.path.join(HERE, ".apptoken.json")
 
 # adbd 自己会 listen 5555, 不是隧道端口
 SKIP_PORTS = {5555}
+
+# 模拟器 adb 网络端口 (没有在线设备时按顺序 adb connect):
+#   MuMu 12: 实例 N = 16384 + 32N   (16384 / 16416 / 16448 / ...)
+#   MuMu 6 / MuMu X: 7555
+#   顺带覆盖夜神 62001 / 逍遥 21503, 反正探测是幂等的
+EMU_PORTS = (16384, 16416, 16448, 16480, 16512,
+             7555, 7556, 21503, 21513, 62001, 62025, 5555)
 
 # 32 位会话令牌: 严格 32 个十六进制字符。
 TOKEN_RE = re.compile(r"^[0-9a-fA-F]{32}$")
@@ -152,10 +168,11 @@ class Adb:
         return out
 
 
-def pick_device(adb):
+def pick_device(adb, quiet=False):
     rc, out, err = adb.raw("devices")
     if rc != 0:
-        _print("[!] 执行 adb devices 失败:", err.strip())
+        if not quiet:
+            _print("[!] 执行 adb devices 失败:", err.strip())
         return None
     online = []
     for line in out.splitlines():
@@ -165,9 +182,101 @@ def pick_device(adb):
             online.append(cols[0])
     if not online:
         return None
-    if len(online) > 1:
+    if len(online) > 1 and not quiet:
         _print("[!] 有 %d 台在线设备, 默认用第一台: %s (要换用 --device)" % (len(online), online[0]))
     return online[0]
+
+
+def ensure_device(adb, manual_connect=None):
+    """拿到一台可用的 adb 设备。
+
+    没有在线设备时自动补两步:
+      1) --connect 指定的地址 (用户手动指定的, 优先)
+      2) MuMu/常见模拟器的 adb 网络端口 (127.0.0.1:16384 等)
+    adb connect 是幂等的, 已连过的端口再连一次无副作用。
+    """
+    serial = pick_device(adb)
+    if serial:
+        return serial
+
+    targets = []
+    if manual_connect:
+        targets.append(manual_connect)
+    targets += ["127.0.0.1:%d" % p for p in EMU_PORTS]
+
+    _print("[*] 没有在线设备, 尝试 adb connect MuMu/模拟器端口…")
+    for addr in targets:
+        adb.raw("connect", addr, timeout=8)
+        serial = pick_device(adb, quiet=True)
+        if serial:
+            _print("[✓] 已连接 %s" % addr)
+            return serial
+    _print("[!] 自动连接失败。确认 MuMu 已开 'ADB 调试', 或用 --connect 127.0.0.1:端口 手动指定。")
+    return None
+
+
+def app_split_children(device):
+    """列出设备上所有多开容器的子包安装位。
+
+    返回 [(user, host, child, base_dir)], base_dir 不带 /shared_prefs 后缀。
+    典型: /data/user/12/top.bienvenido.saas.i18n/app_split/<子包>
+    """
+    adb = Adb(device)
+    try:
+        out = adb.sudo("ls -d /data/user/*/*/app_split/* 2>/dev/null", timeout=20)
+    except SuError:
+        return []
+    kids = []
+    for line in out.splitlines():
+        line = line.strip().rstrip("/")
+        m = re.match(r"^/data/user/(\d+)/([^/]+)/app_split/([^/]+)$", line)
+        if m:
+            kids.append((m.group(1), m.group(2), m.group(3), line))
+    return kids
+
+
+def find_installs(device, pkg):
+    """找源 App 的数据目录, 返回 [(pkg, base_dir)], base_dir 不带 /shared_prefs。
+
+    覆盖三种形态:
+      普通安装   /data/data/<pkg>            /data/user/<u>/<pkg>
+      工作资料   /data/user/12/<pkg>
+      多开容器   /data/user/<u>/<宿主>/app_split/<pkg>     ← 真机实测路径
+    若精确包名一处都没有, 返回容器里扫到的全部子包 (供调用方挑/提示)。
+    """
+    adb = Adb(device)
+    hits = []
+
+    def add(p, u=None):
+        p = p.rstrip("/")
+        if p and all(p != h for _, h in hits):
+            hits.append((u or pkg, p))
+
+    try:
+        found = adb.sudo(
+            "ls -d /data/data/%s /data/user/*/%s /data/user/*/*/app_split/%s 2>/dev/null"
+            % (pkg, pkg, pkg), timeout=20)
+    except SuError:
+        found = ""
+    for line in found.splitlines():
+        line = line.strip().rstrip("/")
+        if line.startswith("/data/data/"):
+            add(line)
+        elif line.startswith("/data/user/"):
+            add(line)
+    if hits:
+        return hits, True
+
+    # 精确包名没找到: 扫容器子包, 把候选都报出来
+    exact = None
+    cands = []
+    for user, host, child, base in app_split_children(device):
+        cands.append((child, base))
+        if child == pkg:
+            exact = (child, base)
+    if exact:
+        return [exact], True
+    return cands, False
 
 
 # ----------------------------------------------------------------- 环境自检
@@ -181,8 +290,15 @@ def diagnose(pkg, device):
     devs = [l.split()[0] for l in out.splitlines() if len(l.split()) >= 2 and l.split()[1] == "device"]
     lines.append("adb devices      : %s" % (devs or "(无在线设备)"))
     if not devs:
-        lines.append("  → 设备没连上/未授权, 先插线或确认 adb 弹窗已允许")
-        return False, lines
+        # 没有在线设备先试 MuMu/模拟器自动连接, 连上了就重新列一次
+        if ensure_device(adb):
+            rc, out, err = adb.raw("devices")
+            devs = [l.split()[0] for l in out.splitlines()
+                    if len(l.split()) >= 2 and l.split()[1] == "device"]
+            lines[-1] = "adb devices      : %s (自动连接后)" % (devs or "(仍无)")
+        if not devs:
+            lines.append("  → 设备没连上/未授权, 先插线、开 MuMu 的 ADB 调试, 或确认 adb 弹窗已允许")
+            return False, lines
 
     serial = adb.device or devs[0]
     lines.append("使用设备         : %s" % serial)
@@ -190,9 +306,11 @@ def diagnose(pkg, device):
     rc, out, _ = adb.raw("shell", "pm", "path", pkg)
     installed = rc == 0 and out.strip().startswith("package:")
     if not installed:
-        # 工作资料/多开容器里装的应用, user 0 的 pm 看不见 —— 用数据目录兜底判断
+        # 工作资料/多开容器里装的应用, user 0 的 pm 看不见 —— 用数据目录兜底判断,
+        # 还找不到就自动在容器子包里认领一个（真机 app_split 形态）
         try:
-            installed = bool(prefs_dirs(serial, pkg))
+            pkg, resolved = resolve_pkg(serial, pkg)
+            installed = resolved and bool(prefs_dirs(serial, pkg))
         except SuError:
             installed = False
     lines.append("App 是否安装     : %s" % ("是" if installed else "否"))
@@ -257,8 +375,8 @@ def prefs_dirs(device, pkg):
 
     普通安装:   /data/data/<pkg>/shared_prefs
     工作资料:   /data/user/12/<pkg>/shared_prefs        ← 源 App 装在分身空间
-    多开容器:   /data/user/12/<宿主>/app_split/<pkg>/0/shared_prefs
-                （如 top.bienvenido.saas.i18n 这类容器，prefs 埋在 app_split 里）
+    多开容器:   /data/user/12/<宿主>/app_split/<pkg>/{,0/}shared_prefs
+                （如真机 /data/user/12/top.bienvenido.saas.i18n/app_split/<子包>）
     """
     adb = Adb(device)
     dirs = []
@@ -268,20 +386,9 @@ def prefs_dirs(device, pkg):
         if p and p not in dirs:
             dirs.append(p)
 
-    add("/data/data/%s/shared_prefs" % pkg)
-    # 用 glob 而不是 find /data/user 递归: 后者在装了 200+ 应用的机器上要几十秒
-    try:
-        found = adb.sudo(
-            "ls -d /data/user/*/%s /data/user/*/*/app_split/%s 2>/dev/null" % (pkg, pkg),
-            timeout=20)
-    except SuError:
-        found = ""
-    for line in found.splitlines():
-        line = line.strip()
-        if not line.startswith("/data/user/"):
-            continue
-        add(line + "/shared_prefs")
-        add(line + "/0/shared_prefs")
+    for _u, base in find_installs(device, pkg)[0]:
+        add(base + "/shared_prefs")
+        add(base + "/0/shared_prefs")
     return dirs
 
 
@@ -831,7 +938,119 @@ def render_json(token, jwe, port, uid=None, channel=None):
 
 
 # ----------------------------------------------------------------- 子命令
+def resolve_pkg(device, pkg):
+    """把包名解析成「设备上真实存在 prefs 的那个」。
+
+    真机多开容器里源 App 的子包名和默认值不一样（如
+    /data/user/12/top.bienvenido.saas.i18n/app_split/com.jhtycjujslsz.kpkprhqkgmwcpwbkt），
+    用户不一定记得子包名 —— 这里自动在容器子包里认领:
+
+      1) 精确包名直接命中 → 用它
+      2) 否则在候选里挑「shared_prefs 里真的有 flutter.MAINUSER_DATA」的
+         （这是源 App 的身份指纹, 别的 App 不会有）
+      3) 多个/零个候选都列出来让用户 --pkg 指定, 不瞎猜
+    """
+    hits, exact = find_installs(device, pkg)
+    if exact:
+        return pkg, True
+    adb = Adb(device)
+
+    scored = []          # (child, base, rank)  rank: 2=有MAINUSER_DATA 1=有Flutter 0=只有xml
+    for cand, base in hits:
+        rank, where = 0, None
+        for d in (base + "/shared_prefs", base + "/0/shared_prefs"):
+            try:
+                listing = adb.sudo("ls -1 %s/ 2>/dev/null" % d, timeout=15)
+            except SuError:
+                continue
+            xmls = [f.strip() for f in listing.splitlines() if f.strip().endswith(".xml")]
+            if not xmls:
+                continue
+            rank = max(rank, 1)
+            has_main = False
+            for fn in xmls:
+                try:
+                    content = adb.sudo("cat %s/%s" % (d, fn), timeout=25)
+                except SuError:
+                    continue
+                if "flutter.MAINUSER_DATA" in content:
+                    has_main = True
+                    break
+            if has_main:
+                rank, where = 2, d
+                break
+        scored.append((cand, base, rank, where))
+
+    best = [s for s in scored if s[2] == 2]
+    if len(best) == 1:
+        cand, base, _, where = best[0]
+        _print("[*] 未找到 %s 的数据目录, 自动认领容器子包 %s" % (pkg, cand))
+        _print("    (%s)" % where)
+        return cand, True
+    if scored:
+        _print("[!] 没找到 %s 的 shared_prefs。设备上扫到这些候选, 用 --pkg 指定:" % pkg)
+        for cand, base, rank, where in sorted(scored, key=lambda s: -s[2]):
+            mark = {2: "★ 含 MAINUSER_DATA（最像源 App）",
+                    1: "  含 Flutter prefs",
+                    0: "  只有零散 xml"}[rank]
+            _print("      --pkg %s" % cand)
+            _print("          %s | %s" % (mark, base))
+    else:
+        _print("[!] 设备上既没有 %s 的数据目录, 也没扫到任何多开容器子包。" % pkg)
+    return pkg, False
+
+
+def cmd_installs(device, pkg):
+    """列出设备上所有可能的源 App 安装位（普通/工作资料/多开容器）。"""
+    adb = Adb(device)
+    if device is None:
+        device = ensure_device(adb)
+        if device is None:
+            return 1
+    _print("设备: %s" % device)
+    _print("目标包名: %s" % pkg)
+    try:
+        if not adb.root_ok():
+            _print("[!] root 不可用, 扫不了 /data 下的目录")
+            return 1
+    except SuError as e:
+        _print("[!] %s" % e)
+        return 1
+    hits, exact = find_installs(device, pkg)
+    _print("")
+    _print("── 数据目录 (%d) ──" % len(hits))
+    adb2 = Adb(device)
+    for cand, base in hits:
+        marks = []
+        for d in (base + "/shared_prefs", base + "/0/shared_prefs"):
+            try:
+                listing = adb2.sudo("ls -1 %s/ 2>/dev/null" % d, timeout=15)
+            except SuError:
+                continue
+            xmls = [f.strip() for f in listing.splitlines() if f.strip().endswith(".xml")]
+            if xmls:
+                marks.append("%s (%d xml%s)" % (
+                    d,
+                    len(xmls),
+                    ", 有 FlutterSharedPreferences" if "FlutterSharedPreferences.xml" in xmls else ""))
+        tag = "精确匹配" if cand == pkg else "容器子包"
+        _print("  [%s] %s" % (tag, cand))
+        _print("        %s" % base)
+        for m in marks:
+            _print("        ✓ %s" % m)
+    if not hits:
+        _print("  (没有。确认设备 root 且源 App 至少启动过一次)")
+        return 1
+    return 0
+
+
 def cmd_dump(device, pkg):
+    adb = Adb(device)
+    if device is None:
+        device = ensure_device(adb)
+        if device is None:
+            return 1
+    pkg, ok = resolve_pkg(device, pkg)
     merged, _ = read_prefs(device, pkg)
     if not merged:
         return 1
@@ -885,14 +1104,14 @@ def cmd_diagnose(device, pkg):
     return 0 if ok else 1
 
 
-def cmd_export(device, pkg, no_probe, out_file, no_capture):
+def cmd_export(device, pkg, no_probe, out_file, no_capture, manual_connect=None):
     adb = Adb(device)
 
-    # 0) 先把设备/root 定下来, 免得后面每个调用各失败一次还互相盖住原因
+    # 0) 先把设备/root/包名定下来, 免得后面每个调用各失败一次还互相盖住原因
     if device is None:
-        device = pick_device(adb)
+        device = ensure_device(adb, manual_connect)
         if device is None:
-            _print("[!] 没有在线设备。先 `adb devices` 确认设备已连接并已授权。")
+            _print("[!] 拿不到可用设备。真机插线 / MuMu 开 ADB 调试, 或 --connect 127.0.0.1:端口。")
             return 1
     try:
         if not adb.root_ok():
@@ -901,6 +1120,11 @@ def cmd_export(device, pkg, no_probe, out_file, no_capture):
             return 1
     except SuError as e:
         _print("[!] %s" % e)
+        return 1
+    # 多开容器子包名可能与默认包名不同, 自动解析一次
+    pkg, resolved = resolve_pkg(device, pkg)
+    if not resolved:
+        _print("    跑 `token_export.py installs` 看设备上到底装在哪。")
         return 1
 
     # 1) prefs: 拿 JWE (长期密钥), 顺便看看有没有落盘的 token
@@ -1045,6 +1269,7 @@ def main():
     no_probe = False
     no_capture = False
     out_file = None
+    connect = None
     positional = []
 
     i = 0
@@ -1054,6 +1279,8 @@ def main():
             device = rest[i + 1]; i += 2
         elif a == "--pkg":
             pkg = rest[i + 1]; i += 2
+        elif a == "--connect":
+            connect = rest[i + 1]; i += 2
         elif a == "--no-probe":
             no_probe = True; i += 1
         elif a == "--no-capture":
@@ -1071,13 +1298,15 @@ def main():
         return cmd_capture(device, pkg)
     if cmd == "diagnose":
         return cmd_diagnose(device, pkg)
+    if cmd == "installs":
+        return cmd_installs(device, pkg)
     if cmd == "from-file":
         if not positional:
             _print("[!] from-file 需要一个 xml 路径")
             return 2
         return cmd_from_file(positional[0])
     if cmd == "export":
-        return cmd_export(device, pkg, no_probe, out_file, no_capture)
+        return cmd_export(device, pkg, no_probe, out_file, no_capture, connect)
     _print(__doc__)
     return 2
 
