@@ -12,6 +12,11 @@ import com.tm.live.data.Room
 import com.tm.live.data.RoomRepo
 import com.tm.live.data.SourceData
 import com.tm.live.data.SourceMeta
+import com.tm.live.data.xhm.XhmChatClient
+import com.tm.live.data.xhm.XhmFollowStore
+import com.tm.live.data.xhm.XhmPrefs
+import com.tm.live.data.xhm.XhmRepo
+import com.tm.live.data.xhm.XhmRoom
 import com.tm.live.player.PlayerHolder
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -23,6 +28,17 @@ import kotlinx.coroutines.sync.withLock
 
 enum class Tab(val label: String) {
     HOME("首页"), FOLLOW("关注"), SETTINGS("设置")
+}
+
+/**
+ * 左侧抽屉里的平台切换。
+ *
+ * TM = 天美（本 App 的原始数据源，隧道体系）；XHM = 小红帽（api.xt2.club，REST/WS 直连）。
+ * 两个平台共用底部三个 tab 和同一个 ExoPlayer，但列表/关注/聊天完全各管各的。
+ */
+enum class Platform(val label: String, val subtitle: String) {
+    TM("看天美", "隧道直连 · 房间快照"),
+    XHM("看小红帽", "api.xt2.club · 实时直播")
 }
 
 /**
@@ -430,6 +446,127 @@ class AppContainer(context: Context) {
             kiwiAutoState = v
             prefs.kiwiAuto = v
         }
+
+    // ======================= 平台切换（左侧抽屉） =======================
+
+    /** 当前平台。抽屉切换，切平台时另一边的播放页必须先关掉（全 App 只有一个 ExoPlayer） */
+    var platform by mutableStateOf(Platform.TM)
+
+    /**
+     * 抽屉打开信号。HomeScreen 的汉堡按钮 `drawerTick++`，
+     * RootScreen 监听它调 drawerState.open() —— DrawerState 是 compose 本地状态，
+     * 挂在容器里反而要跨层传，用自增序号当事件最省事。
+     */
+    var drawerTick by mutableStateOf(0)
+        private set
+
+    fun requestDrawer() { drawerTick++ }
+
+    // ---- 小红帽（XHM）数据层 ----
+    val xhmPrefs = XhmPrefs(prefs)
+    val xhmRepo = XhmRepo(this.context, xhmPrefs)
+    val xhmFollows = XhmFollowStore(prefs)
+    /** 小红帽聊天（弹幕）客户端：全 App 一个，进房 connect / 退房 close */
+    val xhmChat = XhmChatClient(xhmPrefs)
+
+    var xhmRooms by mutableStateOf<List<XhmRoom>>(emptyList())
+    var xhmCats by mutableStateOf<List<String>>(emptyList())
+    var xhmLoading by mutableStateOf(false)
+    var xhmError by mutableStateOf<String?>(null)
+    var xhmLoadedOnce by mutableStateOf(false)
+    /** 当前选中的分类，空 = 全部 */
+    var xhmCat by mutableStateOf("")
+
+    /** 小红帽播放页的房间序列与下标（与 TM 的 playlist/openIndex 平行） */
+    var xhmPlaylist by mutableStateOf<List<XhmRoom>>(emptyList())
+    var xhmOpenIndex by mutableStateOf(-1)
+
+    /** 小红帽关注操作的结果提示（同 TM 的 followSync 机制） */
+    var xhmFollowSync by mutableStateOf<String?>(null)
+        private set
+    var xhmFollowSyncSeq by mutableStateOf(0)
+        private set
+
+    /** 本地关注变更信号：关注页/列表星标用它触发重组 */
+    var xhmFollowVersion by mutableStateOf(0)
+        private set
+
+    fun consumeXhmFollowSync() { xhmFollowSync = null }
+
+    /**
+     * 小红帽关注/取关：**先落本机，再打接口**。
+     *
+     * 和 TM 的区别：小红帽读写同域，token 有效时接口大概率真通 ——
+     * 接口成功 =「已关注」；接口失败（无 token / 路由不对）=「已关注（仅本机）」。
+     * 本机那份永远保留，接口成败只影响文案，不影响星标状态。
+     */
+    fun xhmToggleFollow(room: XhmRoom) {
+        val willFollow = room.id !in xhmFollows.ids()
+        xhmFollows.setFollowed(room, willFollow)
+        xhmFollowVersion++
+        xhmFollowSync = if (willFollow) "已关注" else "已取消关注"
+        xhmFollowSyncSeq++
+        scope.launch(Dispatchers.IO) {
+            val ok = runCatching { xhmRepo.syncFollow(room.id, willFollow) }.getOrDefault(false)
+            xhmFollowSync = when {
+                !willFollow && ok -> "已取消关注（服务端已确认）"
+                willFollow && ok -> "已关注（服务端已确认）"
+                willFollow -> "已关注（仅本机）"
+                else -> "已取消关注（仅本机）"
+            }
+            xhmFollowSyncSeq++
+        }
+    }
+
+    /** 进小红帽平台时拉一次数据（缓存先出，网络再盖） */
+    fun xhmBootstrap() {
+        if (xhmLoadedOnce) return
+        xhmLoadedOnce = true
+        scope.launch {
+            xhmLoading = true
+            xhmRepo.fetchHome().onSuccess { data ->
+                xhmRooms = data.rooms
+                xhmCats = data.categories.map { it.name }
+            }.onFailure { e ->
+                xhmError = e.message
+            }
+            xhmLoading = false
+        }
+    }
+
+    /** 手动刷新小红帽列表 */
+    fun xhmReload() {
+        scope.launch {
+            xhmLoading = true
+            xhmError = null
+            xhmRepo.fetchHome().onSuccess { data ->
+                xhmRooms = data.rooms
+                xhmCats = data.categories.map { it.name }
+            }.onFailure { e -> xhmError = e.message }
+            xhmLoading = false
+        }
+    }
+
+    /** 打开小红帽播放页。TM 的播放页如果开着会被一起关掉（单 ExoPlayer） */
+    fun xhmOpenPlayer(list: List<XhmRoom>, index: Int) {
+        if (list.isEmpty()) return
+        if (openIndex >= 0) closePlayer()
+        xhmPlaylist = list
+        xhmOpenIndex = index.coerceIn(0, list.size - 1)
+    }
+
+    fun xhmClosePlayer() {
+        xhmOpenIndex = -1
+        xhmChat.close()
+        player.pause()
+    }
+
+    /** 按分类筛过的小红帽列表（首页展示与播放序列共用同一份筛序） */
+    fun xhmFilteredRooms(): List<XhmRoom> {
+        val cat = xhmCat
+        val base = if (cat.isBlank()) xhmRooms else xhmRooms.filter { it.cat == cat }
+        return base.sortedByDescending { it.online }
+    }
 
     fun openPlayer(list: List<Room>, index: Int) {
         if (list.isEmpty()) return

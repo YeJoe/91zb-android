@@ -128,6 +128,13 @@ fun SettingsScreen(c: AppContainer) {
     // 内置隧道
     var appKey by remember { mutableStateOf(prefs.kiwiAppKey) }
 
+    // 小红帽（XHM）平台会话
+    var xhmToken by remember { mutableStateOf(prefs.xhmToken) }
+    var xhmUserId by remember { mutableStateOf(prefs.xhmUserId) }
+    var xhmBase by remember { mutableStateOf(prefs.xhmBaseUrl) }
+    var xhmImg by remember { mutableStateOf(prefs.xhmImgBase) }
+    var xhmDemo by remember { mutableStateOf(prefs.xhmDemo) }
+
     // 分页：-1 = 分类列表，0..5 = 各分类详情。设置项太多，一屏全铺开找不到东西，
     // 所以主页只留六行「类别 + 当前状态摘要」，点进去才展开。
     var page by rememberSaveable { mutableStateOf(-1) }
@@ -156,6 +163,11 @@ fun SettingsScreen(c: AppContainer) {
     val dmSummary = c.danmaku.status.ifBlank { "未开始" } + " · 已收 " + c.danmaku.liveCount + " 条"
     val followSummary = "服务端 " + c.serverFollowIds.size
     val themeSummary = listOf("跟随系统", "深色", "浅色")[c.themeMode.coerceIn(0, 2)]
+    val xhmSummary = when {
+        prefs.xhmDemo -> "演示数据（未配置会话）"
+        prefs.xhmToken.isBlank() -> "演示数据（token 为空）"
+        else -> "已配置会话 · " + (if (c.xhmRooms.isEmpty()) "列表未拉取" else "${c.xhmRooms.size} 个房间")
+    }
 
     Box(Modifier.fillMaxSize()) {
         Column(
@@ -186,6 +198,8 @@ fun SettingsScreen(c: AppContainer) {
                 Spacer(Modifier.height(8.dp))
                 SettingEntry("外观", themeSummary) { page = 4 }
                 Spacer(Modifier.height(8.dp))
+                SettingEntry("小红帽", xhmSummary) { page = 6 }
+                Spacer(Modifier.height(8.dp))
                 SettingEntry("关于", "TM Live " + c.versionName) { page = 5 }
             } else {
                 // 详情页：返回 + 本页标题，再走原来的 Section 卡片
@@ -203,7 +217,7 @@ fun SettingsScreen(c: AppContainer) {
                         color = MaterialTheme.colorScheme.primary
                     )
                 }
-                val pageTitle = listOf("直播源与隧道", "播放", "弹幕", "关注", "外观", "关于")
+                val pageTitle = listOf("直播源与隧道", "播放", "弹幕", "关注", "外观", "关于", "小红帽")
                     .getOrElse(page) { "设置" }
                 Text(
                     pageTitle,
@@ -846,6 +860,96 @@ fun SettingsScreen(c: AppContainer) {
                         Spacer(Modifier.height(4.dp))
                         InfoLine(ApkInstaller.scanHint(ctx))
                         InfoLine("Android 8 以上第一次会先跳到「安装未知应用」，允许后回来再点一次。")
+                    }
+                }
+
+                if (page == 6) {
+                    // ---------- 小红帽会话 ----------
+                    Section("小红帽会话（api.xt2.club）") {
+                        InfoLine(
+                            "小红帽平台默认用**演示数据**（列表/播放/聊天全链路可玩，但不是真直播）。" +
+                                "把小红帽 App 的会话 token 粘到下面并关掉演示开关，即为真实接口：" +
+                                "列表、拉流、聊天、接口关注全部走 api.xt2.club。"
+                        )
+                        Spacer(Modifier.height(6.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("演示模式（内置样例数据）", fontSize = 13.sp, modifier = Modifier.weight(1f))
+                            Switch(
+                                checked = xhmDemo,
+                                onCheckedChange = {
+                                    xhmDemo = it
+                                    prefs.xhmDemo = it
+                                }
+                            )
+                        }
+                        Spacer(Modifier.height(6.dp))
+                        OutlinedTextField(
+                            value = xhmToken,
+                            onValueChange = { xhmToken = it; prefs.xhmToken = it },
+                            label = { Text("会话 token（jwt_token）") },
+                            placeholder = { Text("抓包里的 jwt_token 查询参数 / Bearer 头的值") },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true,
+                            shape = RoundedCornerShape(12.dp)
+                        )
+                        InfoLine(
+                            if (xhmToken.isBlank()) "空 = 聊天/关注走本机与模拟，拉流接口大概率 401。"
+                            else "已配置（${xhmToken.trim().length} 字符）。关注会先落本机、再打 /relation/follow 接口。"
+                        )
+                        Spacer(Modifier.height(6.dp))
+                        OutlinedTextField(
+                            value = xhmUserId,
+                            onValueChange = { xhmUserId = it; prefs.xhmUserId = it },
+                            label = { Text("用户 id（取流/关注接口用）") },
+                            placeholder = { Text("小红帽账号的数字 id，可留空") },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true,
+                            shape = RoundedCornerShape(12.dp)
+                        )
+                        Spacer(Modifier.height(6.dp))
+                        OutlinedTextField(
+                            value = xhmBase,
+                            onValueChange = { xhmBase = it; prefs.xhmBaseUrl = it },
+                            label = { Text("API 基址") },
+                            placeholder = { Text("https://api.xt2.club") },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true,
+                            shape = RoundedCornerShape(12.dp)
+                        )
+                        InfoLine("主域会随服务端调度变化（防封），换域名时只改这里。WS 聊天地址按它推导（https→wss）。")
+                        Spacer(Modifier.height(6.dp))
+                        OutlinedTextField(
+                            value = xhmImg,
+                            onValueChange = { xhmImg = it; prefs.xhmImgBase = it },
+                            label = { Text("图床基址（封面/头像相对路径的补全前缀）") },
+                            placeholder = { Text("留空 = 不补全，直接用接口给的地址") },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true,
+                            shape = RoundedCornerShape(12.dp)
+                        )
+                        Spacer(Modifier.height(10.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(
+                                onClick = {
+                                    // 强制重拉：清掉 loadedOnce 标记再走 bootstrap
+                                    c.xhmReload()
+                                    toast = "小红帽列表已刷新"
+                                },
+                                shape = RoundedCornerShape(12.dp)
+                            ) { Text("刷新小红帽列表") }
+                            Button(
+                                onClick = {
+                                    xhmToken = ""
+                                    prefs.xhmToken = ""
+                                    toast = "会话已清空（回到演示数据）"
+                                },
+                                shape = RoundedCornerShape(12.dp)
+                            ) { Text("清空会话") }
+                        }
+                        InfoLine(
+                            "拉流是防盗链 RTMP（约 3 分钟时效），进房时实时向接口要；" +
+                                "聊天走 wss://<API基址>/ws?jwt_token=…。"
+                        )
                     }
                 }
             }
