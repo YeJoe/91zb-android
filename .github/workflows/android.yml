@@ -109,7 +109,7 @@ jobs:
             fi
             echo ""
             echo "- 版本：${APP_VERSION_NAME} (${APP_VERSION_CODE})"
-            echo "- 签名：${{ steps.sign.outputs.signed == 'true' && 'release keystore' || 'debug（可直接安装，不能覆盖升级）' }}"
+            echo "- 签名：${{ steps.sign.outputs.signed == 'true' && '统一 keystore（debug/release 同签，可直接覆盖升级）' || 'debug 默认签名（无 keystore，不能覆盖升级，需先配 KEYSTORE_BASE64）' }}"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-artifact@v4

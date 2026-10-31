@@ -591,43 +591,22 @@ class LiveRepo(private val context: Context, private val prefs: Prefs) {
     /**
      * 关注 / 取消关注（**尽力而为**）。
      *
-     * ## 接口身份是确定的：`/relationship/add` / `/relationship/remove`
+     * ## 现状（2026-10-31 复查结论，别再来一遍）
+     * 明文隧道里**没有** `/relationship/add|remove` 这条路由：17 个 listener 全回网关兜底的
+     * `{"code":0}`（看着像成功），`my_follow` 条数一条没变。写接口只在 `/go/` 加密通道上，
+     * 那条通道要另一套 go 侧 session，当前够不到。
      *
-     * 从 blutter 产物（`tianmei/outdir` 的 pp.txt）挖出的真值：
+     * 所以这里**只试一次写、不等复查**：
+     *  - post 到未知路径会让 Dart 单 isolate 服务端挂起，给 2.5s 短超时兜底；
+     *  - 不再拉全量 `my_follow` 复查（真号 304 条要 4~5 秒，纯浪费，且当前架构下必失败）；
+     *  - 网关对未知路径也回 `{"code":0}` 骗人，所以宁可如实返回 false，让 UI 标「仅本机」，
+     *    也不要凭一个 code=0 谎报关注成功。
      *
-     * ```
-     * /relationship/add     POST { userId, followeeId, channelId } → AddFollowReply
-     * /relationship/remove  POST { userId, followeeId, channelId } → RemoveFollowReply
-     * ```
+     * 想真打通得从源 App 的加密通道取会话（Frida / 逆密钥派生），不是改这里。
      *
-     * 证据（pp+0x59d58 / pp+0x59cd0）：
-     * ```
-     * "RelationshipMgr.addFollow: "
-     * "/relationship/add"
-     * "Relationship.addFollow method:POST Not defined!"
-     * "@@@@@@@@@@@@@ go api:addFollow "
-     * String: "关注成功" / "取消关注失败: "
-     * List(11) [0, 0x4, 0x3, 0x1, "channelId", 0x3, "followeeId", 0x2, "userId", 0x1, Null]
-     * ```
-     *
-     * ## 但这个接口**在明文隧道里打不到**（2026-10-31 实测，别再来一遍）
-     *
-     * 判据和全量扫描结果见 `docs/关注写接口-实测结论-2026-10-31.md`：
-     * 17 个 listener 上 `/relationship/add` 和它的 5 种变体全部回网关兜底的
-     * `{"code":0}`，`my_follow` 条数一条都没变。它只挂在 `/go/` 加密通道上
-     * （日志里那句 `go api:addFollow` 就是线索），而那条通道要另一套 go 侧 session。
-     *
-     * 所以这里保留调用只是"万一哪天通了"的伏笔，**返回值必须以复查 `my_follow` 为准**：
-     * 写完不复查就等于自欺（服务端对未知路径也回 `{"code":0}`，看着像成功）。
-     *
-     * 另外两个细节别踩：
-     *  1. `user_follow` 模块（pp.txt 里只有 5 条路径）**根本没有 add/cancel_follow**，
-     *     那是早期猜的路径。
-     *  2. 参数名是全小写驼峰 **`followeeId`**（双 e），不是 `podcast_id`。
-     *
-     * @param podcastId 房间号（`podcast_id` 与房间 id 同一命名空间，已实测 8/8 命中）
+     * @param podcastId 房间号（与 `podcast_id` 同空间，服务端按 `followeeId` 收）
      * @param wantFollow true=关注 / false=取消关注
-     * @return 服务端状态是否确实变成了 [wantFollow]（当前几乎必然 false，调用方要能接受）
+     * @return 服务端状态是否确实变成 [wantFollow]（当前几乎必然 false，调用方要能接受）
      */
     suspend fun syncFollow(podcastId: Long, wantFollow: Boolean): Boolean = withContext(Dispatchers.IO) {
         val port = runCatching { probePort(sample = idPool().firstOrNull()) }.getOrNull() ?: 0
@@ -635,31 +614,15 @@ class LiveRepo(private val context: Context, private val prefs: Prefs) {
 
         // 关注对象 = 主播的用户 id。podcast_id 与房间号同空间，服务端按 followeeId 收。
         val body = JSONObject()
-            .put("userId", myUserId())                 // 自己
-            .put("followeeId", podcastId)              // 关注对象（= 房间号）
-            .put("channelId", prefs.channelId)         // 渠道（ecy）
+            .put("userId", myUserId())            // 自己
+            .put("followeeId", podcastId)         // 关注对象（= 房间号）
+            .put("channelId", prefs.channelId)    // 渠道
 
         val path = if (wantFollow) "/relationship/add" else "/relationship/remove"
-        val resp = runCatching { post(port, path, body.toString()) }.getOrNull()
-
-        // 1) 先服务端直答 code==0 且带成功语义
-        val directOk = resp?.let { r ->
-            r.optInt("code", -1) == 0 && (
-                // add: {"code":0,"result":...} 或 {"code":0,"msg":"关注成功"}
-                r.has("result") || r.optString("msg").let { it.contains("成功") || it.isBlank() }
-                )
-        } ?: false
-
-        // 2) 无论如何都复查一次真实状态 —— 这是唯一可信的判据。
-        //    `/relationship/is_following/` 比拉全量 my_follow 便宜得多，但后者更稳（已实测可用）。
-        //    复查本身打不通（null）时直接判「没成」：宁可让 UI 显示「仅本机」，
-        //    也不能凭一个回不了头的 code=0 谎报关注成功。
-        val ids = pullFollows(port)?.keys ?: return@withContext false
-        val nowFollowed = podcastId in ids
-        if (nowFollowed == wantFollow) return@withContext true
-
-        // 3) 明文通道写不动时（服务端只看 protobuf 隧道），至少如实返回 false
-        directOk && nowFollowed == wantFollow
+        // 明文隧道没有这条路由：试一次写，短超时兜底，不复查（避免 4~5 秒卡 UI）。
+        runCatching { post(port, path, body.toString(), timeout = 2500) }
+        // 无法确认写成功（网关兜底也回 code=0 骗人），如实返回 false。
+        false
     }
 
     /** 当前登录用户 id（`MAINUSER_DATA.id`，缺省 0 = 让服务端按 token 认） */

@@ -33,7 +33,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
-import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -136,12 +135,7 @@ private fun ServerFollowTab(
     live.sortByDescending { it.online }
 
     Box(Modifier.fillMaxSize()) {
-        PullToRefreshBox(
-            isRefreshing = c.refreshing,
-            onRefresh = { /* 由右上角统一触发 */ },
-            modifier = Modifier.fillMaxSize()
-        ) {
-            if (serverIds.isEmpty()) {
+        if (serverIds.isEmpty()) {
                 RefreshFill {
                     Box(Modifier.fillMaxSize().padding(28.dp), contentAlignment = Alignment.Center) {
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -182,7 +176,6 @@ private fun ServerFollowTab(
                     }
                 }
             }
-        }
     }
 }
 

@@ -52,8 +52,27 @@ fun kstr(s: String): String {
 val appVersionName: String = System.getenv("APP_VERSION_NAME") ?: "1.0.0"
 val appVersionCode: Int = (System.getenv("APP_VERSION_CODE") ?: "1").toIntOrNull() ?: 1
 
-// CI 里由 base64 secret 还原出的 keystore 路径；没有就留空 → 走 debug 签名
-val keystorePath: String? = System.getenv("KEYSTORE_FILE")
+// 统一签名：debug 与 release 都用同一把 keystore，
+// 这样无论 CI 还是本机、debug 还是 release，包名和签名都一致 → 永远可以覆盖安装（adb install -r / 系统更新分支）。
+// 来源优先级：① 环境变量 KEYSTORE_FILE（CI 里由 KEYSTORE_BASE64 还原）
+//            ② local.properties 里的 tm.keystore（指向磁盘上的 .jks 路径）
+//            ③ local.properties 里的 tm.keystoreBase64（直接贴 base64，构建期还原成临时文件）
+val keystoreFile: File? = run {
+    val fromEnv = System.getenv("KEYSTORE_FILE")?.takeIf { it.isNotBlank() }?.let { file(it) }
+    if (fromEnv != null && fromEnv.exists()) return@run fromEnv
+    val fromPath = credProps.getProperty("tm.keystore")?.takeIf { it.isNotBlank() }?.let { file(it) }
+    if (fromPath != null && fromPath.exists()) return@run fromPath
+    val fromB64 = credProps.getProperty("tm.keystoreBase64")?.takeIf { it.isNotBlank() }
+    if (fromB64 != null) {
+        val tmp = file(System.getProperty("java.io.tmpdir")).resolve("tm_release.jks")
+        tmp.writeBytes(java.util.Base64.getDecoder().decode(fromB64))
+        return@run tmp
+    }
+    null
+}
+val keystorePass: String? = System.getenv("KEYSTORE_PASSWORD") ?: credProps.getProperty("tm.keystorePassword")
+val keyAliasVal: String? = System.getenv("KEY_ALIAS") ?: credProps.getProperty("tm.keyAlias")
+val keyPass: String? = System.getenv("KEY_PASSWORD") ?: credProps.getProperty("tm.keyPassword")
 
 android {
     namespace = "com.tm.live"
@@ -90,25 +109,23 @@ android {
     }
 
     signingConfigs {
-        if (keystorePath != null) {
-            create("release") {
-                storeFile = file(keystorePath)
-                storePassword = System.getenv("KEYSTORE_PASSWORD")
-                keyAlias = System.getenv("KEY_ALIAS")
-                keyPassword = System.getenv("KEY_PASSWORD")
+        if (keystoreFile != null && keystoreFile.exists() && !keystorePass.isNullOrBlank() && !keyAliasVal.isNullOrBlank()) {
+            create("shared") {
+                storeFile = keystoreFile
+                storePassword = keystorePass
+                keyAlias = keyAliasVal
+                keyPassword = keyPass ?: keystorePass
             }
         }
     }
 
     buildTypes {
         debug {
-            // **不要**加 applicationIdSuffix。
-            //
-            // 原来这里是 `applicationIdSuffix = ".debug"`，包名会变成
-            // `com.tm.live.debug` —— 与已装的 `com.tm.live` 是两个不同应用，
-            // `adb install -r` 必然报 INSTALL_FAILED_UPDATE_INCOMPATIBLE，只能先卸载。
-            // 目标是「新包直接覆盖旧包」，所以 debug 与 release 必须同包名同签名。
+            // **不要**加 applicationIdSuffix（否则包名变 com.tm.live.debug，与已装的是两个应用，
+            // 只能先卸载）。目标始终是「新包直接覆盖旧包」：同包名 + 同签名。
             versionNameSuffix = "-debug"
+            // debug 也用同一把 keystore → 本机 Android Studio 跑出来的包能直接覆盖 CI 装的 release 包
+            signingConfigs.findByName("shared")?.let { signingConfig = it }
         }
         release {
             isMinifyEnabled = true
@@ -117,9 +134,7 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
-            if (keystorePath != null) {
-                signingConfig = signingConfigs.getByName("release")
-            }
+            signingConfigs.findByName("shared")?.let { signingConfig = it }
         }
     }
 

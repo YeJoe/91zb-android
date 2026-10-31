@@ -530,28 +530,25 @@ class AppContainer(context: Context) {
     fun toggleFollow(room: Room) {
         val willFollow = room.id !in followIdSet()
 
-        // 本机先落：这是"一定生效"的那一份
+        // 本机先落：这是"一定生效"的那一份，立刻给反馈（不等服务端，避免 4~5 秒才弹提示）
         follows.setFollowed(room, willFollow)
-        // 乐观更新：立刻变星标
         pendingFollows = pendingFollows + (room.id to willFollow)
+        followSync = if (willFollow) "已关注" else "已取消关注"
+        followSyncSeq++
 
         scope.launch(Dispatchers.IO) {
+            // syncFollow 现在立刻返回 false（明文隧道写不动，见 LiveRepo 注释），不再卡住 UI
             val ok = runCatching { live.syncFollow(room.id, willFollow) }.getOrDefault(false)
+            pendingFollows = pendingFollows - room.id
             if (ok) {
-                // 服务端已确认：用快照补齐（别的设备上关注的也能进来）
+                // 服务端真通了：用快照补齐（别的设备关注的也能进来）
                 runCatching { live.pullFollowSnapshot() }.getOrNull()?.let { (ids, names) ->
                     applyFollowSnapshot(ids, names)
                 }
-                pendingFollows = pendingFollows - room.id
+                followSync = if (willFollow) "已关注" else "已取消关注"
             } else {
-                // 服务端写不动，但本机已经生效 —— 不清 pending，界面保持用户点的那一下
-                pendingFollows = pendingFollows - room.id
-            }
-            followSync = when {
-                willFollow && ok -> "已关注"
-                willFollow -> "已关注（仅本机）"
-                ok -> "已取消关注"
-                else -> "已取消关注（仅本机）"
+                // 本机已生效，服务端写不动 → 补「仅本机」后缀（稍后到达即可，不阻塞）
+                followSync = if (willFollow) "已关注（仅本机）" else "已取消关注（仅本机）"
             }
             followSyncSeq++
         }
@@ -560,6 +557,9 @@ class AppContainer(context: Context) {
     fun unfollow(id: Long) {
         follows.remove(id)
         pendingFollows = pendingFollows + (id to false)
+        // 立刻给反馈
+        followSync = "已取消关注"
+        followSyncSeq++
         scope.launch(Dispatchers.IO) {
             val ok = runCatching { live.syncFollow(id, false) }.getOrDefault(false)
             if (ok) {
