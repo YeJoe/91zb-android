@@ -225,53 +225,6 @@ class Prefs(context: Context) {
         get() = sp.getString(K_FOLLOW, "") ?: ""
         set(v) = sp.edit().putString(K_FOLLOW, v).apply()
 
-    // ---- 本地关注的云同步（GitHub Gist）----
-    /**
-     * 同步用的 GitHub Personal Access Token（只需 `gist` 权限）。
-     *
-     * 走 Keystore 加密存。**不要**把它写进源码或 `local.properties` ——
-     * PAT 比 JWE 更危险，它能改用户整个 Gist 空间，泄漏了得手动去 GitHub 撤销。
-     */
-    var ghToken: String
-        get() = Secure.get(sp, K_GH_TOKEN)
-        set(v) = Secure.put(sp, K_GH_TOKEN, v.trim())
-
-    /** 同步目标 Gist id（首次推送成功后自动回填，之后就一直更新这一个） */
-    var ghGistId: String
-        get() = sp.getString(K_GH_GIST, "") ?: ""
-        set(v) = sp.edit().putString(K_GH_GIST, v.trim()).apply()
-
-    /** 前台自动同步。默认开：本地关注最大的价值就是跨设备一致 */
-    var syncAuto: Boolean
-        get() = sp.getBoolean(K_SYNC_AUTO, true)
-        set(v) = sp.edit().putBoolean(K_SYNC_AUTO, v).apply()
-
-    /**
-     * 自动同步间隔（秒），默认 30。
-     *
-     * 为什么不更快：Gist 没有推送通道，只能轮询。30 秒 ≈ 120 次/小时，
-     * 带 ETag 的请求大部分是 304，既够"接近实时"，也离 GitHub 的
-     * 5000 次/小时配额很远（按天算也才 2880 次）。
-     */
-    var syncSec: Int
-        get() = sp.getInt(K_SYNC_SEC, 30).coerceIn(10, 3600)
-        set(v) = sp.edit().putInt(K_SYNC_SEC, v.coerceIn(10, 3600)).apply()
-
-    /** 上次同步成功的时刻（毫秒），0 = 从没成功过 */
-    var syncAt: Long
-        get() = sp.getLong(K_SYNC_AT, 0L)
-        set(v) = sp.edit().putLong(K_SYNC_AT, v).apply()
-
-    /** 上次同步的一句话结果，设置页/关注页直接显示 */
-    var syncMsg: String
-        get() = sp.getString(K_SYNC_MSG, "") ?: ""
-        set(v) = sp.edit().putString(K_SYNC_MSG, v).apply()
-
-    /** 上次同步时服务端那份的 ETag：一致就说明没人改过，省一次下载 */
-    var syncEtag: String
-        get() = sp.getString(K_SYNC_ETAG, "") ?: ""
-        set(v) = sp.edit().putString(K_SYNC_ETAG, v).apply()
-
     // ---- 自研隧道（内置云层 SDK，不再依赖源 App 常驻）----
     /**
      * 云层 SDK 的 appKey。SDK 的 `Init(String appkey)` 只认这一个参数，
@@ -319,13 +272,6 @@ class Prefs(context: Context) {
         const val K_NEARBY_CITY = "nearby_city"
         const val K_GRID_COLS = "grid_cols"
         const val K_FOLLOW = "follow_json"
-        const val K_GH_TOKEN = "gh_token"
-        const val K_GH_GIST = "gh_gist_id"
-        const val K_SYNC_AUTO = "sync_auto"
-        const val K_SYNC_SEC = "sync_sec"
-        const val K_SYNC_AT = "sync_at"
-        const val K_SYNC_MSG = "sync_msg"
-        const val K_SYNC_ETAG = "sync_etag"
         const val K_KIWI_KEY = "kiwi_app_key"
         const val K_KIWI_AUTO = "kiwi_auto"
         const val K_SOURCE_TUNNEL = "source_tunnel"

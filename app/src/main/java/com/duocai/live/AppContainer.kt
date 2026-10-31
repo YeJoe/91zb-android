@@ -6,7 +6,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import com.tm.live.data.DanmakuStore
 import com.tm.live.data.FollowStore
-import com.tm.live.data.FollowSync
 import com.tm.live.data.LiveRepo
 import com.tm.live.data.Prefs
 import com.tm.live.data.Room
@@ -283,73 +282,9 @@ class AppContainer(context: Context) {
         }
     }
 
-    // ---- 本地关注的 GitHub 同步（Gist，双向合并） ----
-    /**
-     * 同步状态：UI 直接观察这两个就行。
-     * [syncBusy] 正在请求中；[syncMsg] 最近一次结果文案（同时落了 [Prefs.syncMsg]）。
-     */
-    var syncBusy by mutableStateOf(false)
-        private set
-    var syncMsg by mutableStateOf(prefs.syncMsg)
-        private set
-
-    private val syncMutex = Mutex()
-
-    /** 手动触发一次「推+拉」同步。已在同步中则忽略。 */
-    fun syncNow() {
-        scope.launch(Dispatchers.IO) {
-            if (!syncMutex.tryLock()) return@launch
-            try {
-                syncBusy = true
-                FollowSync.sync(prefs, follows, pushFirst = true)
-                syncMsg = prefs.syncMsg
-            } finally {
-                syncBusy = false
-                syncMutex.unlock()
-            }
-        }
-    }
-
-    /** 只上传不拉取（「上传」按钮） */
-    fun pushNow() {
-        scope.launch(Dispatchers.IO) {
-            if (!syncMutex.tryLock()) return@launch
-            try {
-                syncBusy = true
-                FollowSync.push(prefs, follows)
-                syncMsg = prefs.syncMsg
-            } finally {
-                syncBusy = false
-                syncMutex.unlock()
-            }
-        }
-    }
-
-    /** 导出本地关注为 JSON 字符串（分享/剪贴板用，无需 Token） */
+    // ---- 本地关注导出 ----
+    /** 导出本地关注为 JSON 字符串（剪贴板复制 / SAF 另存文件用，无网络依赖） */
     fun exportFollowsJson(): String = follows.exportJson()
-
-    init {
-        // 自动同步循环：间隔由 Prefs.syncSec 控制，仅在「开了自动」且「填了 Token」时跑。
-        // 启动延迟 3 秒，等隧道/网络先就绪，别一启动就打 GitHub。
-        scope.launch {
-            delay(3000)
-            while (true) {
-                if (prefs.syncAuto && prefs.ghToken.isNotBlank()) {
-                    if (syncMutex.tryLock()) {
-                        try {
-                            syncBusy = true
-                            FollowSync.sync(prefs, follows, pushFirst = true)
-                            syncMsg = prefs.syncMsg
-                        } finally {
-                            syncBusy = false
-                            syncMutex.unlock()
-                        }
-                    }
-                }
-                delay(maxOf(10, prefs.syncSec).toLong() * 1000L)
-            }
-        }
-    }
 
     // ---- 设置里会被界面直接读的几项，做成可观察 ----
     // 原先这里还有个 showAd（「显示推广位」）。开关连同 Prefs 字段一起删了：

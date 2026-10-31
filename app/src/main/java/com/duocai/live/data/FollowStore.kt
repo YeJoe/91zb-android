@@ -109,27 +109,6 @@ class FollowStore(private val prefs: Prefs) {
         return arr.toString()
     }
 
-    /**
-     * 把远端（GitHub Gist）拉回来的关注合并进本机。
-     *
-     * 合并规则：按 `id` 求并集，谁的时间戳 `ts` 更新谁胜出。
-     * 这样「设备 A 关注了 X、设备 B 关注了 Y」会在两边都出现 X 和 Y —— 就是「实时同步」的语义。
-     * 本地独有的不会丢（远端没有的 id 不动），远端删掉的也不会把本地删了（这里只加不删，
-     * 避免一台设备误删把别的设备也带崩）。
-     */
-    fun mergeRemote(list: List<Follow>) {
-        var changed = false
-        for (f in list) {
-            if (f.id <= 0L) continue
-            val cur = map[f.id]
-            if (cur == null || f.ts > cur.ts) {
-                map[f.id] = f
-                changed = true
-            }
-        }
-        if (changed) save()
-    }
-
     /** 用一串 Follow 整体覆盖（导入场景用，谨慎调用） */
     fun replaceAll(list: List<Follow>) {
         map.clear()

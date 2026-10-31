@@ -49,8 +49,6 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.input.PasswordVisualTransformation
-import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.tm.live.AppContainer
@@ -772,92 +770,14 @@ fun SettingsScreen(c: AppContainer) {
                         }
                         InfoLine("服务端关注 ${c.serverFollowIds.size} 位 · 本机关注 ${c.follows.all().size} 位")
                         InfoLine("「服务端」是真号 1422303235 在源 App 的关注（只读，写接口走加密协议够不到）。")
-                        InfoLine("「本地」是在本 App 点星标收藏的，可编辑、可导出、可同步到 GitHub Gist 多设备共享。")
+                        InfoLine("「本地」是在本 App 点星标收藏的，可编辑，可复制或导出为 JSON 文件。")
                         InfoLine("点关注 = 本机立刻生效，同时后台仍试一次写接口；写不动会标「仅本机」。")
                         InfoLine("凭证：$jweDesc")
                     }
 
-                    // 本地关注的云同步配置
-                    Section("本地关注 · 云同步（GitHub Gist）") {
-                        // 这些项用局部 state 镜像，避免直接读 prefs 不改触发重组导致开关不回弹
-                        var token by remember { mutableStateOf(c.prefs.ghToken) }
-                        var showToken by remember { mutableStateOf(false) }
-                        var autoSync by remember { mutableStateOf(c.prefs.syncAuto) }
-                        var sec by remember { mutableStateOf(c.prefs.syncSec) }
-                        val syncing = c.syncBusy
-                        val hasToken = token.isNotBlank()
-
-                        OutlinedTextField(
-                            value = token,
-                            onValueChange = { token = it.trim(); c.prefs.ghToken = token },
-                            label = { Text("GitHub Token（只需 gist 权限）") },
-                            placeholder = { Text("ghp_… 或 github_pat_…") },
-                            modifier = Modifier.fillMaxWidth(),
-                            singleLine = true,
-                            visualTransformation = if (showToken) VisualTransformation.None
-                                else PasswordVisualTransformation(),
-                            trailingIcon = {
-                                TextButton(onClick = { showToken = !showToken }) {
-                                    Text(if (showToken) "隐藏" else "显示", fontSize = 11.sp)
-                                }
-                            },
-                            shape = RoundedCornerShape(12.dp)
-                        )
-                        InfoLine(
-                            if (hasToken) {
-                                "Token 已保存（Keystore 加密）。" +
-                                    (if (c.prefs.ghGistId.isNotBlank()) " 同步目标 Gist：${c.prefs.ghGistId}"
-                                     else " 首次同步会自动新建私有 Gist")
-                            } else {
-                                "在 github.com → Settings → Developer settings → Personal access tokens 新建，" +
-                                    "勾选 gist 权限即可；只需这一个范围，泄漏了也动不了主仓库。"
-                            }
-                        )
-                        Spacer(Modifier.height(4.dp))
-                        SwitchLine(
-                            label = "前台自动同步",
-                            desc = "开 = 每 $sec 秒推拉一次（带 ETag，多数请求 304）",
-                            checked = autoSync,
-                            onChange = { autoSync = it; c.prefs.syncAuto = it }
-                        )
-                        val secPresets = listOf(10, 30, 60, 120, 300)
-                        ChipLine(
-                            label = "同步间隔",
-                            options = secPresets.map { "${it}秒" } + "自定义",
-                            selected = secPresets.indexOf(sec).let { if (it < 0) secPresets.size else it },
-                            onSelect = { i ->
-                                if (i < secPresets.size) {
-                                    sec = secPresets[i]
-                                    c.prefs.syncSec = sec
-                                }
-                            }
-                        )
-                        Spacer(Modifier.height(6.dp))
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Button(
-                                onClick = {
-                                    scope.launch { c.syncNow() }
-                                    toast = "同步中…"
-                                },
-                                enabled = hasToken && !syncing,
-                                shape = RoundedCornerShape(12.dp)
-                            ) { Text(if (syncing) "同步中…" else "立即同步") }
-                            Spacer(Modifier.width(8.dp))
-                            if (c.prefs.ghGistId.isNotBlank()) {
-                                TextButton(onClick = {
-                                    c.prefs.ghGistId = ""
-                                    toast = "已清除 Gist 绑定，下次同步会新建"
-                                }) { Text("重置 Gist", fontSize = 12.sp) }
-                            }
-                        }
-                        Spacer(Modifier.height(4.dp))
-                        InfoLine("状态：${c.syncMsg.ifBlank { "尚未同步" }}")
-                        InfoLine(
-                            if (c.prefs.syncAt > 0) "上次成功：" + runCatching {
-                                val s = (System.currentTimeMillis() - c.prefs.syncAt) / 1000
-                                if (s < 60) "${s}秒前" else if (s < 3600) "${s / 60}分钟前" else "${s / 3600}小时前"
-                            }.getOrDefault("—") else "从未成功同步"
-                        )
+                    // 本地关注导出
+                    Section("本地关注 · 导出") {
+                        InfoLine("在关注页「本地」标签顶部：复制图标 = 复制 JSON 到剪贴板；保存图标 = 另存为文件（系统文件选择器，无需存储权限）。")
                         if (c.follows.all().isNotEmpty()) {
                             Spacer(Modifier.height(6.dp))
                             TextButton(onClick = {

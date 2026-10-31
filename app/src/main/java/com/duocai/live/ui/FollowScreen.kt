@@ -2,6 +2,8 @@ package com.tm.live.ui
 
 import android.content.ClipboardManager
 import android.content.Context
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -21,10 +23,9 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.CloudDone
-import androidx.compose.material.icons.filled.CloudUpload
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -55,15 +56,18 @@ import com.tm.live.AppContainer
 import com.tm.live.data.Room
 import com.tm.live.ui.theme.Gold
 import kotlinx.coroutines.launch
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 /**
  * 关注页分两类：
  *  - 服务端关注：真号 1422303235 在服务端关注的人（`/user_follow/my_follow` 的 podcast_id）。
  *    只读 —— 写接口是加密二进制协议，明文层够不到（见 docs/关注写接口-终局结论-2026-10-31.md）。
- *  - 本地关注：在本 App 里点星标收藏的人（`followJson`）。**可编辑、可导出、可同步**。
+ *  - 本地关注：在本 App 里点星标收藏的人（`followJson`）。**可编辑、可复制、可导出**。
  *
- * 同步只作用于「本地关注」：把这份收藏推到 GitHub Gist（raw 可读），跨设备收敛。
- * 服务端关注是账号资产的真相源，不参与同步，也不会被本地操作改写。
+ * 导出只作用于「本地关注」：复制到剪贴板，或用系统另存为（SAF）写成 JSON 文件。
+ * 服务端关注是账号资产的真相源，不参与导出，也不会被本地操作改写。
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -206,7 +210,7 @@ private fun ServerFollowTab(
     }
 }
 
-/** 本地关注：可编辑 + 同步 + 导出，按「全部 / 开播 / 未开播」子 tab 切换 */
+/** 本地关注：可编辑 + 复制/导出，按「全部 / 开播 / 未开播」子 tab 切换 */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun LocalFollowTab(
@@ -230,30 +234,47 @@ private fun LocalFollowTab(
         }
     }
 
+    // SAF「另存为」：用户自己挑目录和文件名，App 不需要任何存储权限
+    val exportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/json")
+    ) { uri ->
+        if (uri != null) {
+            val json = c.exportFollowsJson()
+            runCatching {
+                ctx.contentResolver.openOutputStream(uri)?.use { out ->
+                    out.write(json.toByteArray(Charsets.UTF_8))
+                    out.flush()
+                } ?: error("无法打开输出流")
+                c.toast = "已导出本地关注 JSON（${list.size} 条）"
+            }.onFailure { e ->
+                c.toast = "导出失败：${e.message}"
+            }
+        }
+    }
+
     Column(Modifier.fillMaxSize()) {
-        // 同步控制条
+        // 本地导出条：复制到剪贴板 / 另存为 JSON 文件（无 GitHub 依赖）
         Row(
             Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            IconButton(onClick = { c.syncNow() }, enabled = !c.syncBusy) {
-                if (c.syncBusy) CircularProgressIndicator(strokeWidth = 2.dp, modifier = Modifier.size(18.dp))
-                else Icon(Icons.Filled.CloudDone, contentDescription = "同步", tint = MaterialTheme.colorScheme.primary)
-            }
-            IconButton(onClick = { c.pushNow() }, enabled = !c.syncBusy) {
-                Icon(Icons.Filled.CloudUpload, contentDescription = "上传", tint = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
             IconButton(onClick = {
                 val json = c.exportFollowsJson()
                 val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                 cm.setPrimaryClip(android.content.ClipData.newPlainText("follows", json))
                 android.widget.Toast.makeText(ctx, "已复制 ${list.size} 条本地关注 JSON", android.widget.Toast.LENGTH_SHORT).show()
             }) {
-                Icon(Icons.Filled.Share, contentDescription = "导出", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                Icon(Icons.Filled.ContentCopy, contentDescription = "复制 JSON", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            IconButton(onClick = {
+                val stamp = SimpleDateFormat("yyyyMMdd_HHmm", Locale.US).format(Date())
+                exportLauncher.launch("tm_live_follows_$stamp.json")
+            }) {
+                Icon(Icons.Filled.Save, contentDescription = "导出到本地文件", tint = MaterialTheme.colorScheme.primary)
             }
             Spacer(Modifier.weight(1f))
             Text(
-                if (c.prefs.ghToken.isBlank()) "未设置 Token → 设置页填" else (c.syncMsg.ifBlank { "未同步" }),
+                "${list.size} 位本地关注 · 可复制/导出",
                 fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1, overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.padding(end = 12.dp)
@@ -282,7 +303,7 @@ private fun LocalFollowTab(
                         Text("还没有本地关注", fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onBackground)
                         Spacer(Modifier.height(6.dp))
                         Text(
-                            "在首页/直播页点封面右上角星标就会收藏到这里。\n点「同步」可上传到 GitHub Gist 多设备共享。",
+                            "在首页/直播页点封面右上角星标就会收藏到这里。\n点上方按钮可复制或导出 JSON。",
                             fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
