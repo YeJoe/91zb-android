@@ -29,9 +29,16 @@ class XhmRepo(private val context: Context, private val prefs: XhmPrefs) {
         runCatching {
             if (prefs.demo) return@runCatching XhmDemo.home()
 
-            val text = httpGet("/home")
+            // 2026-10-31 实测：主域已轮换到 api.demoyf.top（防封），房间列表的真实路由是
+            // /OpenAPI/v1/anchor/all（响应 data.list[]，字段 curroomnum/nickname/online/avatar）。
+            // 旧的 /home 是 1.17.1 dex 里的路由，在新主域上 403/404 —— 留作兜底。
+            val text = try {
+                httpGet("/OpenAPI/v1/anchor/all?page=1&size=50&order=time&isPk=0")
+            } catch (e: IOException) {
+                httpGet("/home")
+            }
             val data = parseHome(text)
-                ?: throw IOException("小红帽 /home 解析失败（可能未登录或接口结构变化）")
+                ?: throw IOException("小红帽房间列表解析失败（可能未登录或接口结构变化）")
             writeCache(text)
             data
         }
@@ -40,8 +47,19 @@ class XhmRepo(private val context: Context, private val prefs: XhmPrefs) {
     suspend fun fetchFollowList(): Result<List<XhmRoom>> = withContext(Dispatchers.IO) {
         runCatching {
             if (prefs.demo) return@runCatching XhmDemo.follows()
-            val text = httpGet("/relation/followlist")
-            parseRoomList(text) ?: throw IOException("小红帽关注列表解析失败")
+            // 2026-10-31 实测（有效 token）：
+            //  /OpenAPI/v1/anchor/onlineFriends —— 关注且在播的主播（房间形态，code:0 data:[]），
+            //  /OpenAPI/v1/user/followees      —— 全部关注（用户形态，code:0 data.list[]），
+            //  /user/attention、/myfollow、旧 /relation/* —— 404，已弃。
+            var last: IOException? = null
+            for (route in listOf("/OpenAPI/v1/anchor/onlineFriends", "/OpenAPI/v1/user/followees", "/relation/followlist")) {
+                try {
+                    parseRoomList(httpGet(route))?.let { return@runCatching it }
+                } catch (e: IOException) {
+                    last = e
+                }
+            }
+            throw last ?: IOException("小红帽关注列表解析失败")
         }
     }
 
@@ -75,37 +93,36 @@ class XhmRepo(private val context: Context, private val prefs: XhmPrefs) {
     }
 
     /**
-     * **接口关注**（不是纯本机收藏）。
+     * **接口关注/取关**（不是纯本机收藏）。
      *
-     * 小红帽的关注接口和天美不一样：读写都挂在同一个主域上（没有"读通写不通"的分叉），
-     * 只要会话 token 有效，写接口大概率直接通。dex 里实锤的只有读侧 `/relation/followlist`，
-     * 写侧路由没在字符串表里露面，所以这里按同类命名依次尝试候选路由：
+     * 2026-10-31 用有效 token 实测打通（真机同款请求）：
      *
-     *   `/relation/follow`、`/relation/unfollow`（最可能的一对）
-     *   `/relation/attention`、`/user/follow`（同族兜底）
+     *   关注：`POST /OpenAPI/v1/user/follow`   body `{"uid":"<主播用户id>"}` → `code:0, data:"_ATTENTION_SUCCESS_"`
+     *   取关：`POST /OpenAPI/v1/user/unfollow` body `{"uid":"<主播用户id>"}` → `code:0, data:"_ATTENTION_CANCELED_"`
      *
-     * 请求体也防御式：roomId / userId / follow / type 一并带上，服务端取它认的那个。
-     * 判定"成功"的标准：HTTP 2xx **且** 响应里 code==0 或没有 code 字段（纯 data 包装）。
-     * 全部候选都打不动才返回 false —— 调用方（AppContainer.xhmToggleFollow）据此降级为
+     * 两个坑（都是实测踩出来的）：
+     *  1. body 字段名必须是 **`uid`**（id/userId/toUid/anchorId 全部回 code:1「参数错误」）；
+     *  2. 值是**主播用户 id**（列表项 `id`），不是 curroomnum 房间号 —— 拿房间号会打错人。
+     *
+     * 旧域的 /relation/* 留作兜底。判定成功：HTTP 2xx 且 code==0。
+     * 全部打不动才返回 false —— 调用方（AppContainer.xhmToggleFollow）据此降级为
      * "仅本机"并如实提示，不假装云端成功。
      */
-    suspend fun syncFollow(roomId: Long, follow: Boolean): Result<Boolean> = withContext(Dispatchers.IO) {
+    suspend fun syncFollow(anchorId: Long, follow: Boolean): Result<Boolean> = withContext(Dispatchers.IO) {
         runCatching {
             if (prefs.demo) throw IOException("demo 模式：未配置会话，走本机收藏")
             if (prefs.token.isBlank()) throw IOException("未配置会话 token，走本机收藏")
+            if (anchorId <= 0L) throw IOException("缺主播用户 id（anchorId），无法接口关注")
 
+            // 实测只认 uid；字符串/数字都收，按 App 原样发字符串
             val body = JSONObject().apply {
-                put("roomId", roomId)
-                put("anchorId", roomId)
-                put("userId", prefs.userId)
-                put("follow", follow)
-                put("type", if (follow) 1 else 0)
+                put("uid", anchorId.toString())
             }.toString()
 
             val routes = if (follow) {
-                listOf("/relation/follow", "/relation/attention", "/user/follow")
+                listOf("/OpenAPI/v1/user/follow", "/user/follow", "/relation/follow")
             } else {
-                listOf("/relation/unfollow", "/relation/unattention", "/user/unfollow", "/relation/follow")
+                listOf("/OpenAPI/v1/user/unfollow", "/user/unfollow", "/relation/unfollow")
             }
             var lastMsg = "无候选路由可打"
             for (route in routes) {
@@ -165,9 +182,13 @@ class XhmRepo(private val context: Context, private val prefs: XhmPrefs) {
         val out = ArrayList<XhmRoom>(arr.length())
         for (i in 0 until arr.length()) {
             val o = asObject(arr.opt(i)) ?: continue
-            val id = o.optLong("id", 0L)
-            if (id <= 0L) continue
-            val name = o.optString("name").ifBlank { o.optString("nickname") }.ifBlank { "房间 $id" }
+            // 实测（2026-10-31 抓包）：列表项里 id 是主播用户 id，**curroomnum 才是进房用的房间号**，
+            // 拉流/进房都按房间号走，所以这里优先取 curroomnum；anchorId 留给关注接口用。
+            val anchorUid = o.optLong("id", 0L)
+            val roomNo = o.optLong("curroomnum", 0L)
+            val roomId = if (roomNo > 0) roomNo else anchorUid
+            if (roomId <= 0L) continue
+            val name = o.optString("nickname").ifBlank { o.optString("name") }.ifBlank { "房间 $roomId" }
             val cat = o.optString("cat").ifBlank { o.optString("category") }
                 .ifBlank { o.optString("catName") }.ifBlank { "推荐" }
             val online = o.optInt("online", 0)
@@ -176,10 +197,17 @@ class XhmRepo(private val context: Context, private val prefs: XhmPrefs) {
             val avatar = fullImageUrl(prefs.imgBase, o.optString("avatar").ifBlank {
                 o.optString("headImg").ifBlank { o.optString("cover") }
             })
-            val cover = fullImageUrl(prefs.imgBase, o.optString("cover").ifBlank { avatar })
+            val cover = fullImageUrl(prefs.imgBase, o.optString("snap").ifBlank {
+                o.optString("cover").ifBlank { avatar }
+            })
             val fans = o.optInt("fans", 0).let { if (it == 0) o.optInt("fansNum", 0) else it }
-            val liveIn = o.optInt("liveIn", 1) != 0 && o.optInt("live_in", 1) != 0
-            out.add(XhmRoom(id, name, cat, online, avatar, cover, fans, "", liveIn))
+            // broadcasting == "y" 才在播。没有 curroomnum 的条目是用户形态（关注列表接口
+            // /OpenAPI/v1/user/followees 返回的是用户不是房间），不能当"在播"处理
+            val roomShaped = roomNo > 0
+            val bc = o.optString("broadcasting", if (roomShaped) "y" else "n")
+            val liveIn = o.optInt("liveIn", 1) != 0 && o.optInt("live_in", 1) != 0 &&
+                bc.equals("y", ignoreCase = true)
+            out.add(XhmRoom(roomId, name, cat, online, avatar, cover, fans, "", liveIn, anchorUid))
         }
         return out.ifEmpty { null }
     }

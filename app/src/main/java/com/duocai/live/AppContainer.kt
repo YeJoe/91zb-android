@@ -508,9 +508,11 @@ class AppContainer(context: Context) {
         xhmFollowSyncSeq++
         scope.launch(Dispatchers.IO) {
             // syncFollow 本身返回 Result<Boolean>，直接 runCatching 会变成 Result<Result>；
-            // 先 getOrThrow 把内层拍平，再统一兜成 false
-            val ok = runCatching { xhmRepo.syncFollow(room.id, willFollow).getOrThrow() }
-                .getOrDefault(false)
+            // 先 getOrThrow 把内层拍平，再统一兜成 false。
+            // 接口要的是主播用户 id（uid），不是房间号 —— 老数据没有 anchorId 时退化用 room.id
+            val ok = runCatching {
+                xhmRepo.syncFollow(room.anchorId.takeIf { it > 0 } ?: room.id, willFollow).getOrThrow()
+            }.getOrDefault(false)
             xhmFollowSync = when {
                 !willFollow && ok -> "已取消关注（服务端已确认）"
                 willFollow && ok -> "已关注（服务端已确认）"

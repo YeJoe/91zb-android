@@ -59,16 +59,25 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 
-/** 解析导出工具给的配置；appToken / jwe 任一有值即视为有效。 */
+/** 解析导出工具给的配置；任一字段有值即视为有效。 */
 private data class RealtimeConfig(
     val appToken: String?,
     val jwe: String?,
-    val tunnelPort: Int?
+    val tunnelPort: Int?,
+    val userId: Long? = null,
+    val channelId: String? = null,
+    // 小红帽段（可选）：{"xhm":{"token":..,"userId":..,"baseUrl":..,"imgBase":..,"demo":..}}
+    val xhmToken: String? = null,
+    val xhmUserId: String? = null,
+    val xhmBaseUrl: String? = null,
+    val xhmImgBase: String? = null,
+    val xhmDemo: Boolean? = null
 )
 
 /**
- * 解析导出工具的配置：先试 JSON（{"appToken":..,"jwe":..,"tunnelPort":..}），
- * 再退回纯文本标记（含【会话 Token】等）。返回 null = 啥也没解析出来。
+ * 解析导出工具的配置：先试 JSON（{"appToken":..,"jwe":..,"tunnelPort":..,"userId":..,
+ * "channelId":..,"xhm":{..}}），再退回纯文本标记（含【会话 Token】等）。
+ * 返回 null = 啥也没解析出来。
  */
 private fun parseRealtimeConfig(text: String): RealtimeConfig? {
     val s = text.trim()
@@ -76,7 +85,19 @@ private fun parseRealtimeConfig(text: String): RealtimeConfig? {
         val t = j.optString("appToken").takeIf { it.isNotBlank() }
         val w = j.optString("jwe").takeIf { it.isNotBlank() }
         val p = j.optInt("tunnelPort", -1).let { if (it > 0) it else null }
-        if (t != null || w != null) return RealtimeConfig(t, w, p)
+        val u = j.optLong("userId", -1L).let { if (it > 0) it else null }
+        val ch = j.optString("channelId").takeIf { it.isNotBlank() }
+        val x = j.optJSONObject("xhm")
+        val xt = x?.optString("token")?.takeIf { it.isNotBlank() }
+        val xu = x?.optString("userId")?.takeIf { it.isNotBlank() }
+        val xb = x?.optString("baseUrl")?.takeIf { it.isNotBlank() }
+        val xi = x?.optString("imgBase")?.takeIf { it.isNotBlank() }
+        val xd = if (x != null && x.has("demo")) x.optBoolean("demo") else null
+        if (t != null || w != null || u != null || ch != null ||
+            xt != null || xu != null || xb != null || xi != null || xd != null
+        ) {
+            return RealtimeConfig(t, w, p, u, ch, xt, xu, xb, xi, xd)
+        }
     }
     val t = Regex("""【会话 Token】[^\n]*\n(\S+)""").find(s)?.groupValues?.get(1)
         ?.takeIf { !it.startsWith("(") }
@@ -1016,8 +1037,9 @@ fun SettingsScreen(c: AppContainer) {
             text = {
                 Column {
                             Text(
-                                "把导出工具给的整段文本或 JSON 粘进来，`【JWE】` 和 `【会话 Token】` 都会填好。" +
-                                    "弹幕 join 必须要 token，别只粘 JWE。",
+                                "把配置 JSON 粘进来。天美字段：appToken（隧道/弹幕 token）、jwe、tunnelPort、" +
+                                    "userId / channelId（可选）；小红帽字段放 \"xhm\" 对象：" +
+                                    "token / userId / baseUrl / imgBase / demo。纯文本【会话 Token】【JWE】标记也认。",
                                 fontSize = 12.sp,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -1045,11 +1067,25 @@ fun SettingsScreen(c: AppContainer) {
                     // 输入框要跟着走，否则导完它还显示空值，看着像没导进去
                     cfg.appToken?.let { v -> prefs.appToken = v; dmToken = v }
                     cfg.jwe?.let { v -> jwe = v; prefs.jwe = v }
+                    cfg.userId?.let { v -> prefs.myUserId = v }
+                    cfg.channelId?.let { v -> prefs.channelId = v }
+                    // 小红帽段：token/基址/图床/demo 一并落地，输入框同步，列表强刷
+                    var xhmApplied = false
+                    cfg.xhmToken?.let { v -> prefs.xhmToken = v; xhmToken = v; xhmApplied = true }
+                    cfg.xhmUserId?.let { v -> prefs.xhmUserId = v; xhmUserId = v; xhmApplied = true }
+                    cfg.xhmBaseUrl?.let { v -> prefs.xhmBaseUrl = v; xhmBase = v; xhmApplied = true }
+                    cfg.xhmImgBase?.let { v -> prefs.xhmImgBase = v; xhmImg = v; xhmApplied = true }
+                    cfg.xhmDemo?.let { v -> prefs.xhmDemo = v; xhmDemo = v; xhmApplied = true }
+                    if (xhmApplied) c.xhmReload()
                     port = cfg.tunnelPort?.toString() ?: ""
                     prefs.tunnelPort = cfg.tunnelPort ?: 0
                     // 会话 token 换了就必须重连：旧连接是用旧 token 建的，留着也是 403
                     if (cfg.appToken != null) c.danmaku.restart(scope)
-                    toast = "已导入，点「测试连接并刷新」验证"
+                    toast = "已导入（token/JWE" +
+                        (if (cfg.userId != null) "/userId" else "") +
+                        (if (cfg.channelId != null) "/channelId" else "") +
+                        (if (xhmApplied) "/小红帽" else "") +
+                        "），点「测试连接并刷新」验证"
                     importOpen = false
                 }) { Text("导入") }
             },

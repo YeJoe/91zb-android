@@ -318,8 +318,9 @@ fun XhmFollowScreen(c: AppContainer) {
     val follows = remember(c.xhmFollowVersion) { c.xhmFollows.all() }
     val byId = c.xhmRooms.associateBy { it.id }
     val items = follows.map { f ->
-        // 列表里没有的（已下播/数据未含）也保留，播放时再尝试取流
-        byId[f.id] ?: XhmRoom(id = f.id, name = f.name, cat = f.cat, online = 0)
+        // 列表里没有的（已下播/数据未含）也保留，播放时再尝试取流；
+        // anchorId 带上（本机收藏里存了），取消关注时接口 unfollow 才能打对人
+        byId[f.id] ?: XhmRoom(id = f.id, name = f.name, cat = f.cat, online = 0, anchorId = f.anchorId)
     }
 
     Column(

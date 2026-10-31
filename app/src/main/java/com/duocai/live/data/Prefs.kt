@@ -417,8 +417,12 @@ class Prefs(context: Context) {
          */
         const val USER_ID = "1422303235"
 
-        /** 小红帽 API 主域（接口文档里唯一的应用自有后端；scheme 推断 https） */
-        const val XHM_BASE = "https://api.xt2.club"
+        /**
+         * 小红帽 API 主域。2026-10-31 实测（1.17.3 抓包 + curl 探活）主域已轮换到
+         * api.demoyf.top（Cloudflare 前置），真实路由挂在 /OpenAPI/v1/ 下；
+         * 1.17.1 dex 里的 api.xt2.club 已不是当前域。防封域名还会再轮换，设置页可改。
+         */
+        const val XHM_BASE = "https://api.demoyf.top"
 
         const val KIWI_APP_KEY =
             "360wjdqlAsjhpkqV7pq3Mzj6mfrZdxM4yt39ASqwjWgc3Eq4gjbRp4/qzeH3mlgzQCGK197OhozJE7wxXR1lHHvsbbfn8e+7YRS4p3rgdAg33j6OkmmntfBvqcmvA67vkSwe8rFbLZF1IZGAy6U76eqCd8mQzlEovcAqLT9xcU7kpAWc3svYbMwXCDTNL6aufyS5IaerIygPzSeeafzt4+C0kjXKYuolKELlFv4ltQMPRqOQTrxK2fW9qvHMQUsjjlklnAarvVimL8pg2ewANRvxuBGoZEN6ePLSvnLL+ffGdgq+D/1citmYauR6sK6BRiMQnUXFGksyIf09AmqI6GRMhHjgaviv8VFz2GFyW4awq7shOJQbsykqhzI3E9gf2UdWSHElt4fVvZByA5JlaZKeAijN7fitPWs6RaahHMdk8z5NiSPRTQnMN97YMZKaJEEuOts9QqG1h5vzlcXjlGSCfVRmGv+zadHzoE4XDtW0Oqbb4/1hYzS4ageeNXswo6jzXgIiYcg8tXy1WvKYdzy1E7USYGG/WRdmBCM0+nDG3lHsiOK2Lcs6QugL2isZc/W//glYh+mMuN9vnalWv/JYGesap2Q2Gr19TxIJoDvBorZXzNKxq1mVBR3M8Bd14cxBgqi1gEx8te37d8Qpb0rW4NkVi7WGevOG3RsA4mrUPc5kQGtJ70rEC4VFzshCLFQnRoBVeJh1APevNiKtW13/ExcFCyp4EovUeUVmujgjAklG0sql2TMcPLLoYVtCshzwD3FIXB4WorckMge1uldb7pTHHjB55jmW4tsgnyQR7Im+7jBVV9rfuoUSoq2wNpEU8W2xi7D8mVi2XZfwTZGsb6e0p4nSxy1+FLX/4/Lu7pVfFK1rzxbq346mJJgJSZkkEzzlCOKzPpU3WF8rwnYcWqdNYLnyzXTNpCQjLcNeqBZU8uQoSxyBANmw0AoslNGRImN7m6H81DtbP8XY28Pa9wIKQBw/u/mAvMxtVE2b8smZlt7CU733X3ikkkRGR5F6kRhGmulQbcuqLHiwI5Y9Tq9kEhU+VCCA5+56lmW+NukiIqYBgL9H3woNHTF9JHw/H0UwqacQzruCZ+ez4zbP2HGXvW/4TlJ5LCFhbiU1o3N7VWgsehj+zxsOQoRq3+XhcJo2V6z2GYYytgTUDT7QTYK64ThDJ0vnUnizTqlPppRn0AU+jwh3YOj/QGhQOM4sKD2CcHfoafcwNMoyb5phHi3xuoGE4uyeQUeRKc0EvJ1SVFlt6OT9FwBlhVMwbYl7Jgs3yty0g6WMxmVDUM8+RYawSFjoKNGRr4ckXCCqpX7+E+/mqAhEW/NZWWw63f4oPlPdOSZTva1NVdIlLbcAuaGzQImU4Fg/a9DRSCF+UcHCivl1p959xoWcLiD9H/eAyKnVFckebrlEpJnT7Q=="

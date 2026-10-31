@@ -27,7 +27,13 @@ data class XhmRoom(
     /** 拉流地址（RTMP 防盗链，约 3 分钟时效）。空 = 还没取，进房时调 [XhmRepo.getStreamUrl] 补 */
     var streamUrl: String = "",
     /** 是否已开播（列表接口给的在线状态，可能不可靠，仅作排序参考） */
-    val liveIn: Boolean = true
+    val liveIn: Boolean = true,
+    /**
+     * 主播用户 id（列表项的 `id` 字段）。**与 [id]（curroomnum 房间号）不是一回事**：
+     * 关注/取关接口 `/OpenAPI/v1/user/follow|unfollow` 的 body 是 `{"uid": <主播用户id>}`，
+     * 拿房间号去关注会打错人 —— 2026-10-31 实测确认。
+     */
+    val anchorId: Long = 0
 )
 
 /** 首页分类（热门/新人/颜值/歌舞…）。来自 `/home` 聚合接口里的分类表 */
@@ -67,7 +73,9 @@ data class XhmFollow(
     val id: Long,
     val name: String,
     val cat: String,
-    val ts: Long
+    val ts: Long,
+    /** 主播用户 id（接口关注/取关用），老数据缺省 0 = 退化用 id */
+    val anchorId: Long = 0
 )
 
 // ----------------------------------------------------------------- 解析工具

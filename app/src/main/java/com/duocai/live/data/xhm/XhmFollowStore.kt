@@ -31,7 +31,8 @@ class XhmFollowStore(private val prefs: Prefs) {
                     id = id,
                     name = o.optString("name"),
                     cat = o.optString("cat"),
-                    ts = o.optLong("ts", 0L)
+                    ts = o.optLong("ts", 0L),
+                    anchorId = o.optLong("anchorId", 0L)
                 )
             }
         }.onFailure { map.clear() }
@@ -45,6 +46,7 @@ class XhmFollowStore(private val prefs: Prefs) {
                 put("name", f.name)
                 put("cat", f.cat)
                 put("ts", f.ts)
+                if (f.anchorId > 0) put("anchorId", f.anchorId)
             })
         }
         prefs.xhmFollowJson = arr.toString()
@@ -60,7 +62,11 @@ class XhmFollowStore(private val prefs: Prefs) {
     /** 显式设置关注状态（幂等），返回操作后是否处于"已关注" */
     fun setFollowed(room: XhmRoom, followed: Boolean): Boolean {
         if (followed) {
-            map[room.id] = XhmFollow(room.id, room.name, room.cat, System.currentTimeMillis())
+            map[room.id] = XhmFollow(
+                room.id, room.name, room.cat,
+                System.currentTimeMillis(),
+                room.anchorId.takeIf { it > 0 } ?: room.id
+            )
         } else {
             map.remove(room.id)
         }
