@@ -19,7 +19,6 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CloudDone
@@ -113,7 +112,7 @@ fun FollowScreen(c: AppContainer) {
     }
 }
 
-/** 服务端关注：只读列表 */
+/** 服务端关注：只读列表，按「全部 / 开播 / 未开播」子 tab 切换 */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun ServerFollowTab(
@@ -133,9 +132,33 @@ private fun ServerFollowTab(
         if (hit != null && !hit.ad && hit.liveIn) live.add(room) else offline.add(room)
     }
     live.sortByDescending { it.online }
+    val liveIds = remember(live) { live.map { it.id }.toSet() }
 
-    Box(Modifier.fillMaxSize()) {
-        if (serverIds.isEmpty()) {
+    var sub by remember { mutableStateOf(0) } // 0 全部 / 1 开播 / 2 未开播
+    val shown = remember(sub, live, offline) {
+        when (sub) {
+            1 -> live
+            2 -> offline
+            else -> (live + offline)
+        }
+    }
+
+    Column(Modifier.fillMaxSize()) {
+        if (serverIds.isNotEmpty()) {
+            Row(
+                Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, top = 2.dp, bottom = 4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                SubTabChip("全部 ${live.size + offline.size}", sub == 0) { sub = 0 }
+                Spacer(Modifier.width(6.dp))
+                SubTabChip("开播 ${live.size}", sub == 1) { sub = 1 }
+                Spacer(Modifier.width(6.dp))
+                SubTabChip("未开播 ${offline.size}", sub == 2) { sub = 2 }
+            }
+        }
+
+        Box(Modifier.fillMaxSize()) {
+            if (serverIds.isEmpty()) {
                 RefreshFill {
                     Box(Modifier.fillMaxSize().padding(28.dp), contentAlignment = Alignment.Center) {
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -150,22 +173,25 @@ private fun ServerFollowTab(
                         }
                     }
                 }
+            } else if (shown.isEmpty()) {
+                Box(Modifier.fillMaxSize().padding(28.dp), contentAlignment = Alignment.Center) {
+                    Text(
+                        when (sub) {
+                            1 -> "暂无正在直播的关注"
+                            2 -> "未开播列表为空"
+                            else -> "暂无关注"
+                        },
+                        fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             } else {
                 LazyColumn(
                     contentPadding = PaddingValues(start = 12.dp, end = 12.dp, bottom = 18.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    if (live.isNotEmpty()) {
-                        item { SectionTitle("正在直播 · ${live.size}", true) }
-                        items(live, key = { "sl-${it.id}" }) { room ->
-                            FollowRow(c, room, true, false) { onPlay(c, live, room) }
-                        }
-                    }
-                    if (offline.isNotEmpty()) {
-                        item { SectionTitle("未开播 · ${offline.size}", false) }
-                        items(offline, key = { "so-${it.id}" }) { room ->
-                            FollowRow(c, room, false, false) { }
-                        }
+                    items(shown, key = { "sl-${it.id}" }) { room ->
+                        val isLive = room.id in liveIds
+                        FollowRow(c, room, isLive, false) { onPlay(c, shown, room) }
                     }
                     item {
                         Text(
@@ -176,10 +202,11 @@ private fun ServerFollowTab(
                     }
                 }
             }
+        }
     }
 }
 
-/** 本地关注：可编辑 + 同步 + 导出 */
+/** 本地关注：可编辑 + 同步 + 导出，按「全部 / 开播 / 未开播」子 tab 切换 */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun LocalFollowTab(
@@ -190,67 +217,100 @@ private fun LocalFollowTab(
     val scope = androidx.compose.runtime.rememberCoroutineScope()
     val list = remember(c.follows) { c.follows.all() }
 
-    Box(Modifier.fillMaxSize()) {
-        Column(Modifier.fillMaxSize()) {
-            // 同步控制条
+    val live = remember(list, byId) { list.filter { byId[it.id]?.let { r -> !r.ad && r.liveIn } == true } }
+    val offline = remember(list, byId) { list.filter { byId[it.id]?.let { r -> !r.ad && r.liveIn } != true } }
+    val liveIds = remember(live) { live.map { it.id }.toSet() }
+
+    var sub by remember { mutableStateOf(0) } // 0 全部 / 1 开播 / 2 未开播
+    val shown = remember(sub, list, live, offline) {
+        when (sub) {
+            1 -> live
+            2 -> offline
+            else -> list
+        }
+    }
+
+    Column(Modifier.fillMaxSize()) {
+        // 同步控制条
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            IconButton(onClick = { c.syncNow() }, enabled = !c.syncBusy) {
+                if (c.syncBusy) CircularProgressIndicator(strokeWidth = 2.dp, modifier = Modifier.size(18.dp))
+                else Icon(Icons.Filled.CloudDone, contentDescription = "同步", tint = MaterialTheme.colorScheme.primary)
+            }
+            IconButton(onClick = { c.pushNow() }, enabled = !c.syncBusy) {
+                Icon(Icons.Filled.CloudUpload, contentDescription = "上传", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            IconButton(onClick = {
+                val json = c.exportFollowsJson()
+                val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                cm.setPrimaryClip(android.content.ClipData.newPlainText("follows", json))
+                android.widget.Toast.makeText(ctx, "已复制 ${list.size} 条本地关注 JSON", android.widget.Toast.LENGTH_SHORT).show()
+            }) {
+                Icon(Icons.Filled.Share, contentDescription = "导出", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            Spacer(Modifier.weight(1f))
+            Text(
+                if (c.prefs.ghToken.isBlank()) "未设置 Token → 设置页填" else (c.syncMsg.ifBlank { "未同步" }),
+                fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1, overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(end = 12.dp)
+            )
+        }
+
+        if (list.isNotEmpty()) {
             Row(
-                Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 8.dp),
+                Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, top = 0.dp, bottom = 4.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                IconButton(onClick = { c.syncNow() }, enabled = !c.syncBusy) {
-                    if (c.syncBusy) CircularProgressIndicator(strokeWidth = 2.dp, modifier = Modifier.size(18.dp))
-                    else Icon(Icons.Filled.CloudDone, contentDescription = "同步", tint = MaterialTheme.colorScheme.primary)
-                }
-                IconButton(onClick = { c.pushNow() }, enabled = !c.syncBusy) {
-                    Icon(Icons.Filled.CloudUpload, contentDescription = "上传", tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-                IconButton(onClick = {
-                    val json = c.exportFollowsJson()
-                    val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                    cm.setPrimaryClip(android.content.ClipData.newPlainText("follows", json))
-                    android.widget.Toast.makeText(ctx, "已复制 ${list.size} 条本地关注 JSON", android.widget.Toast.LENGTH_SHORT).show()
-                }) {
-                    Icon(Icons.Filled.Share, contentDescription = "导出", tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-                Spacer(Modifier.weight(1f))
-                Text(
-                    if (c.prefs.ghToken.isBlank()) "未设置 Token → 设置页填" else (c.syncMsg.ifBlank { "未同步" }),
-                    fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1, overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.padding(end = 12.dp)
-                )
+                SubTabChip("全部 ${list.size}", sub == 0) { sub = 0 }
+                Spacer(Modifier.width(6.dp))
+                SubTabChip("开播 ${live.size}", sub == 1) { sub = 1 }
+                Spacer(Modifier.width(6.dp))
+                SubTabChip("未开播 ${offline.size}", sub == 2) { sub = 2 }
             }
+        }
 
-            LazyColumn(
-                contentPadding = PaddingValues(start = 12.dp, end = 12.dp, bottom = 18.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp),
-                modifier = Modifier.fillMaxSize()
-            ) {
-                if (list.isEmpty()) {
-                    item {
-                        Box(Modifier.fillMaxWidth().padding(28.dp), contentAlignment = Alignment.Center) {
-                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                Icon(Icons.Filled.Star, contentDescription = null, tint = MaterialTheme.colorScheme.outline, modifier = Modifier.size(34.dp))
-                                Spacer(Modifier.height(10.dp))
-                                Text("还没有本地关注", fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onBackground)
-                                Spacer(Modifier.height(6.dp))
-                                Text(
-                                    "在首页/直播页点封面右上角星标就会收藏到这里。\n点「同步」可上传到 GitHub Gist 多设备共享。",
-                                    fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                        }
+        Box(Modifier.fillMaxSize()) {
+            if (list.isEmpty()) {
+                Box(Modifier.fillMaxSize().padding(28.dp), contentAlignment = Alignment.Center) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Icon(Icons.Filled.Star, contentDescription = null, tint = MaterialTheme.colorScheme.outline, modifier = Modifier.size(34.dp))
+                        Spacer(Modifier.height(10.dp))
+                        Text("还没有本地关注", fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onBackground)
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            "在首页/直播页点封面右上角星标就会收藏到这里。\n点「同步」可上传到 GitHub Gist 多设备共享。",
+                            fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                     }
-                } else {
-                    item { SectionTitle("本地收藏 · ${list.size}", false) }
-                    items(list, key = { "lo-${it.id}" }) { f ->
-                        val room = byId[f.id]
-                        FollowRow(
-                            c,
-                            room ?: Room(f.id, f.name, f.cat, 0, "", false, 0),
-                            room != null && room.liveIn,
-                            true
-                        ) { if (room != null) onPlay(c, list.map { byId[it.id] ?: Room(it.id, it.name, it.cat, 0, "", false, 0) }, room) }
+                }
+            } else if (shown.isEmpty()) {
+                Box(Modifier.fillMaxSize().padding(28.dp), contentAlignment = Alignment.Center) {
+                    Text(
+                        when (sub) {
+                            1 -> "暂无正在直播的本地关注"
+                            2 -> "未开播列表为空"
+                            else -> "暂无本地关注"
+                        },
+                        fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            } else {
+                LazyColumn(
+                    contentPadding = PaddingValues(start = 12.dp, end = 12.dp, bottom = 18.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                    modifier = Modifier.fillMaxSize()
+                ) {
+                    items(shown, key = { "lo-${it.id}" }) { f ->
+                        val room = byId[f.id] ?: Room(f.id, f.name, f.cat, 0, "", false, 0)
+                        val isLive = f.id in liveIds
+                        FollowRow(c, room, isLive, true) {
+                            val playlist = shown.map { byId[it.id] ?: Room(it.id, it.name, it.cat, 0, "", false, 0) }
+                            onPlay(c, playlist, room)
+                        }
                     }
                 }
             }
@@ -273,22 +333,24 @@ private fun TabChip(text: String, selected: Boolean, onClick: () -> Unit) {
     }
 }
 
-private fun onPlay(c: AppContainer, list: List<Room>, room: Room) {
-    c.openPlayer(list, list.indexOfFirst { it.id == room.id }.coerceAtLeast(0))
+/** 关注页内「全部 / 开播 / 未开播」子切换卡（紧凑版 TabChip） */
+@Composable
+private fun SubTabChip(text: String, selected: Boolean, onClick: () -> Unit) {
+    val bg = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant
+    val fg = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
+    Box(
+        Modifier
+            .clip(RoundedCornerShape(14.dp))
+            .background(bg)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 5.dp)
+    ) {
+        Text(text, fontSize = 12.sp, fontWeight = FontWeight.Medium, color = fg)
+    }
 }
 
-@Composable
-private fun SectionTitle(text: String, live: Boolean) {
-    Row(
-        Modifier.padding(start = 4.dp, top = 12.dp, bottom = 2.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        if (live) {
-            Box(Modifier.size(6.dp).background(Color(0xFFFF3B5C), CircleShape))
-            Spacer(Modifier.width(6.dp))
-        }
-        Text(text, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant)
-    }
+private fun onPlay(c: AppContainer, list: List<Room>, room: Room) {
+    c.openPlayer(list, list.indexOfFirst { it.id == room.id }.coerceAtLeast(0))
 }
 
 @Composable
@@ -304,7 +366,8 @@ private fun FollowRow(
             .fillMaxWidth()
             .clip(RoundedCornerShape(12.dp))
             .background(MaterialTheme.colorScheme.surface)
-            .clickable(enabled = live, onClick = onClick)
+            .alpha(if (live) 1f else 0.62f)
+            .clickable(onClick = onClick)
             .padding(8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -339,7 +402,7 @@ private fun FollowRow(
                 room.name,
                 fontSize = 13.sp,
                 fontWeight = FontWeight.Medium,
-                color = MaterialTheme.colorScheme.onSurface,
+                color = if (live) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
