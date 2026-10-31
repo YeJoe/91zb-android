@@ -1,3 +1,4 @@
+import java.util.Base64
 import java.util.Properties
 
 plugins {
@@ -65,7 +66,7 @@ val keystoreFile: File? = run {
     val fromB64 = credProps.getProperty("tm.keystoreBase64")?.takeIf { it.isNotBlank() }
     if (fromB64 != null) {
         val tmp = file(System.getProperty("java.io.tmpdir")).resolve("tm_release.jks")
-        tmp.writeBytes(java.util.Base64.getDecoder().decode(fromB64))
+        tmp.writeBytes(Base64.getDecoder().decode(fromB64))
         return@run tmp
     }
     null
