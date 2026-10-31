@@ -169,6 +169,7 @@ dependencies {
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-core")
+    implementation("androidx.compose.material:material-icons-extended")
 
     // 封面图：Coil 只做"URL → Bitmap + LruCache + 生命周期取消"，不引 OkHttp，
     // 自带 HttpURLConnection 引擎。列表里几百个头像全靠它去重与复用。

@@ -6,6 +6,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import com.tm.live.data.DanmakuStore
 import com.tm.live.data.FollowStore
+import com.tm.live.data.FollowSync
 import com.tm.live.data.LiveRepo
 import com.tm.live.data.Prefs
 import com.tm.live.data.Room

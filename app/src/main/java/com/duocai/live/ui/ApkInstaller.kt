@@ -132,8 +132,8 @@ object ApkInstaller {
         if (staged.length() < MIN_APK_BYTES) return@runCatching "复制失败：文件不完整"
         launch(ctx, staged)
         val tail = when {
-            u.delta > 0 -> "覆盖安装 v${u.versionName}（当前更高版本会被替换）"
-            u.delta == 0 -> "覆盖安装同版本 v${u.versionName}"
+            u.delta > 0L -> "覆盖安装 v${u.versionName}（当前更高版本会被替换）"
+            u.delta == 0L -> "覆盖安装同版本 v${u.versionName}"
             else -> "安装较低版本 v${u.versionName}"
         }
         "已交给系统安装器：$tail，登录态和设置都保留"
