@@ -104,7 +104,7 @@ class XhmRepo(private val context: Context, private val prefs: XhmPrefs) {
      *  1. body 字段名必须是 **`uid`**（id/userId/toUid/anchorId 全部回 code:1「参数错误」）；
      *  2. 值是**主播用户 id**（列表项 `id`），不是 curroomnum 房间号 —— 拿房间号会打错人。
      *
-     * 旧域的 /relation/* 留作兜底。判定成功：HTTP 2xx 且 code==0。
+     * 旧域的 /relation/ 系列路由留作兜底。判定成功：HTTP 2xx 且 code==0。
      * 全部打不动才返回 false —— 调用方（AppContainer.xhmToggleFollow）据此降级为
      * "仅本机"并如实提示，不假装云端成功。
      */
