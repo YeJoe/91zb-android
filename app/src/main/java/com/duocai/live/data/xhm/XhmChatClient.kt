@@ -180,7 +180,7 @@ class XhmChatClient(private val prefs: XhmPrefs) {
         demoJob = CoroutineScope(Dispatchers.Default).launch {
             var i = 0
             while (true) {
-                delay(if (i == 0) 1200L else (2200 + (i * 977) % 4200))
+                delay(if (i == 0) 1200L else (2200L + (i * 977L) % 4200L))
                 val enter = i % 5 == 3
                 append(
                     XhmMsg(

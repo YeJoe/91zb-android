@@ -145,7 +145,9 @@ class XhmRepo(private val context: Context, private val prefs: XhmPrefs) {
         val out = ArrayList<XhmCategory>(arr.length())
         for (i in 0 until arr.length()) {
             val o = asObject(arr.opt(i)) ?: continue
-            val name = o.optString("name").ifBlank { o.optString("catName") }.ifBlank { continue }
+            // 不能写成 ifBlank { continue }：continue 在内联 lambda 里是实验特性，CI 会编译失败
+            val name = o.optString("name").ifBlank { o.optString("catName") }
+            if (name.isBlank()) continue
             out.add(XhmCategory(name, o.optInt("count", 0)))
         }
         return out.ifEmpty { null }

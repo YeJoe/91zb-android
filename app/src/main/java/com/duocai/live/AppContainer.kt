@@ -507,7 +507,10 @@ class AppContainer(context: Context) {
         xhmFollowSync = if (willFollow) "已关注" else "已取消关注"
         xhmFollowSyncSeq++
         scope.launch(Dispatchers.IO) {
-            val ok = runCatching { xhmRepo.syncFollow(room.id, willFollow) }.getOrDefault(false)
+            // syncFollow 本身返回 Result<Boolean>，直接 runCatching 会变成 Result<Result>；
+            // 先 getOrThrow 把内层拍平，再统一兜成 false
+            val ok = runCatching { xhmRepo.syncFollow(room.id, willFollow).getOrThrow() }
+                .getOrDefault(false)
             xhmFollowSync = when {
                 !willFollow && ok -> "已取消关注（服务端已确认）"
                 willFollow && ok -> "已关注（服务端已确认）"

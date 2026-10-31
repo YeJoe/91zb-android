@@ -56,7 +56,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.input.pointer.PointerInputScope
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -515,17 +514,19 @@ fun XhmPlayerScreen(c: AppContainer, startIndex: Int, onClose: () -> Unit) {
             .fillMaxSize()
             .background(Color.Black)
             .pointerInput(index) {
+                // PointerInputScope 即 Density，dp.toPx() 直接可用
+                val threshold = 120.dp.toPx()
                 detectVerticalDragGestures(
                     onDragStart = { dragAcc = 0f },
                     onVerticalDrag = { change, amount ->
                         change.consume()
                         dragAcc += amount
                         when {
-                            dragAcc < -dp2px(120f, this) -> {
+                            dragAcc < -threshold -> {
                                 dragAcc = 0f
                                 if (index < rooms.lastIndex) index++
                             }
-                            dragAcc > dp2px(120f, this) -> {
+                            dragAcc > threshold -> {
                                 dragAcc = 0f
                                 if (index > 0) index--
                             }
@@ -704,9 +705,6 @@ fun XhmPlayerScreen(c: AppContainer, startIndex: Int, onClose: () -> Unit) {
         }
     }
 }
-
-private fun dp2px(dp: Float, scope: PointerInputScope): Float =
-    dp * scope.density.density
 
 /** 直播间底部：聊天消息流（半透明） + 发送弹幕输入框 */
 @Composable
